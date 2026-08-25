@@ -950,7 +950,7 @@
             (else
              (build-menu-items-list p style bar?)))
       (cond ((== p '---) (list (build-menu-hsep)))
-            ((== p '|) (list (build-menu-vsep))) ;; '|
+            ((== p (string->symbol "|")) (list (build-menu-vsep))) ;; '|
             ((== p '()) p)
             (else (list (build-menu-bad-format p style))))))
 

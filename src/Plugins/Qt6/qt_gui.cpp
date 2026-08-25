@@ -1227,7 +1227,8 @@ command_queue::exec (object cmd) {
   q << cmd;
   start_times << (((time_t) texmacs_time ()) - 1000000000);
   lapse = texmacs_time();
-  the_gui->need_update();
+  // Guard the_gui update when running in headless mode or batch compile mode without active GUI instance
+  if (the_gui) the_gui->need_update();
   wait= true;
 }
 
@@ -1236,7 +1237,8 @@ command_queue::exec_pause (object cmd) {
   q << cmd;
   start_times << ((time_t) texmacs_time ());
   lapse = texmacs_time();
-  the_gui->need_update();
+  // Guard the_gui update when running in headless mode or batch compile mode without active GUI instance
+  if (the_gui) the_gui->need_update();
   wait= true;
 }
 
@@ -1292,13 +1294,13 @@ command_queue::must_wait (time_t now) const {
  ******************************************************************************/
 
 void exec_delayed (object cmd) {
-  the_gui->delayed_commands.exec(cmd);
+  if (the_gui) the_gui->delayed_commands.exec(cmd);
 }
 void exec_delayed_pause (object cmd) {
-  the_gui->delayed_commands.exec_pause(cmd);
+  if (the_gui) the_gui->delayed_commands.exec_pause(cmd);
 }
 void clear_pending_commands () {
-  the_gui->delayed_commands.clear_pending();
+  if (the_gui) the_gui->delayed_commands.clear_pending();
 }
 
 

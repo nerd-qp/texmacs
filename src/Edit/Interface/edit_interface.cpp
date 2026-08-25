@@ -109,25 +109,37 @@ edit_interface_rep::suspend () {
 
 void
 edit_interface_rep::resume () {
+  time_t t_res_start = texmacs_time ();
   //cout << "Resume " << buf->buf->name << LF;
   got_focus= true;
-  SERVER (menu_main ("(horizontal (link texmacs-menu))"));
-  SERVER (menu_icons (0, "(horizontal (link texmacs-main-icons))"));
-  SERVER (menu_icons (1, "(horizontal (link texmacs-mode-icons))"));
-  SERVER (menu_icons (2, "(horizontal (link texmacs-focus-icons))"));
-  SERVER (menu_icons (3, "(horizontal (link texmacs-extra-icons))"));
-  array<url> a= buffer_to_windows (buf->buf->name);
-  if (N(a) > 0) {
-    string win = "(string->url \"" * as_string (a[0]) * "\")";
-    string ldyn= "(dynamic (texmacs-left-tools " * win * "))";
-    string rdyn= "(dynamic (texmacs-side-tools " * win * "))";
-    string bdyn= "(dynamic (texmacs-bottom-tools " * win * "))";
-    string xdyn= "(dynamic (texmacs-extra-tools " * win * "))";
-    SERVER (side_tools (1, "(vertical " * ldyn * ")"));
-    SERVER (side_tools (0, "(vertical " * rdyn * ")"));
-    SERVER (bottom_tools (0, "(vertical " * bdyn * ")"));
-    SERVER (bottom_tools (1, "(vertical " * xdyn * ")"));
+  time_t t_m0 = texmacs_time ();
+  if (!headless_mode) {
+    SERVER (menu_main ("(horizontal (link texmacs-menu))"));
+    time_t t_m1 = texmacs_time ();
+    SERVER (menu_icons (0, "(horizontal (link texmacs-main-icons))"));
+    time_t t_m2 = texmacs_time ();
+    SERVER (menu_icons (1, "(horizontal (link texmacs-mode-icons))"));
+    time_t t_m3 = texmacs_time ();
+    SERVER (menu_icons (2, "(horizontal (link texmacs-focus-icons))"));
+    time_t t_m4 = texmacs_time ();
+    SERVER (menu_icons (3, "(horizontal (link texmacs-extra-icons))"));
+    time_t t_m5 = texmacs_time ();
+    array<url> a= buffer_to_windows (buf->buf->name);
+    if (N(a) > 0) {
+      string win = "(string->url \"" * as_string (a[0]) * "\")";
+      string ldyn= "(dynamic (texmacs-left-tools " * win * "))";
+      string rdyn= "(dynamic (texmacs-side-tools " * win * "))";
+      string bdyn= "(dynamic (texmacs-bottom-tools " * win * "))";
+      string xdyn= "(dynamic (texmacs-extra-tools " * win * "))";
+      SERVER (side_tools (1, "(vertical " * ldyn * ")"));
+      SERVER (side_tools (0, "(vertical " * rdyn * ")"));
+      SERVER (bottom_tools (0, "(vertical " * bdyn * ")"));
+      SERVER (bottom_tools (1, "(vertical " * xdyn * ")"));
+    }
   }
+  time_t t_m6 = texmacs_time ();
+  fprintf (stderr, "TIME-RESUME-MENUS: total=%ld ms\n", t_m6 - t_m0);
+  fflush (stderr);
   cur_sb= 2;
   env_change= env_change & (~THE_FREEZE);
   notify_change (THE_FOCUS + THE_EXTENTS);
@@ -141,6 +153,8 @@ edit_interface_rep::resume () {
   the_drd= old_drd;
   if (!headless_mode)
     invalidate_all ();
+  fprintf (stderr, "TIME-RESUME-TOTAL: %ld ms\n", texmacs_time () - t_res_start);
+  fflush (stderr);
 }
 
 void

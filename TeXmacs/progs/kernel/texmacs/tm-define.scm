@@ -241,42 +241,20 @@
   (let* ((var (ca*r head))
          (nbody (tm-add-condition var head body))
          (nval (lambda* head nbody)))
-    (if (ahash-ref tm-defined-table var)
-        `(let ((former ,var))
-           ;;(if (== (length (ahash-ref tm-defined-table ',var)) 1)
-           ;;    (display* "Overloaded " ',var "\n"))
-           ;;(display* "Overloaded " ',var "\n")
-           ;;(display* "   " ',nval "\n")
-           (set! temp-module ,(current-module))
-           (set! temp-value ,nval)
-           (set-current-module texmacs-user)
-           (set! ,var temp-value)
-           (set-current-module temp-module)
-           (ahash-set! tm-defined-table ',var
-                       (cons ',nval (ahash-ref tm-defined-table ',var)))
-           (ahash-set! tm-defined-name ,var ',var)
-           (ahash-set! tm-defined-module ',var
-                       (cons (module-name temp-module)
-                             (ahash-ref tm-defined-module ',var)))
-           ,@(map property-rewrite cur-props))
-        `(begin
-           (when (nnull? cur-conds)
-             (display* "warning: conditional master routine " ',var "\n")
-             (display* "   " ',nval "\n"))
-           ;;(display* "Defined " ',var "\n")
-           ;;(if (nnull? cur-conds) (display* "   " ',nval "\n"))
-           (set! temp-module ,(current-module))
-           (set! temp-value
-                 (if (null? cur-conds) ,nval
-                     ,(list 'let '((former (lambda args (noop)))) nval)))
-           (set-current-module texmacs-user)
-           (define-public ,var temp-value)
-           (set-current-module temp-module)
-           (ahash-set! tm-defined-table ',var (list ',nval))
-           (ahash-set! tm-defined-name ,var ',var)
-           (ahash-set! tm-defined-module ',var
-                       (list (module-name temp-module)))
-           ,@(map property-rewrite cur-props)))))
+    `(let* ((former (if (top-level-bound? ',var (interaction-environment))
+                        (top-level-value ',var (interaction-environment))
+                        (lambda args (noop))))
+            (new-val ,(if (null? cur-conds)
+                          nval
+                          `(let ((former former)) ,nval))))
+       (define-top-level-value ',var new-val (interaction-environment))
+       (ahash-set! tm-defined-table ',var
+                   (cons ',nval (or (ahash-ref tm-defined-table ',var) '())))
+       (ahash-set! tm-defined-name new-val ',var)
+       (ahash-set! tm-defined-module ',var
+                   (cons (module-name (current-module))
+                         (or (ahash-ref tm-defined-module ',var) '())))
+       ,@(map property-rewrite cur-props))))
 
 (define-public (tm-define-sub head body)
   (if (and (pair? (car body)) (keyword? (caar body)))
@@ -302,17 +280,15 @@
 
 (define-public-macro (tm-define-macro head . body)
   (with macro-head (tm-macroify head)
-    ;;(display* (ca*r head) "\n")
-    ;;(display* "   " `(tm-define ,macro-head ,@body) "\n")
-    ;;(display* "   " `(define-public-macro ,head
-    ;;                   ,(apply* (ca*r macro-head) head)) "\n")
-    `(begin
-       (tm-define ,macro-head ,@body)
-       (set! temp-module ,(current-module))
-       (set-current-module texmacs-user)
-       (define-public-macro ,head
-         ,(apply* (ca*r macro-head) head))
-       (set-current-module temp-module))))
+    (let* ((var (ca*r head))
+           (impl (ca*r macro-head)))
+      `(begin
+         (tm-define ,macro-head ,@body)
+         (define-top-level-syntax ',var
+           (lambda (stx)
+             (datum->syntax (car (syntax->list stx))
+               (apply ,impl (cdr (syntax->datum stx)))))
+           (interaction-environment))))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Associating extra properties to existing function symbols
@@ -346,19 +322,40 @@
   (let* ((old (ahash-ref lazy-define-table name))
          (new (if old (cons module old) (list module))))
     (ahash-set! lazy-define-table name new))
-  (with name-star (string->symbol (string-append (symbol->string name) "*"))
-    `(when (not (defined? ',name))
-       (tm-define (,name . args)
-         ,@opts
-         (let* ((m (resolve-module ',module))
-                (p (module-ref texmacs-user '%module-public-interface))
-                (r (module-ref p ',name #f)))
-           (if (not r)
-               (texmacs-error "lazy-define"
-                              ,(string-append "Could not retrieve "
-                                              (symbol->string name))))
-           (apply r args))))))
-
+  ;; a local function that will broadcast and update to the correct function
+      ;; once called, and return the value also on first call.
+      ;; Since the function is a local function compiled, due to how chez
+      ;; compiles, need to call the updated global function inside body.
+  (if (not (defined? name))
+      `(define ,name
+	 (letrec
+	     ((installed? #f)
+	      (stub
+	       (lambda args
+		 (if installed?
+		     (apply (top-level-value ',name (interaction-environment)) args)
+		     (begin
+		       ;; load module, find the function, install to global space.
+		       (module-provide ',module)
+		       (let ((real-fn
+			      (top-level-value ',name (interaction-environment))))
+			 (if (eq? stub real-fn)
+			     (texmacs-error "lazy-define"
+					    ,(string-append "Could not retrieve "
+							    (symbol->string name)))
+			     (tm-define (,name . args)
+					,@opts
+					(apply real-fn args))))
+		       (let ((new-fn
+			      (top-level-value ',name (interaction-environment))))
+			 (unless (eq? stub new-fn)
+			   (set! installed? #t)
+			   (apply new-fn args))))))))
+	   stub))
+      `(define (,(string->symbol
+		  (string-append (symbol->string name) "-lazy-unused"))
+		 . args)
+	 (noop))))  
 (define-public-macro (lazy-define module . names)
   (receive (opts real-names) (list-break names not-define-option?)
     `(begin

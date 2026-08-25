@@ -1,5 +1,8 @@
 /* src/System/config.h.cmake */
 
+/* Alternative version number */
+#cmakedefine ALTERNATIVE_VERSION "@ALTERNATIVE_VERSION@"
+
 /* check assertions in code */
 #cmakedefine DEBUG_ASSERT 1
 
@@ -134,7 +137,11 @@
 
 #cmakedefine QTPIPES 1
 
-#cmakedefine SIZEOF_VOID_P @SIZEOF_VOID_P@ 
+#cmakedefine SIZEOF_VOID_P @SIZEOF_VOID_P@
+#cmakedefine SIZEOF_INT @SIZEOF_INT@
+#cmakedefine SIZEOF_LONG @SIZEOF_LONG@
+#cmakedefine SIZEOF_LONG_LONG @SIZEOF_LONG_LONG@
+#cmakedefine SIZEOF_SHORT @SIZEOF_SHORT@
 
 /* Define to 1 if you have the ANSI C header files. */
 #cmakedefine STDC_HEADERS 1
@@ -163,8 +170,6 @@
 #cmakedefine USE_SPARKLE 1
 
 #cmakedefine USE_SQLITE3 1
-
-#cmakedefine USE_GNUTLS 1
 
 #cmakedefine USE_STACK_TRACE 1
 

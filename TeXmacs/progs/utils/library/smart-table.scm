@@ -52,7 +52,11 @@
 (tm-define-macro (smart-table t . l)
   (:synopsis "Define a smart table @t with entries @l")
   `(begin
-     (when (not (defined? ',t))
+     ;; Due to the limitation of our two-pass AOT compilation pipeline (Pass 1 eager eval
+     ;; populates `tm-defined-table` in compiler memory, causing Pass 2 macro expansion
+     ;; during `compile-file` to observe the populated table and omit table initialization),
+     ;; we check `tm-defined-table` at runtime rather than at macro-expansion time.
+     (when (not (ahash-ref tm-defined-table ',t))
        (tm-define ,t (make-ahash-table)))
      ,@(smart-table-insert t '() l)))
 

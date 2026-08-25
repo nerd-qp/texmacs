@@ -30,21 +30,39 @@ static list<tmscm > destroy_list;
 extern tmscm object_stack;
 
 tmscm_object_rep::tmscm_object_rep (tmscm obj) {
+  /* Drain handles of destroyed objects.  Every entry has been locked since
+     ITS construction, hence has a stable address (locked objects are neither
+     moved nor reclaimed) -- safe to touch here, outside any collection. */
   while (!is_nil (destroy_list)) {
     tmscm handle= destroy_list->item;
     
     tmscm_set_car (handle, tmscm_null ());
     while (tmscm_is_pair (tmscm_cdr (handle)) && tmscm_is_null (tmscm_cadr (handle)))
       tmscm_set_cdr (handle, tmscm_cddr( (handle)) );
+    Sunlock_object (handle);
     destroy_list= destroy_list->next;
   }
   handle = tmscm_cons ( tmscm_cons (obj, tmscm_null ()), tmscm_car (object_stack) );
+  /* Lock the wrapper for its whole lifetime.  Rationale: the destructor
+     stores the raw handle into destroy_list (plain C++ storage, invisible
+     to the collector).  An unlocked handle hangs off object_stack and is
+     freely RELOCATED by collections -- the raw copy in destroy_list would
+     silently dangle, and the next drain above would write through a dead
+     pointer (observed as faults inside S_dirty_set / "misplaced pair"
+     aborts).  Construction always runs on an engine-active thread (the
+     same requirement as the Scons above), where Slock_object is legal;
+     draining likewise.  The destructor therefore performs NO Scheme
+     interaction whatsoever and is safe even on foreign threads or mid-GC. */
+  Slock_object (handle);
   tmscm_set_car (object_stack, handle);
 }
 
 tmscm_object_rep::~tmscm_object_rep () {
     // Be careful: can't call Scheme code from this destructor,
     // because the destructor can be called during garbage collection.
+    // Only bookkeeping here: the handle has been locked since its
+    // construction (stable address), so the deferred drain in the
+    // constructor can safely finalize it later.
   destroy_list= list<tmscm > ( handle, destroy_list);
 }
 
@@ -79,6 +97,27 @@ operator != (object obj1, object obj2) {
 
 int
 hash (object obj) {
+  tmscm o= object_to_tmscm (obj);
+  if (tmscm_is_blackbox (o))
+    /* Coarse: a constant per boxed type, matching Guile's smob hashing
+       (libguile/hash.c scm_raw_ihash hashes SCM_TYP16, i.e. the type tag, for
+       every smob).  This is stable across conversions and trivially consistent
+       with the value-based equality in tmscm_is_equal, at the cost of O(n)
+       chaining when many blackboxes of one type share a table.
+
+       Hashing the address token instead -- which is what the Scheme `hash`
+       shim would do if handed a blackbox -- is NOT stable: every conversion
+       allocates a fresh token, so an insert and its matching lookup land in
+       different buckets and the entry is never found.  That broke every
+       hashmap keyed on a blackboxed type (windows, views, ...).
+
+       TODO (optimisation, not correctness): a finer hash is possible by
+       combining the type id with a CONTENT hash of the boxed value -- e.g.
+       over its display representation.  That restores near-O(1) lookups for
+       large blackbox-keyed tables, but costs a C++ call per hash and needs the
+       content hash to be both cheap and stable.  Only worth doing if profiling
+       shows the chaining is actually a bottleneck. */
+    return type_box (tmscm_to_blackbox (o));
   return as_int (call ("hash", obj, object (1234567)));
 }
 

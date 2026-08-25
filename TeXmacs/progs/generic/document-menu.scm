@@ -1047,7 +1047,7 @@
 
 (tm-menu (focus-style-extra-icons t)
   (:require (not (or (in-beamer?) (in-poster?))))
-  (=> (balloon (eval (basic-theme-name (current-basic-theme))) "Web theme")
+  (=> (balloon (eval (or (basic-theme-name (current-basic-theme)) "Theme")) "Web theme")
       (link basic-theme-menu))
   (assuming (!= (current-basic-theme) "plain")
     (link focus-background-color-icons)))

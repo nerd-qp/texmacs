@@ -392,13 +392,13 @@
     (padded
       (aligned
         (for (x fingerprints)
-          (item (text (tm-gpg-get-key-user-id (string->tree x))))))))
+          (item (text (tm-gpg-get-key-user-id (string->tree x))) ""))))))
   ===
   (bottom-buttons
     ("Cancel" (cmd "Cancel"))
     >>
     ("Ok"
-      (for (x fingerprints))
+      (for (x fingerprints)
         (gpg-import-public-keys
           (tree->string (tm-gpg-get-key-data (string->tree x)))))
       (cmd "Ok"))))

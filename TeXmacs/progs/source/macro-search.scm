@@ -101,9 +101,9 @@
                 (u (tm->tree (cons l (cdr c)))))
            (assigned-parameters-sub u v t)))
 	((== (tree-arity def) 1)
-         (assigned-parameters (symbol->string (tree-label def)) v t))))
+         (assigned-parameters* (symbol->string (tree-label def)) v t))))
 
-(define (assigned-parameters l v t)
+(define (assigned-parameters* l v t)
   (when (not (ahash-ref t l))
     ;;(display* "Assigned by " l "\n")
     (ahash-set! t l #t)
@@ -117,7 +117,7 @@
   (if (symbol? l) (set! l (symbol->string l)))
   (let* ((v (make-ahash-table))
 	 (t (make-ahash-table)))
-    (assigned-parameters l v t)
+    (assigned-parameters* l v t)
     (sort (ahash-set->list v) string<=?)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -153,7 +153,7 @@
            (ahash-set! v (symbol->string (tree-label def)) #t))
          (let* ((v* (make-ahash-table))
                 (t* (make-ahash-table)))
-           (assigned-parameters (symbol->string (tree-label def)) v* t*)
+           (assigned-parameters* (symbol->string (tree-label def)) v* t*)
 	   (with al (filter (lambda (x) (not (ahash-ref v x)))
                             (ahash-set->list v*))
              (collect-parameters (symbol->string (tree-label def)) v t)

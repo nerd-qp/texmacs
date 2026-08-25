@@ -163,20 +163,20 @@
 ;; Switching between inlined and displayed equations
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(define-macro (concat-isolate! t)
-  `(cond ((not (tree-is? t :up 'concat)) (noop))
-	 ((not (tree-is? t :up :up 'document)) (noop))
-	 ((= (tree-arity (tree-up t)) 1) (tree-set! t :up t))
-	 ((< (tree-index t) (- (tree-arity (tree-up t)) 1))
-	  (tree-split (tree-up t 2)
-		      (tree-index (tree-up t))
-		      (+ (tree-index t) 1))
-	  (concat-isolate! t))
-	 (else
-	  (tree-split (tree-up t 2)
-		      (tree-index (tree-up t))
-		      (tree-index t))
-	  (concat-isolate! t))))
+(define (concat-isolate! t)
+  (cond ((not (tree-is? t :up 'concat)) (noop))
+	((not (tree-is? t :up :up 'document)) (noop))
+	((= (tree-arity (tree-up t)) 1) (tree-set! t :up t))
+	((< (tree-index t) (- (tree-arity (tree-up t)) 1))
+	 (tree-split (tree-up t 2)
+		     (tree-index (tree-up t))
+		     (+ (tree-index t) 1))
+	 (concat-isolate! t))
+	(else
+	 (tree-split (tree-up t 2)
+		     (tree-index (tree-up t))
+		     (tree-index t))
+	 (concat-isolate! t))))
 
 (define (math->equation* t)
   (let* ((c (and (tree-is? t :up 'concat) (tree-is? t :up :up 'document)))

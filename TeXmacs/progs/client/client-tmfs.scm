@@ -57,13 +57,14 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (define (notify-sort-change pref val)
-  (when (buffer-exists? (current-buffer))
-    (with u (url->string (current-buffer))
-      (when (or (string-starts? u "tmfs://remote-dir/")
-                (string-starts? u "tmfs://shared/")
-                (string-starts? u "tmfs://chat-rooms/")
-                (string-starts? u "tmfs://live-list/"))
-        (rebuild-from-cache u)))))
+  (and-with buf (current-buffer)
+    (when (buffer-exists? buf)
+      (with u (url->string buf)
+        (when (or (string-starts? u "tmfs://remote-dir/")
+                  (string-starts? u "tmfs://shared/")
+                  (string-starts? u "tmfs://chat-rooms/")
+                  (string-starts? u "tmfs://live-list/"))
+          (rebuild-from-cache u))))))
 
 (define-preferences
   ("remote-file-browser:sort-field" "type" notify-sort-change)

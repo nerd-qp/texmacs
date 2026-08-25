@@ -517,14 +517,14 @@
                ((== x '>>>) (gui-make '(glue #t #f 15 0)))
                ((== x (string->symbol "|")) '$/)
                (else
-                 (texmacs-error "gui-make" "invalid menu item ~S" x))))
+                 `(texmacs-error "gui-make" "invalid menu item ~S" ',x))))
         ((string? x) x)
         ((and (pair? x) (ahash-ref gui-make-table (car x)))
          (apply (car (ahash-ref gui-make-table (car x))) (list x)))
         ((and (pair? x) (or (string? (car x)) (pair? (car x))))
          `($> ,(gui-make (car x)) ,@(cdr x)))
         (else
-          (texmacs-error "gui-make" "invalid menu item ~S" x))))
+          `(texmacs-error "gui-make" "invalid menu item ~S" ',x))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; User interface for dynamic menu definitions

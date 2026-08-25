@@ -106,10 +106,26 @@
 (define-public-macro (unless cond? . body)
   `(if (not ,cond?) (begin ,@body)))
 
+;; In GNU TeXmacs, `with` acts as a single-binding `let` or destructuring `apply`.
+;; Legacy Guile 1.8 code (e.g. in kernel/old-gui/old-gui-test.scm) used keyword pairs
+;; such as (with (:button-shape "invisible") (bar ...)), which Guile's optargs lambda
+;; accepted as a keyword formal with a default value.
+;; In standard Scheme / Chez Scheme, lambda formals cannot contain keyword literals.
+;; We strictly intercept `(and (pair? var) (keyword? (car var)))` to rewrite it as
+;; a let-binding `(let ((,(car var) ,(cadr var))) ,val ,@body)`.
+;; NOTE: The closure environment is not correctly captured for define-public-macro
+;; when evaluated via (compilation-environment), causing standard primitives like `pair?`
+;; to be shadowed by file-local definitions (e.g. `(define (pair? t) ...)` in scmcoqml.scm).
+;; Until a proper closure capture mechanism is implemented for define-public-macro,
+;; we rely on the hygienic `with` syntax transformer defined in boot-chez.scm.
+#;
 (define-public-macro (with var val . body)
-  (if (or (pair? var) (null? var))
-      `(apply (lambda ,var ,@body) ,val)
-      `(let ((,var ,val)) ,@body)))
+  (cond ((and (pair? var) (keyword? (car var)))
+         `(let ((,(car var) ,(cadr var))) ,val ,@body))
+        ((or (pair? var) (null? var))
+         `(apply (lambda ,var ,@body) ,val))
+        (else
+         `(let ((,var ,val)) ,@body))))
 
 (define-public-macro (with-define fun fun-body . body)
   `(let ((,(car fun) (lambda ,(cdr fun) ,fun-body)))

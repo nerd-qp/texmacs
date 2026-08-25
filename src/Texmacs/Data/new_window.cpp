@@ -95,7 +95,12 @@ new_window (bool map_flag= true, tree geom= "") {
   command quit= tm_new<kill_window_command_rep> (id);
   tm_window win= tm_new<tm_window_rep> (texmacs_widget (mask, quit), geom);
   tm_window_table (win->id)= win;
+  fprintf (stderr, "DBG new_window id=[%s] lookup=%p win=%p\n",
+           (char*) c_string (as_string (win->id)),
+           (void*) concrete_window (win->id), (void*) win);
   if (map_flag) win->map ();
+  fprintf (stderr, "DBG new_window after map lookup=%p\n",
+           (void*) concrete_window (win->id));
   *id= abstract_window (win);
   return abstract_window (win);
 }
@@ -249,10 +254,19 @@ new_buffer_in_this_window (url name, tree doc) {
 
 url
 new_buffer_in_new_window (url name, tree doc, tree geom) {
+  time_t t0 = texmacs_time ();
   if (is_nil (concrete_buffer (name)))
     create_buffer (name, doc);
+  time_t t_buf = texmacs_time ();
   url win= new_window (true, geom);
-  window_set_view (win, get_passive_view (name), true);
+  time_t t_win = texmacs_time ();
+  url p_view = get_passive_view (name);
+  time_t t_pview = texmacs_time ();
+  window_set_view (win, p_view, true);
+  time_t t_setview = texmacs_time ();
+  fprintf (stderr, "TIME-OPEN-WIN-BREAKDOWN: create_buf=%ld ms, new_win=%ld ms, get_pview=%ld ms, set_view=%ld ms\n",
+           t_buf - t0, t_win - t_buf, t_pview - t_win, t_setview - t_pview);
+  fflush (stderr);
   return win;
 }
 
@@ -269,8 +283,14 @@ create_buffer () {
 
 url
 open_window (tree geom) {
+  time_t t0 = texmacs_time ();
   url name= make_new_buffer ();
-  return new_buffer_in_new_window (name, tree (DOCUMENT), geom);
+  time_t t1 = texmacs_time ();
+  url res = new_buffer_in_new_window (name, tree (DOCUMENT), geom);
+  time_t t2 = texmacs_time ();
+  fprintf (stderr, "TIME-OPEN-WINDOW-TOTAL: make_buf=%ld ms, new_buf_in_win=%ld ms\n", t1 - t0, t2 - t1);
+  fflush (stderr);
+  return res;
 }
 
 void

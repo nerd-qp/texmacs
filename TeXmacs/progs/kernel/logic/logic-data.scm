@@ -16,12 +16,17 @@
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Useful subroutines
+;;
+;; Note: `is-assume?` and `quote-all` are expand-time helper procedures invoked
+;; by public macros `logic-in?`, `logic-group`, and `logic-table`. In Chez Scheme,
+;; they must be exported (`define-public`) so downstream modules expanding these
+;; macros can resolve their procedural helpers across module boundaries.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(define (is-assume? expr)
+(define-public (is-assume? expr)
   (and (pair? expr) (== (car expr) 'assume)))
 
-(define (quote-all l)
+(define-public (quote-all l)
   (map (lambda (x) (list 'quote x)) l))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -116,7 +121,7 @@
 ;; Definition of tables
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(define (logic-table-rule name binding)
+(define-public (logic-table-rule name binding)
   (let ((key (car binding))
 	(im (cadr binding))
 	(conds (cddr binding)))

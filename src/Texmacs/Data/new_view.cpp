@@ -385,6 +385,10 @@ void
 window_set_view (url win_u, url new_u, bool focus) {
   //cout << "set view " << win_u << ", " << new_u << ", " << focus << "\n";
   tm_window win= concrete_window (win_u);
+  fprintf (stderr, "DBG window_set_view win=[%s] new=[%s] focus=%d winptr=%p viewptr=%p\n",
+           (char*) c_string (as_string (win_u)),
+           (char*) c_string (as_string (new_u)),
+           (int) focus, (void*) win, (void*) concrete_view (new_u));
   if (win == NULL) return;
   //cout << "Found window\n";
   tm_view new_vw= concrete_view (new_u);

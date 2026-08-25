@@ -62,7 +62,7 @@
 ;; Buffer contents for the different requests.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(tm-define-macro ($tmapidoc . l)
+(define-macro ($tmapidoc . l)
   (with lan (get-output-language)
     ($quote
       `(document

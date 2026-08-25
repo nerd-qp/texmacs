@@ -48,6 +48,17 @@ endif (CCACHE_FOUND)
 
 project (TEXMACS CXX C) # check for C/C++ compiler
 
+# TeXmacs uses Objective-C (.m) and Objective-C++ (.mm) sources for its
+# macOS-specific plugins (src/Plugins/MacOS, src/Plugins/Cocoa), so those
+# languages must be enabled before any target referencing them is created.
+# Enabling OBJC matters: without it CMake falls back to compiling .m files
+# as Objective-C++, which turns C-style implicit conversions in HIDRemote.m
+# into hard errors.
+if (APPLE)
+  enable_language (OBJC)
+  enable_language (OBJCXX)
+endif (APPLE)
+
 set (PACKAGE TeXmacs)
 set (CMAKE_MODULE_PATH ${TEXMACS_SOURCE_DIR}/cmake)
 
@@ -306,12 +317,33 @@ elseif ( (${SCHEME_IMPL} STREQUAL "guile-1.8")
          OR (${SCHEME_IMPL} STREQUAL "guile-2.2")
          OR (${SCHEME_IMPL} STREQUAL "guile-3.0") )
   pkg_check_modules (Guile REQUIRED ${SCHEME_IMPL})
-elseif ((${SCHEME_IMPL} STREQUAL "chez") OR (${SCHEME_IMPL} STREQUAL "s7"))
+elseif (${SCHEME_IMPL} STREQUAL "chez")
+  # ---- Chez Scheme backend -------------------------------------------
+  # The Chez Scheme kernel ("libkernel.a", "scheme.h" and the boot files
+  # "petite.boot"/"scheme.boot") comes from a Chez Scheme build, normally
+  # installed under /usr/lib/csv<version>/<machine>.
+  set (TEXMACS_ENGINE_CHEZ 1)
+  set (CHEZ_ROOT "/usr/lib/csv10.5.0-pre-release.1" CACHE STRING
+       "Directory containing the Chez Scheme installation")
+  set (CHEZ_MACHINE "tarm64le" CACHE STRING
+       "Chez Scheme machine type (workarea name) to use")
+  set (CHEZ_DIR "${CHEZ_ROOT}/${CHEZ_MACHINE}")
+  set (CHEZ_KERNEL_LIB "${CHEZ_DIR}/libkernel.a")
+  set (CHEZ_INCLUDE_DIR "${CHEZ_DIR}")
+  if (NOT EXISTS "${CHEZ_KERNEL_LIB}")
+    message (FATAL_ERROR "Chez Scheme kernel library not found at ${CHEZ_KERNEL_LIB}")
+  endif ()
+  message (STATUS "Using Chez Scheme kernel: ${CHEZ_KERNEL_LIB}")
+  add_definitions ("-DTEXMACS_ENGINE_CHEZ=1")
+  add_definitions ("-DCHEZ_BOOT_DIR=\"${CHEZ_DIR}\"")
+  set (TeXmacs_Libraries ${TeXmacs_Libraries} ${CHEZ_KERNEL_LIB} pthread dl)
+elseif (${SCHEME_IMPL} STREQUAL "s7")
   message(FATAL_ERROR "Selected Scheme implementation not implemented yet.")
 else ()
   message(FATAL_ERROR "Incorrect scheme implementation selected.")
 endif()
 
+if (NOT TEXMACS_ENGINE_CHEZ)
 if (Guile_VERSION VERSION_LESS 2.0)
   set (CONFIG_GUILE_SERIAL "C")
   option (GUILE_C "Using Guile 1.8.x" ON)
@@ -343,6 +375,7 @@ if (_guile_dots_test)
 else (_guile_dots_test)
   set (DOTS_OK)
 endif (_guile_dots_test)
+endif ()
 
 ### --------------------------------------------------------------------
 ### Generate configure headers
@@ -360,7 +393,18 @@ set (GS_LIB ../share/ghostscript/9.06/lib:)
 
 set (GUILE_NUM 1)
 set (PDF_RENDERER 1)
+set (ALTERNATIVE_VERSION "6363198c5")
 set (SIZEOF_VOID_P 8)
+if (WIN32)
+  # LLP64 data model: long is 32 bit
+  set (SIZEOF_LONG 4)
+else ()
+  # LP64 data model on all other supported platforms
+  set (SIZEOF_LONG 8)
+endif ()
+set (SIZEOF_INT 4)
+set (SIZEOF_LONG_LONG 8)
+set (SIZEOF_SHORT 2)
 set (STDC_HEADERS 1)
 
 if (WIN32)
@@ -425,11 +469,14 @@ set (TeXmacs_Include_Dirs
   ${TEXMACS_SOURCE_DIR}/src/Kernel/Containers
   ${TEXMACS_SOURCE_DIR}/src/Kernel/Types
   ${TEXMACS_SOURCE_DIR}/src/Plugins
+  ${TEXMACS_SOURCE_DIR}/src/Plugins/Qt
+  ${TEXMACS_SOURCE_DIR}/src/Plugins/Qt6
   ${TEXMACS_SOURCE_DIR}/src/Plugins/Pdf/LibAesgm
   ${TEXMACS_SOURCE_DIR}/src/Plugins/Gnutls
   ${TEXMACS_SOURCE_DIR}/src/Scheme
   ${TEXMACS_SOURCE_DIR}/src/Scheme/Guile
   ${TEXMACS_SOURCE_DIR}/src/Scheme/Scheme
+  ${TEXMACS_SOURCE_DIR}/src/Scheme/Chez
   ${TEXMACS_SOURCE_DIR}/src/Style/Environment
   ${TEXMACS_SOURCE_DIR}/src/Style/Evaluate
   ${TEXMACS_SOURCE_DIR}/src/Style/Memorizer
@@ -448,6 +495,7 @@ set (TeXmacs_Include_Dirs
   ${TEXMACS_SOURCE_DIR}/src/Typeset/Page
   ${TEXMACS_SOURCE_DIR}/TeXmacs/include 
   ${TEXMACS_BINARY_DIR}/src/System/ 
+  ${CHEZ_INCLUDE_DIR}
 )
 
 if (WIN32)
@@ -472,13 +520,22 @@ file (GLOB_RECURSE TeXmacs_Base_SRCS
   "${TEXMACS_SOURCE_DIR}/src/Graphics/*.cpp"
   "${TEXMACS_SOURCE_DIR}/src/Kernel/*.cpp"
   "${TEXMACS_SOURCE_DIR}/src/Scheme/Scheme/*.cpp"
-  "${TEXMACS_SOURCE_DIR}/src/Scheme/Guile/*.cpp"
   "${TEXMACS_SOURCE_DIR}/src/System/*.cpp"
   "${TEXMACS_SOURCE_DIR}/src/Texmacs/Data/*.cpp"
   "${TEXMACS_SOURCE_DIR}/src/Texmacs/Server/*.cpp"
   "${TEXMACS_SOURCE_DIR}/src/Texmacs/Window/*.cpp"
   "${TEXMACS_SOURCE_DIR}/src/Typeset/*.cpp"
 )
+
+if (TEXMACS_ENGINE_CHEZ)
+  file (GLOB_RECURSE TeXmacs_Chez_SRCS
+    "${TEXMACS_SOURCE_DIR}/src/Scheme/Chez/*.cpp")
+  set (TeXmacs_Base_SRCS ${TeXmacs_Base_SRCS} ${TeXmacs_Chez_SRCS})
+else ()
+  file (GLOB_RECURSE TeXmacs_Guile_SRCS
+    "${TEXMACS_SOURCE_DIR}/src/Scheme/Guile/*.cpp")
+  set (TeXmacs_Base_SRCS ${TeXmacs_Base_SRCS} ${TeXmacs_Guile_SRCS})
+endif ()
 
 file (GLOB_RECURSE TeXmacs_Std_Plugins_SRCS
   "${TEXMACS_SOURCE_DIR}/src/Plugins/Axel/*.cpp"
@@ -643,15 +700,15 @@ if (TEXMACS_GUI MATCHES "Qt.*")
     endif ()
 
     if (APPLE)
-      find_package (Qt5 COMPONENTS Core Gui Widgets PrintSupport Svg MacExtras REQUIRED)
+      find_package (Qt5 COMPONENTS Core Gui Widgets PrintSupport Svg Network MacExtras REQUIRED)
     else (APPLE)
-      find_package (Qt5 COMPONENTS Core Gui Widgets PrintSupport Svg REQUIRED)
+      find_package (Qt5 COMPONENTS Core Gui Widgets PrintSupport Svg Network REQUIRED)
     endif ()
     
     if (APPLE)
-      set (QT_LIBRARIES Qt5::Core Qt5::Gui Qt5::Widgets Qt5::PrintSupport Qt5::Svg Qt5::MacExtras)
+      set (QT_LIBRARIES Qt5::Core Qt5::Gui Qt5::Widgets Qt5::PrintSupport Qt5::Svg Qt5::Network Qt5::MacExtras)
     else (APPLE)
-      set (QT_LIBRARIES Qt5::Core Qt5::Gui Qt5::Widgets Qt5::PrintSupport Qt5::Svg)
+      set (QT_LIBRARIES Qt5::Core Qt5::Gui Qt5::Widgets Qt5::PrintSupport Qt5::Svg Qt5::Network)
     endif (APPLE)
 
     set (TeXmacs_Include_Dirs
@@ -661,6 +718,7 @@ if (TEXMACS_GUI MATCHES "Qt.*")
       ${Qt5Widgets_INCLUDE_DIRS}
       ${Qt5PrintSupport_INCLUDE_DIRS}
       ${Qt5Svg_INCLUDE_DIRS}
+      ${Qt5Network_INCLUDE_DIRS}
       ${Qt5MacExtras_INCLUDE_DIRS}
     )
 
@@ -797,6 +855,23 @@ include_directories (${TeXmacs_Include_Dirs})
 ### --------------------------------------------------------------------
 ### Compile sources
 ### --------------------------------------------------------------------
+
+if (TEXMACS_ENGINE_CHEZ)
+  # Must be appended BEFORE add_subdirectory (src) below, which consumes
+  # ${TeXmacs_Libraries}; the SCHEME_IMPL block near the top runs before
+  # TeXmacs_Libraries is even created, so its appends get clobbered.
+  if (APPLE)
+    # macOS has no separate libdl (dlopen lives in libSystem), and iconv is a
+    # standalone library rather than part of libc.
+    set (TeXmacs_Libraries ${TeXmacs_Libraries}
+      ${CHEZ_KERNEL_LIB} ${CHEZ_DIR}/liblz4.a ${CHEZ_DIR}/libz.a
+      pthread ncurses m iconv)
+  else ()
+    set (TeXmacs_Libraries ${TeXmacs_Libraries}
+      ${CHEZ_KERNEL_LIB} ${CHEZ_DIR}/liblz4.a ${CHEZ_DIR}/libz.a
+      pthread dl ncurses m)
+  endif ()
+endif ()
 
 add_subdirectory (src)
 add_subdirectory (plugins)

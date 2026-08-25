@@ -50,6 +50,12 @@ void setup_texmacs_path () {
 #endif
   if (test_texmacs_path (exedir * "TeXmacs")) return;
   if (test_texmacs_path (exedir * "..")) return;  
+  if (test_texmacs_path (exedir * "../../../texmacs/TeXmacs")) return;
+  if (test_texmacs_path (exedir * "../../../../texmacs/TeXmacs")) return;
+  if (test_texmacs_path (exedir * "../../texmacs/TeXmacs")) return;
+  if (test_texmacs_path (exedir * "../texmacs/TeXmacs")) return;
+  if (test_texmacs_path ("texmacs/TeXmacs")) return;
+  if (test_texmacs_path ("TeXmacs")) return;
   if (test_texmacs_path (exedir * "usr/share/TeXmacs")) return;
   if (test_texmacs_path (exedir * "usr/local/share/TeXmacs")) return;
   if (test_texmacs_path (exedir * "../usr/share/TeXmacs")) return;
@@ -246,7 +252,8 @@ int main (int argc, char** argv) {
 #if !defined (OS_MACOS) 
 #if QT_VERSION < 0x060000
   if (get_env ("WAYLAND_DISPLAY") == "") {
-    set_env ("QT_QPA_PLATFORM", "xcb"); // todo : remove ?
+    if (get_env ("QT_QPA_PLATFORM") == "")
+      set_env ("QT_QPA_PLATFORM", "xcb"); // todo : remove ?
     set_env ("XDG_SESSION_TYPE", "x11");
   }
 #endif

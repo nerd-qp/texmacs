@@ -21,7 +21,7 @@
 
 (tm-define db-encoding :default)
 
-(tm-define-macro (with-encoding enc . body)
+(define-public-macro (with-encoding enc . body)
   `(with-global db-encoding ,enc ,@body))
 
 (tm-define (db-reset)

@@ -212,7 +212,7 @@
 ;; Definition of keyboard shortcuts
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(define (kbd-add-condition conds opt)
+(define-public (kbd-add-condition conds opt)
   ;;(display* "Add condition " opt "\n")
   (cond ((== (car opt) :mode)
          (ctx-add-condition conds 0 (cadr opt)))
@@ -221,16 +221,19 @@
 	(else (texmacs-error "kbd-add-condition"
 			     "Bad keyboard option ~S" opt))))
 
-(define (kbd-map-one conds l)
+(define-public (kbd-map-one conds l)
   (if (not (and (pair? l) (string? (car l)) (pair? (cdr l))))
       (texmacs-error "kbd-map-pre-one" "Bad keymap in: ~S" l))
   (with (key action . opt) l
     (if (string? action)
 	(with help (if (null? opt) "" (car opt))
 	  `(kbd-binding (list ,@conds) ,key ,action ,help))
-	`(kbd-binding (list ,@conds) ,key (lambda () ,action ,@opt) ""))))
+	`(kbd-binding (list ,@conds) ,key
+		      (source-record! (lambda () ,action ,@opt)
+				      ',(cons* 'lambda '() action opt))
+		      ""))))
 
-(define (kbd-map-body conds l)
+(define-public (kbd-map-body conds l)
   (cond ((null? l) '())
 	((symbol? (car l))
 	 (kbd-map-body (list 0 (car l)) (cdr l)))
@@ -245,10 +248,10 @@
   (:synopsis "Add entries in @l to the keyboard mapping")
   `(begin ,@(kbd-map-body '() l)))
 
-(define (kbd-remove-one conds key)
+(define-public (kbd-remove-one conds key)
   `(kbd-delete-key-binding2 (list ,@conds) ,key))
 
-(define (kbd-remove-body conds l)
+(define-public (kbd-remove-body conds l)
   (cond ((null? l) '())
 	((symbol? (car l))
 	 (kbd-remove-body (list 0 (car l)) (cdr l)))

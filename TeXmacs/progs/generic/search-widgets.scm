@@ -203,11 +203,14 @@
     (if (nnull? sel) (car sel)
         (if forward? (cursor-path) (cursor-path*)))))
 
-(define (search-next sels cur strict?)
+;; Internal navigation helpers for search-hit selection lists.
+;; Renamed to *-internal to avoid colliding with zero-argument interactive
+;; keyboard commands `search-next` and `search-previous` imported from `generic-edit`.
+(define (search-next-internal sels cur strict?)
   (with sel (next-search-hit sels cur strict?)
     (and (nnull? sel) sel)))
 
-(define (search-previous sels cur strict?)
+(define (search-previous-internal sels cur strict?)
   (with sel (previous-search-hit sels cur strict?)
     (and (nnull? sel) sel)))
 
@@ -394,7 +397,8 @@
   (let* ((sels (get-alt-selection "alternate"))
          (cur (get-search-reference #t)))
     (and (nnull? sels)
-         (and-with sel (search-next sels cur #f)
+         ;; Use internal helper (not zero-arg interactive command search-next)
+         (and-with sel (search-next-internal sels cur #f)
            (go-to* (car sel))
            (selection-set-range-set sel)
            (with by* (tm->tree (adjust-by by (search-tree) (selection-tree)))

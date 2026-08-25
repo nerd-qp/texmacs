@@ -15,7 +15,7 @@
 
 ;; Low-level API
 (define-public (state-create slotlist)
-;; slotlist === ((<SLOT-DESCR>*) (<PROP-DESCR>*) (<COMPILED-PROP>*))
+;; slotlist === ((<SLOT-DESCR>*) (<PROP-DESCR>*) (<COMPILED-PROP>*) (<SETTERS>*) (<GETTERS>*))
   slotlist)
 
 (define (state-slots sr)
@@ -27,35 +27,21 @@
 (define (state-cprops sr)
   (caddr sr))
 
-(define (slotlist-load l)
- ;(display* "load=" l "\n")
-  (for (e l)
-     (eval
-        `(begin
-           (if (not (defined? ',(car e)))
-               (define-public ,(car e) #f))
-           (set! ,(car e)
-                 ,(with val (cadr e)
-                     (if (and (pair? val) (eq? (car val) 'quote))
-                         val
-                        `(quote ,(eval val)))))))))
+(define (state-csetters sr)
+  (list-ref sr 3))
+
+(define (state-cgetters sr)
+  (list-ref sr 4))
+
+(define (slotlist-load l setters)
+  (for-each (lambda (e set-val!) (set-val! (cadr e))) l setters))
 
 (define (proplist-load l funcs b)
- ;(display* "load[props]=" l "\n")
-  (for (e l)
-     (if (not (defined? `,(car e)))
-         (eval `(define-public ,(car e) #f))))
   (if b
-      (for (f funcs)
-         (f))))
+      (for-each (lambda (f) (f)) funcs)))
 
-(define (slotlist-save l)
-  (for (e l)
-     (set-car! (cdr e) `(quote ,(eval (car e)))))
- ;(display* "save=" l "\n")
- ;(for (e l)
- ;   (eval `(undefine ,(car e))))
-)
+(define (slotlist-save l getters)
+  (for-each (lambda (e get-val) (set-car! (cdr e) (get-val))) l getters))
 
 ;; User-level API
 (define current-state #f)
@@ -66,21 +52,18 @@
     (state-save old-current)))
   
 (define-public (state-load sr . opt)
- ;(display* "sl=" sr "\n")
   (if sr
       (begin
         (if (not (eq? sr current-state))
             (begin
               (state-synchronize)
-              (slotlist-load (state-slots sr))))
+              (slotlist-load (state-slots sr) (state-csetters sr))))
         (proplist-load (state-props sr) (state-cprops sr) (null? opt))
         (set! current-state sr))))
 
 (define-public (state-save sr)
   (if (and sr (not (eq? sr current-state)))
-      (slotlist-save (state-slots sr)))
- ;(display* "ss=" sr "\n")
-  )
+      (slotlist-save (state-slots sr) (state-cgetters sr))))
 
 (define (state-slotnames sr)
   (map car (state-slots sr)))
@@ -128,17 +111,24 @@
 ;; slotlists === ((slots ((<NAME-SLOT1> <INIT1>) ... (<NAME-SLOTN> <INITN>)))
 ;;                (props ((<NAME-PROP1> <PROP1>) ... (<NAME-PROPN> <PROPN>))))
   (let* ((theslots (copy-tree slotlists))
-         (slots (cadr (car theslots)))
-         (props (cadr (cadr theslots))))
+         (slots-clause (assoc 'slots theslots))
+         (props-clause (assoc 'props theslots))
+         (raw-slots (if (and slots-clause (pair? (cdr slots-clause))) (cadr slots-clause) '()))
+         (props (if (and props-clause (pair? (cdr props-clause))) (cadr props-clause) '()))
+         (cprops   (map (lambda (x) `(lambda () (set! ,(car x) ,(cadr x)))) props))
+         (csetters (map (lambda (x) `(lambda (val) (set! ,(car x) val))) raw-slots))
+         (cgetters (map (lambda (x) `(lambda () ,(car x))) raw-slots))
+         (cslots   (map (lambda (s) `(list ',(car s) ,(cadr s))) raw-slots)))
     `(begin
-        (if (not (defined? ',name))
-            (define-public ,name #f))
-        (with cprops #f
-          (set! cprops (map (lambda (x)
-                               (eval
-                                  `(lambda () (set! ,(car x) ,(cadr x)))))
-                           ',props))
-          (set! ,name (state-create (append '(,slots ,props) `(,cprops))))))))
+       ,@(map (lambda (s) `(define-public ,(car s) ,(cadr s))) raw-slots)
+       ,@(map (lambda (p) `(define-public ,(car p) #f)) props)
+       (define-public ,name
+         (state-create
+           (list (list ,@cslots)
+                 ',props
+                 (list ,@cprops)
+                 (list ,@csetters)
+                 (list ,@cgetters)))))))
 
 (define-public-macro (with-state sr . body)
  `(begin

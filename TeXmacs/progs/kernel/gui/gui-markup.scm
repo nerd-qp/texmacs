@@ -268,7 +268,7 @@
 ; Temporary hack:
 (tm-define all-translations (make-ahash-table))
 
-(define (process-translate x)
+(define-public (process-translate x)
   (if (or (func? x 'concat) (func? x 'verbatim) (func? x 'replace))
       `(list ',(car x) ,@(map process-translate (cdr x)))
       x))
@@ -289,7 +289,8 @@
   (:synopsis "Make button")
   (if developer-mode?
     (ahash-set! all-translations text #t))
-  `(list ,text (lambda () ,@cmds)))
+  `(list ,text (source-record! (lambda () ,@cmds)
+                               ',(cons* 'lambda '() cmds))))
 
 (tm-define-macro ($check text check pred?)
   (:synopsis "Make check")
@@ -331,7 +332,9 @@
   (:synopsis "Make a menu symbol")
   (if (null? l)
       `(list 'symbol ,sym)
-      `(list 'symbol ,sym (lambda () ,(car l)))))
+      `(list 'symbol ,sym
+             (source-record! (lambda () ,(car l))
+                             ',(list 'lambda '() (car l))))))
 
 (tm-define-macro ($menu-group text)
   (:synopsis "Make a menu group")

@@ -68,17 +68,17 @@
 		   (set! current-edge-sel? (and sel (== (length sel) 2)))))))))
 
 ;; State stack (1)
-(tm-define state-slots
+(define state-slots
   `(quote ,(state-names graphics-state)))
 
-(define-public-macro (state-len)
-  `(length ,state-slots))
+(define-module-macro (state-len) (state-slots)
+  `(length state-slots))
 
 (tm-define (new-state)
   (make-vector (state-len)))
 
-(define-public-macro (state-slot-ref i)
-  `(- (length (memq ,i ,state-slots)) 1))
+(define-module-macro (state-slot-ref i) (state-slots)
+  `(- (length (memq ,i state-slots)) 1))
 
 (define-public-macro (state-ref st var)
   `(vector-ref ,st (state-slot-ref ,var)))

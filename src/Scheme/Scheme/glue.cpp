@@ -519,8 +519,9 @@ path_to_tmscm (path p) {
 path
 tmscm_to_path (tmscm p) {
   if (tmscm_is_null (p)) return path ();
-  else return path ((int) tmscm_to_int (tmscm_car (p)), 
-                          tmscm_to_path (tmscm_cdr (p)));
+  if (!tmscm_is_pair (p) || !tmscm_is_int (tmscm_car (p))) return path ();
+  return path ((int) tmscm_to_int (tmscm_car (p)), 
+                      tmscm_to_path (tmscm_cdr (p)));
 }
 
 
@@ -652,6 +653,8 @@ tmscm_to_url (tmscm obj) {
 #else
   return tmscm_to_string (obj);
 #endif
+  if (!tmscm_is_blackbox (obj) || (type_box (tmscm_to_blackbox (obj)) != type_helper<url>::id))
+    return url_none ();
   return open_box<url> (tmscm_to_blackbox (obj));
 }
 

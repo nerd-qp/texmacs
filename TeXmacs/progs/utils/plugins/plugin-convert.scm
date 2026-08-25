@@ -240,18 +240,23 @@
 
 (define lazy-input-converter-table (make-ahash-table))
 
-(tm-define-macro (lazy-input-converter module plugin)
-  (lazy-input-converter-force plugin)
-  (ahash-set! lazy-input-converter-table plugin module)
-  '(noop))
-
-(define (lazy-input-converter-force plugin2)
+;; NOTE: must be public — the `lazy-input-converter' / `plugin-input-converters'
+;; transformer bodies are dispatched via dynamic eval in the interaction
+;; environment, where module-private defines are invisible.  Guile's defmacro
+;; eval'd in the defining module's environment; the port's equivalent of
+;; "visible to the dispatcher" is publishing to the global table.
+(define-public (lazy-input-converter-force plugin2)
   (with plugin (if (string? plugin2) (string->symbol plugin2) plugin2)
     (with module (ahash-ref lazy-input-converter-table plugin)
       (if module
           (begin
             (ahash-remove! lazy-input-converter-table plugin)
             (module-load module))))))
+
+(tm-define-macro (lazy-input-converter module plugin)
+  (lazy-input-converter-force plugin)
+  (ahash-set! lazy-input-converter-table plugin module)
+  '(noop))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Initialization subroutines

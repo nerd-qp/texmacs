@@ -14,6 +14,7 @@
 (texmacs-module (text text-menu)
   (:use (text text-edit)
         (text text-structure)
+        (generic generic-menu)
         (generic document-menu)
         (generic document-style)))
 

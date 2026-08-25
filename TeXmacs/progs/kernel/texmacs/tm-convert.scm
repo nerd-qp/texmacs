@@ -102,24 +102,31 @@
          (list (car cmd) (list 'unquote `(lambda () ,(cadr cmd)))))
         (else cmd)))
 
-(define-public-macro (converter from* to* . options)
+(define-module-macro (converter from* to* . options)
+  (converter-cmd converter-set-penalty converter-remove converter-distance converter-path)
   "Declare a converter between @from@ and @to* according to @options"
   (let* ((from (if (string? from*) from* (symbol->string from*)))
-         (to (if (string? to*) to* (symbol->string to*))))
-    (set! converter-distance (make-ahash-table))
-    (set! converter-path (make-ahash-table))
-;; NEW if (:required) clause present but not fulfilled do nothing
-;; this enables to define several possible implementations of a given converter
-;; not presuming on the availability of external tools : the last valid one is retained
-;; (previously the last defined -even if unavailable- erased whatever was already defined)
+         (to   (if (string? to*) to* (symbol->string to*)))
+         (body `(begin
+                  (set! converter-distance (make-ahash-table))
+                  (set! converter-path (make-ahash-table))
+                  (converter-set-penalty ,from ,to 1.0)
+                  (for-each (lambda (x) (converter-cmd ,from ,to x))
+                     ,(list 'quasiquote (map converter-sub options))))))
+    ;; NEW if (:required) clause present but not fulfilled do nothing
+    ;; this enables to define several possible implementations of a given converter
+    ;; not presuming on the availability of external tools : the last valid one is retained
+    ;; (previously the last defined -even if unavailable- erased whatever was already defined)
     (cond ((and (in? (car (first options)) '(:penalty)) 
-            (in? (car (second options)) '(:require)) 
-            (not (eval (second (second options))))) (noop))
-          ((and (in? (car (first options)) '(:require)) 
-            (not (eval (second (first options))))) (noop))
-          (else (converter-set-penalty from to 1.0) 
-             `(for-each (lambda (x) (converter-cmd ,from ,to x))
-                 ,(list 'quasiquote (map converter-sub options)))))))
+                (in? (car (second options)) '(:require)))
+           `(if (not ,(second (second options)))
+                (noop)
+                ,body))
+          ((in? (car (first options)) '(:require))
+           `(if (not ,(second (first options)))
+                (noop)
+                ,body))
+          (else body))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Special converters
@@ -436,7 +443,7 @@
 
 (define-public (format-skip-line s pos)
   (cond ((>= pos (string-length s)) pos)
-        ((in? (string-ref s pos) '(#\newline #\cr)) (+ pos 1))
+        ((in? (string-ref s pos) '(#\newline #\return)) (+ pos 1))
         (else (format-skip-line s (+ pos 1)))))
 
 (define-public (format-test? s pos what)

@@ -13,7 +13,8 @@
 
 (texmacs-module (security gpg gpg-base)
   (:use (utils base environment))
-  (:use (database db-users)))
+  (:use (database db-users))
+  (:use (database db-format)))
 
 ;(display "TeXmacs] Loading GnuPG base support (http://www.gnupg.org)\n")
 
@@ -163,7 +164,7 @@
 ;; Collected keys
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(define gpg-collected-public-keys-url
+(tm-define gpg-collected-public-keys-url
   (url-append (gpg-homedir) "collected-public-keys.scm"))
 
 (tm-define (gpg-collected-public-keys)

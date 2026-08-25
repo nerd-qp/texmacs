@@ -154,12 +154,11 @@
     (ahash-set! h (car binding) (cdr binding)))
   (for-each insert l))
 
+;; A macro that generates only expressions.
 (define-public-macro (define-table name . l)
   `(begin
      (when (not (defined? ',name))
-       (if (defined? 'tm-define)
-           (tm-define ,name (make-ahash-table))
-           (define-public ,name (make-ahash-table))))
+       (tm-define ,name (make-ahash-table)))
      (define-table-decls ,name ,(list 'quasiquote l))))
 
 (define-public-macro (extend-table name . l)
@@ -173,9 +172,7 @@
 (define-public-macro (define-collection name . l)
   `(begin
      (when (not (defined? ',name))
-       (if (defined? 'tm-define)
-           (tm-define ,name (make-ahash-table))
-           (define-public ,name (make-ahash-table))))
+       (tm-define ,name (make-ahash-table)))
      (define-collection-decls ,name ,(list 'quasiquote l))))
 
 (define-public-macro (extend-collection name . l)

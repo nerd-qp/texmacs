@@ -31,19 +31,28 @@
 		    (if l (append-map group-resolve-one l) '()))))
   (ahash-ref group-resolve-table which))
 
+;; In Chez Scheme ahead-of-time module compilation, macro expansion happens
+;; during compile-file. If group-table inspection and mutation occur at macro
+;; expansion time, eagerly evaluated forms would leave entries in group-table,
+;; causing compile-file to take the `old` branch and omit defining the
+;; *-list, *?, and inside-*? procedures in the compiled .so.
+;; Emitting the `group-resolve-table` reset and `group-table` branch into the
+;; macro expansion ensures table updates and procedure definitions execute
+;; at module load/runtime rather than macro-expand time.
 (tm-define-macro (define-group group . l)
-  (set! group-resolve-table (make-ahash-table))
-  (with old (ahash-ref group-table group)
-    (if old
-	`(ahash-set! group-table ',group (append ',old ',l))
-	`(begin
-	   (ahash-set! group-table ',group ',l)
-	   (tm-define (,(symbol-append group '-list))
-	     (group-resolve ',group))
-	   (tm-define (,(symbol-append group '?) lab)
-	     (in? lab (group-resolve ',group)))
-	   (tm-define (,(symbol-append 'inside- group '?))
-	     (not (not (inside-which (group-resolve ',group)))))))))
+  `(begin
+     (set! group-resolve-table (make-ahash-table))
+     (with old (ahash-ref group-table ',group)
+       (if old
+           (ahash-set! group-table ',group (append old ',l))
+           (begin
+             (ahash-set! group-table ',group ',l)
+             (tm-define (,(symbol-append group '-list))
+               (group-resolve ',group))
+             (tm-define (,(symbol-append group '?) lab)
+               (in? lab (group-resolve ',group)))
+             (tm-define (,(symbol-append 'inside- group '?))
+               (not (not (inside-which (group-resolve ',group))))))))))
 
 (tm-define (group-find which group)
   (:synopsis "Find subgroup of @group which contains @which")

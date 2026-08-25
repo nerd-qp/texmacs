@@ -219,7 +219,11 @@
            (widget-xpm (cadr p)))
           ((tuple? p 'color 5)          ; (color col hext? vext? minw minh)
            (widget-color (second p) (third p) (fourth p)
-                         (* (fifth p) 256) (* (sixth p) 256))))))
+                         (* (fifth p) 256) (* (sixth p) 256)))
+          ((or (not p) (void? p))
+           (widget-text "" style col #t))
+          (else
+           (widget-text (if (string? p) p (object->string p)) style col #t)))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Elementary menu items
@@ -403,7 +407,8 @@
   "Helper routines for menu-widget and kbd-define"
   (and (procedure? action)
        (with source (procedure-source action)
-         (and (== (car source) 'lambda)
+         (and (pair? source)
+              (== (car source) 'lambda)
               (== (cadr source) '())
               (null? (cdddr source))
               (caddr source)))))
@@ -815,7 +820,7 @@
             (else
              (make-menu-items-list p style bar?)))
       (cond ((== p '---) (list (make-menu-hsep)))
-            ((== p '|) (list (make-menu-vsep))) ;; '|
+            ((== p (string->symbol "|")) (list (make-menu-vsep))) ;; '|
             ((== p '()) p)
             (else (list (make-menu-bad-format p style))))))
 
@@ -1113,7 +1118,7 @@
 
 (define-table menu-expand-table
   (--- ,(lambda (p) `(--- ,@(menu-expand-list (cdr p)))))
-  (| ,(lambda (p) `(| ,@(menu-expand-list (cdr p)))))
+  ((string->symbol "|") ,(lambda (p) `(,(string->symbol "|") ,@(menu-expand-list (cdr p)))))
   (group ,replace-procedures)
   (text ,replace-procedures)
   (invisible ,replace-procedures)
@@ -1439,7 +1444,7 @@
 
 (tm-define (update-bottom-tools . opt-win)
   (show-bottom-tools 0 (apply has-bottom-tools? opt-win))
-  (when (not (extra-bottom-tools?))
+  (when (and (current-view) (not (extra-bottom-tools?)))
     (keyboard-focus-on "canvas")))
 
 (tm-define (set-window-tools win pos l)

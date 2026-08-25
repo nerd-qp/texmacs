@@ -38,6 +38,9 @@ void reset_inclusions ();
 extern string printing_dpi;
 extern string printing_on;
 extern int nr_windows;
+#ifdef TEXMACS_ENGINE_CHEZ
+bool chez_has_boot ();
+#endif
 
 #ifdef QTTEXMACS
 void del_obj_qt_renderer(void);
@@ -135,11 +138,22 @@ tm_server_rep::tm_server_rep ()
   gui_interpose (texmacs_interpose_handler);
   set_wait_handler (texmacs_wait_handler);
   if (is_none (tm_init_file))
+#ifdef TEXMACS_ENGINE_CHEZ
+    /* Chez lacks Guile's built-in module system, so a dialect-specific
+       bootstrap provides the missing builtins before the standard
+       initialization runs (mirrors the s7 branch's init-texmacs-s7.scm). */
+    tm_init_file= "$TEXMACS_PATH/progs/init-texmacs-chez.scm";
+#else
     tm_init_file= "$TEXMACS_PATH/progs/init-texmacs.scm";
+#endif
   if (is_none (my_init_file))
     my_init_file= "$TEXMACS_HOME_PATH/progs/my-init-texmacs.scm";
   bench_start ("initialize scheme");
+#ifdef TEXMACS_ENGINE_CHEZ
   if (exists (tm_init_file)) exec_file (tm_init_file);
+#else
+  if (exists (tm_init_file)) exec_file (tm_init_file);
+#endif
   if (exists (my_init_file)) exec_file (my_init_file);
   bench_cumul ("initialize scheme");
   if (my_init_cmds != "") {

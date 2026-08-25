@@ -88,6 +88,9 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Copied from guile-1.6.0. Author: Martin Grabmueller
 
+;; Chez Scheme provides native, high-performance R6RS case-lambda syntax.
+;; Retain Chez Scheme's native implementation instead of the macro emulator.
+#;
 (define-public-macro (case-lambda . clauses)
 
   ;; Return the length of the list @var{l}, but allow dotted list.

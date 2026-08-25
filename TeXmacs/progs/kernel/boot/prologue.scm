@@ -20,22 +20,37 @@
 
 (define module-loaded-table (make-ahash-table))
 
-(define-public (list->module module)
+(define-public (module->url module)
   (let* ((aux (lambda (s) (string-append "/" (symbol->string s))))
 	 (name* (apply string-append (map aux module)))
 	 (name (substring name* 1 (string-length name*)))
 	 (u (url-unix "$GUILE_LOAD_PATH" (string-append name ".scm")))
 	 ;; FIXME: should use %load-path instead of $GUILE_LOAD_PATH
 	 )
-    (url-materialize u "r")))
+    u))
 
-(define-public (module-load module*)
-  (if (list? module*)
-      (let* ((module (list->module module*))
-	     (loaded (ahash-ref module-loaded-table module)))
-	(ahash-set! module-loaded-table module #t)
-	;;(if (not loaded) (display* "TeXmacs] Loading module " module* "\n"))
-	(if (not loaded) (load-module module)))))
+(define-public (list->module module)
+  (url-materialize (module->url module) "r"))
+
+;; In Chez Scheme, module-load is defined globally in boot-chez.scm
+;; during bootstrap and is accessible in (interaction-environment).
+;(define-public (module-load which)
+;  (when (and (list? which)
+;             (not (module-loaded? which))
+;             (not (ahash-ref *module-loading-stack* which)))
+;    (ahash-set! *module-loading-stack* which #t)
+;    (for-each module-load (module-dependencies which))
+;    (ahash-remove! *module-loading-stack* which)
+;    (ahash-set! *texmacs-modules-loaded* which #t)
+;    (let ((so (module-so-file which)))
+;      (if so
+;          (begin
+;            (primitive-load so)
+;            (guard (e (else #f))
+;              (eval `(import ,(module-spec->symbol which)) (interaction-environment))))
+;          (let ((fname (module-file-name which)))
+;            (when (file-exists? fname)
+;              (tm-load-file fname)))))))
 
 ;; FIXME: why does this not work?
 ;(define-public (module-load name)

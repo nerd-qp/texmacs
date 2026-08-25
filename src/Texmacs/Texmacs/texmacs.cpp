@@ -30,6 +30,7 @@
 #include "data_cache.hpp"
 #include "tm_window.hpp"
 #include "client_server.hpp"
+#include "scheme.hpp"
 
 #ifdef AQUATEXMACS
 void mac_fix_paths ();
@@ -69,6 +70,8 @@ bool open_mode= false;
 string open_mode_url;
 bool tls_no_verify= false;
 string extra_init_cmd;
+bool compile_modules_mode= false;
+string compile_modules_script= "";
 bool exec_exit= true;
 void server_start ();
 
@@ -441,6 +444,9 @@ set_global_options  (int argc, char** argv)  {
                (s == "-delete-server-data") || (s == "-delete-databases") ||
 	       (s == "-headless") || (s == "-H") || s == "-open");
       else if (s == "-tls-no-verify") tls_no_verify= true;
+      else if (s == "-compile-modules" || s == "-recompile-modules") {
+        if (i + 1 < argc && argv[i + 1][0] != '-') i++;
+      }
       else if (s == "-build-manual") {
         if ((++i)<argc)
           extra_init_cmd << "(build-manual "
@@ -567,7 +573,19 @@ TeXmacs_main (int argc, char** argv) {
   
   { // opening scope for server sv
     if (DEBUG_STD) debug_boot << "Starting server...\n";
+    time_t t_srv_start = texmacs_time ();
     server sv;
+    fprintf (stderr, "TIME-SERVER-INIT: %ld ms\n", texmacs_time () - t_srv_start);
+    fflush (stderr);
+
+
+    if (compile_modules_mode) {
+      url script= "$TEXMACS_PATH/../src/Scheme/Chez/compile_kernel.scm";
+      if (compile_modules_script != "") script = url (compile_modules_script);
+      cout << "TeXmacs] Executing module compiler: " << concretize (script) << LF;
+      exec_file (script);
+      exit (0);
+    }
   
     // append commands to open standard welcome messages if needed
     if (install_status == 1) {
@@ -589,7 +607,10 @@ TeXmacs_main (int argc, char** argv) {
       //FIMXE: the above test is always true since there is no window open yet
       // maybe just remove the test
       if (DEBUG_STD) debug_boot << "Creating 'no name' buffer...\n";
+      time_t t_win_start = texmacs_time ();
       open_window ();
+      fprintf (stderr, "TIME-OPEN-WINDOW: %ld ms\n", texmacs_time () - t_win_start);
+      fflush (stderr);
     }
     extra_init_cmd << "(delayed (:idle 500) (keyboard-focus-on \"canvas\"))"; 
     bench_print ();
@@ -618,6 +639,8 @@ TeXmacs_main (int argc, char** argv) {
     
     // inject scheme commands 
     if (N(extra_init_cmd) > 0) exec_delayed (scheme_cmd (extra_init_cmd));
+    fprintf (stderr, "TIME-PRE-GUI-LOOP: %ld ms\n", texmacs_time () - t_srv_start);
+    fflush (stderr);
     gui_start_loop ();
   
     if (DEBUG_STD) debug_boot << "Stopping server...\n";
@@ -748,6 +771,21 @@ immediate_options (int argc, char** argv) {
 	     s == "-update-website" || s == "-U")
       headless_mode= true;
 #endif
+    else if (s == "-compile-modules") {
+      headless_mode= true;
+      compile_modules_mode= true;
+      if (i + 1 < argc && argv[i + 1][0] != '-') {
+        compile_modules_script = argv[++i];
+      }
+    }
+    else if (s == "-recompile-modules") {
+      headless_mode= true;
+      compile_modules_mode= true;
+      setenv ("TEXMACS_RECOMPILE_ALL", "1", 1);
+      if (i + 1 < argc && argv[i + 1][0] != '-') {
+        compile_modules_script = argv[++i];
+      }
+    }
     else if (s == "-log-file" && i + 1 < argc) {
       i++;
       char* log_file = argv[i];

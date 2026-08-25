@@ -1220,19 +1220,25 @@ command_queue::~command_queue() { clear_pending(); /* implicit */ }
 
 void
 command_queue::exec (object cmd) {
+  fprintf (stderr, "EXEC_QUEUE add exec: %p\n", (void*) cmd.rep);
+  fflush (stderr);
   q << cmd;
   start_times << (((time_t) texmacs_time ()) - 1000000000);
   lapse = texmacs_time();
-  the_gui->need_update();
+  // Guard the_gui update when running in headless mode or batch compile mode without active GUI instance
+  if (the_gui) the_gui->need_update();
   wait= true;
 }
 
 void
 command_queue::exec_pause (object cmd) {
+  fprintf (stderr, "EXEC_QUEUE add exec_pause: %p\n", (void*) cmd.rep);
+  fflush (stderr);
   q << cmd;
   start_times << ((time_t) texmacs_time ());
   lapse = texmacs_time();
-  the_gui->need_update();
+  // Guard the_gui update when running in headless mode or batch compile mode without active GUI instance
+  if (the_gui) the_gui->need_update();
   wait= true;
 }
 
@@ -1243,10 +1249,18 @@ command_queue::exec_pending () {
   q = array<object> (0);
   start_times = array<time_t> (0);
   int i, n = N(a);
+  fprintf (stderr, "EXEC_PENDING begin total=%d\n", n);
+  fflush (stderr);
   for (i = 0; i<n; i++) {
     time_t now =  texmacs_time ();
     if ((now - b[i]) >= 0) {
+      time_t t_item_start = texmacs_time ();
       object obj = call (a[i]);
+      time_t t_item_dt = texmacs_time () - t_item_start;
+      if (t_item_dt >= 50) {
+        fprintf (stderr, "EXEC_PENDING SLOW item %d/%d took %ld ms\n", i, n, t_item_dt);
+        fflush (stderr);
+      }
       if (is_int (obj) && (now - b[i] < 1000000000)) {
         time_t pause = as_int (obj);
           //cout << "pause = " << obj << "\n";
@@ -1288,13 +1302,13 @@ command_queue::must_wait (time_t now) const {
  ******************************************************************************/
 
 void exec_delayed (object cmd) {
-  the_gui->delayed_commands.exec(cmd);
+  if (the_gui) the_gui->delayed_commands.exec(cmd);
 }
 void exec_delayed_pause (object cmd) {
-  the_gui->delayed_commands.exec_pause(cmd);
+  if (the_gui) the_gui->delayed_commands.exec_pause(cmd);
 }
 void clear_pending_commands () {
-  the_gui->delayed_commands.clear_pending();
+  if (the_gui) the_gui->delayed_commands.clear_pending();
 }
 
 

@@ -32,22 +32,25 @@
            (deps* (map list (map texmacs-mode-pred deps)))
            (l (if (== action #t) deps* (cons action deps*)))
            (test (if (null? l) #t (if (null? (cdr l)) (car l) (cons 'and l))))
-           (defn `(define-public (,pred) ,test))
+           (defn (if (== mode 'always%)
+                     `(define ,(fresh-tm-dummy) (void))
+                     `(define-public (,pred) ,test)))
            (rules (map (lambda (dep) (list dep mode)) deps))
            (logic-cmd `(logic-rules ,@rules))
            (arch1 `(set-symbol-procedure! ',mode ,pred))
-           (arch2 `(set-symbol-procedure! ',pred ,pred)))
-      (if (== mode 'always%) (set! defn '(noop)))
-      (if (null? deps)
-          (list 'begin defn arch1 arch2)
-          (list 'begin defn arch1 arch2 logic-cmd)))))
+           (arch2 `(set-symbol-procedure! ',pred ,pred))
+           (side-effects
+             `(define ,(fresh-tm-dummy)
+                (begin
+                  ,arch1
+                  ,arch2
+                  ,@(if (null? deps) '() (list logic-cmd))
+                  (void)))))
+      (list 'begin defn side-effects))))
 
 (define-public-macro (texmacs-modes . l)
   `(begin
-     (set! temp-module ,(current-module))
-     (set-current-module texmacs-user)
-     ,@(map texmacs-mode l)
-     (set-current-module temp-module)))
+     ,@(map texmacs-mode l)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Checking modes
@@ -307,6 +310,8 @@
   (in-cyrillic-jcuken% (cyrillic-input-method? "jcuken") in-cyrillic%)
   (in-cyrillic-translit% (cyrillic-input-method? "translit") in-cyrillic%)
   (in-cyrillic-yawerty% (cyrillic-input-method? "yawerty") in-cyrillic%)
+  (in-cyrillic-koi8% (cyrillic-input-method? "koi8") in-cyrillic%)
+  (in-cyrillic-cp1251% (cyrillic-input-method? "cp1251") in-cyrillic%)
   (in-math-like-macos% #t in-math% like-macos%))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

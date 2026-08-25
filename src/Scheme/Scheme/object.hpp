@@ -14,8 +14,7 @@
 
 
 #include "scheme.hpp" // interface to texmacs
-//#include "../Tiny/tinytmscm_tm.hpp" // interface to TinyScheme
-#include "../Guile/guile_tm.hpp" // interface to guile
+#include "scheme_engine.hpp" // engine implementation (Guile or Chez)
 
 
 

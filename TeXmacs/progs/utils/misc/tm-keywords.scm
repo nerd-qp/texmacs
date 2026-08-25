@@ -13,16 +13,27 @@
 
 (texmacs-module (utils misc tm-keywords))
 
-(define kws (string-load (unix->url "$TEXMACS_PATH/progs/tm-mode.el")))
-(define kwo (string->object (string-append "(" kws ")")))
+(define-syntax include-tm-mode-keywords
+  (lambda (stx)
+    (let* ((progs-dir (cond ((getenv "TEXMACS_PATH") (string-append (getenv "TEXMACS_PATH") "/progs"))
+                            ((file-exists? "TeXmacs/progs") "TeXmacs/progs")
+                            (else "TeXmacs/progs")))
+           (el-file (string-append progs-dir "/tm-mode.el"))
+           (kws (if (file-exists? el-file)
+                    (with-input-from-file el-file
+                      (lambda ()
+                        (let loop ((acc '()))
+                          (let ((x (read)))
+                            (if (eof-object? x) (reverse acc) (loop (cons x acc)))))))
+                    '()))
+           (defs (let loop ((l kws))
+                   (cond ((null? l) '())
+                         ((and (pair? (car l)) (eq? (caar l) 'setq))
+                          (cons (cons 'define-public (cdar l)) (loop (cdr l))))
+                         (else (loop (cdr l)))))))
+      (datum->syntax (car (syntax->list stx)) (cons 'begin defs)))))
 
-(define (kw-transform l)
-  (cond ((null? l) l)
-	((func? (car l) 'setq)
-	 (cons (cons 'tm-define (cdar l)) (kw-transform (cdr l))))
-	(else (kw-transform (cdr l)))))
-
-(eval (cons 'begin (kw-transform kwo)))
+(include-tm-mode-keywords)
 
 (define indent-arity-table (make-ahash-table))
 

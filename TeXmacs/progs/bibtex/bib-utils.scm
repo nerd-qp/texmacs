@@ -78,13 +78,19 @@
         "tm-ieeetr" "tm-siam" "tm-unsrt"))
 
 (tm-define-macro (bib-define-style s d)
+  ;; In Chez Scheme R6RS `(module ...)`, definitions and exports emitted by `texmacs-modes`
+  ;; cannot follow expressions. The top-level `(set! bib-default-style ...)` expression
+  ;; inside this macro closed the definition phase prematurely, triggering
+  ;; "invalid context for definition" errors when compiling style modules.
+  ;; Furthermore, `bib-default-style` is already initialized to "plain" by default (line 22),
+  ;; and mutating it globally on module load is redundant and fragile across styles.
   (if (equal? s d)
       `(begin
-	 (set! bib-default-style ,s)
+	 ;; (set! bib-default-style ,s)
 	 (texmacs-modes (,(string->symbol (string-append "bib-" s "%"))
 			 (bib-mode? ,s))))
       `(begin
-	 (set! bib-default-style ,d)
+	 ;; (set! bib-default-style ,d)
 	 (texmacs-modes (,(string->symbol (string-append "bib-" s "%"))
 			 (bib-mode? ,s)
 			 ,(string->symbol (string-append "bib-" d "%")))))))
@@ -107,7 +113,7 @@
     ((tm-func? x 'with) (bib-null? (tm-ref x :last)))
     ((list? x) (equal? x `()))
     ((string? x) (equal? x ""))
-    ((symbol? x) (equal? x '#{}#))
+    ((symbol? x) (equal? x '||))
     (else #f)))
 
 (tm-define (bib-simplify x)

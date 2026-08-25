@@ -20,7 +20,7 @@
 
 (tm-define db-current-user #t)
 
-(tm-define-macro (with-user uid . body)
+(define-public-macro (with-user uid . body)
   `(with-global db-current-user ,uid ,@body))
 
 (tm-define (db-reset)

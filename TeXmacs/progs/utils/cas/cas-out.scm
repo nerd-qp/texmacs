@@ -80,7 +80,7 @@
    (lambda (x) (append-map tmsymbol->cas (math-group-members x)))
    grs))
 
-(define-macro (cas-define-test name . grs)
+(define-macro-trace (cas-define-test name . grs)
   (let* ((t (symbol-append name '-table))
 	 (p (symbol-append name '?)))
     `(begin
@@ -120,7 +120,8 @@
     cas-prefix-op-table
     (list->ahash-set '(%prime factorial ^ _ %dotaccess %sqaccess))
     (list->ahash-set '(quote quasiquote eval))
-    (list->ahash-set '(matrix det bmatrix row tuple list set comma | ||))
+    (list->ahash-set (append '(matrix det bmatrix row tuple list set comma)
+                         (list (string->symbol "|") '||)))
     (list->ahash-set '(sqrt conj choose))))
 
 (define (cas-special-op? x)
@@ -311,7 +312,7 @@
   (cond ((null? l) '())
 	((list-1? l)
 	 (with x (car l)
-	   (cond ((func? x '|)
+	   (cond ((func? x (string->symbol "|"))
 		  (cons* (cas-out (cadr x)) '(mid "|")
 			 (cas-out-several (cddr x))))
 		 ((func? x '||)

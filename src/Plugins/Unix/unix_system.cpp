@@ -14,9 +14,11 @@
 
 #include <chrono>
 
+#ifndef TEXMACS_ENGINE_CHEZ
 #include "Guile/guile_tm.hpp"
 #ifdef SCM_HAVE_HOOKS
 #include "libguile/system.h"
+#endif
 #endif
 
 #ifdef QTTEXMACS
