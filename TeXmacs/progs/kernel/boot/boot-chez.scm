@@ -34,7 +34,7 @@
   (if (hashtable-contains? t k)
       (hashtable-ref t k #f)
       (if (null? default) #f (car default))))
-(define (hash-set! t k v) (hashtable-set! t k v))
+(define (hash-set! t k v) (hashtable-set! t k v) v)
 (define (hash-remove! t k) (hashtable-delete! t k))
 (define (hash-get-handle t k)
   (if (hashtable-contains? t k) (cons k (hashtable-ref t k #f)) #f))
