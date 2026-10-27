@@ -322,40 +322,19 @@
   (let* ((old (ahash-ref lazy-define-table name))
          (new (if old (cons module old) (list module))))
     (ahash-set! lazy-define-table name new))
-  ;; a local function that will broadcast and update to the correct function
-      ;; once called, and return the value also on first call.
-      ;; Since the function is a local function compiled, due to how chez
-      ;; compiles, need to call the updated global function inside body.
-  (if (not (defined? name))
-      `(define ,name
-	 (letrec
-	     ((installed? #f)
-	      (stub
-	       (lambda args
-		 (if installed?
-		     (apply (top-level-value ',name (interaction-environment)) args)
-		     (begin
-		       ;; load module, find the function, install to global space.
-		       (module-provide ',module)
-		       (let ((real-fn
-			      (top-level-value ',name (interaction-environment))))
-			 (if (eq? stub real-fn)
-			     (texmacs-error "lazy-define"
-					    ,(string-append "Could not retrieve "
-							    (symbol->string name)))
-			     (tm-define (,name . args)
-					,@opts
-					(apply real-fn args))))
-		       (let ((new-fn
-			      (top-level-value ',name (interaction-environment))))
-			 (unless (eq? stub new-fn)
-			   (set! installed? #t)
-			   (apply new-fn args))))))))
-	   stub))
-      `(define (,(string->symbol
-		  (string-append (symbol->string name) "-lazy-unused"))
-		 . args)
-	 (noop))))  
+  (with name-star (string->symbol (string-append (symbol->string name) "*"))
+    `(when (not (defined? ',name))
+       (tm-define (,name . args)
+         ,@opts
+         (let* ((old (and (defined? ',name) (top-level-value ',name (interaction-environment))))
+                (m (resolve-module ',module))
+                (r (and (defined? ',name) (top-level-value ',name (interaction-environment)))))
+           (if (or (not r) (eq? r old))
+               (texmacs-error "lazy-define"
+                              ,(string-append "Could not retrieve "
+                                              (symbol->string name))))
+           (apply r args))))))
+
 (define-public-macro (lazy-define module . names)
   (receive (opts real-names) (list-break names not-define-option?)
     `(begin

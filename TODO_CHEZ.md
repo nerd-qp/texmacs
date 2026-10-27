@@ -97,6 +97,38 @@ This document tracks identified architectural improvements and performance bottl
       ```
     - In contrast, Chez's `(module ...)` forms live in the lexical/interaction environment and cannot be resolved by `environment` (which raises `unknown module`), requiring `(eval `(import ...) (interaction-environment))` to dynamically load. Switching to `library` enables isolated, first-class runtime loading and eliminates `eval` overhead in dynamic stubs.
 
+- **Architectural Prerequisite & Circular Dependency Strategy**:
+  - **The R6RS Library Acyclic Invariant**:
+    - Standard R6RS strictly forbids circular dependencies between libraries (R6RS §7.1: *"A library definition must not import, directly or indirectly, the library being defined"*).
+    - TeXmacs upstream has mutual/cyclic dependencies between modules (particularly across menus, editors, and tools).
+    - **Strategy Decision**: To migrate to R6RS `(library ...)`, the codebase's module dependency graph must either be refactored to be strictly acyclic (DAG), OR we must retain the `(module ...)` architecture as-is.
+  - **Compile-Time Design (under `(module ...)` architecture)**:
+    - `compile_kernel.scm` detects cyclic dependencies during topological compilation:
+      - If module `A` declares a dependency on `B`, and `B` is not yet compiled (`(not (memq s-sym compiled-modules))`), the compile-time syntactic `(import (for B run expand))` is omitted (`DEFER-CIRCULAR-IMPORT`).
+      - Identifiers referencing `B` inside `A` are preserved as top-level free variables (`#{var *top*:var}`).
+      - During compile-time verification (`native-load out-so`), `module-provide` is guarded (e.g. when `texmacs-chez-compiling?` is `#t`, it either no-ops or only loads existing `.so` files) so the compiler process does not attempt to load uncompiled source files for forward dependencies.
+  - **Run-Time Design (Self-Sufficient Predecessor Loading in `exprs`)**:
+    - In the transpiled Scheme module, insert `(module-provide '<dep>)` calls for all predecessor dependencies at the **beginning of the module's expression segment** (`exprs`), immediately following the definition segment (`defs`) and preceding any menu bindings or executable code:
+      ```scheme
+      (module <mod-sym> ()
+        ,@import-forms              ;; Phase 1 (expand/run): macro availability & lexical scoping
+        ,@export-forms
+        ,@keyword-defs
+        ,@defs                      ;; Phase 0: internal definitions
+        ;; --- Beginning of expression segment (load-time execution) ---
+        ,@(map (lambda (d) `(module-provide ',d)) deps)  ;; Guarantee prerequisites are loaded
+        ,@exprs)                    ;; Remaining load-time registrations / expressions
+      ```
+    - **R6RS Phasing Compliance**: Because `module-provide` calls are placed strictly in `exprs` after all `defs`, Chez Scheme definition phasing is fully respected—zero `invalid context for definition` errors.
+    - **Autonomy**: Loading any `.so` directly (via `primitive-load`, lazy stub, or idle timer) automatically ensures all its predecessor prerequisites are loaded and their top-level values bound before the module's own expressions (e.g. `tm-menu` `:require` hooks) evaluate.
+    - **Re-entrancy & Cycle Safety**: `boot-chez.scm`'s `module-load` uses `*module-loading-stack*` to break recursive runtime cycles in $O(1)$, and `module-provide` returns immediately if the target module is already in `*texmacs-modules-loaded*`.
+  - **Optimization Opportunity: Single-Unit Co-location for Inlining & Direct Compile-Time Resolution**:
+    - **Cross-Module Inlining**: When strongly coupled or mutually recursive modules are compiled into separate `.so` files, Chez Scheme's optimizer (`cp0`) cannot inline procedures across `.so` boundaries, necessitating dynamic lookups or external procedure calls.
+    - **Co-located Compilation**: If tightly coupled cyclic modules (e.g. `doc/tmdoc-menu.scm` and `doc/tmdoc-edit.scm`) are combined into the **same file / single compilation unit**:
+      - Both modules can directly import and resolve each other's identifiers at compile time without requiring `DEFER-CIRCULAR-IMPORT`.
+      - Eliminates top-level free variable renaming (`#{var *top*:var}`) and runtime `(interaction-environment)` indirection.
+      - Enables Chez Scheme's compiler to perform direct inter-module beta reduction, dead-code elimination, and procedure inlining across call sites, eliminating function call overhead for small helpers, predicates, and accessors.
+
 ### [ ] Native Chez Primitive Deduplication Guideline
 - **Location**: Module transpilers and compatibility headers ([`TeXmacs/progs/kernel/boot/srfi.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/boot/srfi.scm), [`init-texmacs-chez.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/init-texmacs-chez.scm))
 - **Rule**: Whenever porting/compiling Scheme files that define polyfill macros or compatibility emulators (e.g. SRFI-16 `case-lambda`, SRFI-9 `define-record-type`, SRFI-11 `let-values`, SRFI-39 `make-parameter`), always check whether Chez Scheme natively implements the primitive.

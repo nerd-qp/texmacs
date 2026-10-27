@@ -912,8 +912,11 @@
     (load-module-file which)))
 
 (define (module-provide m)
-  (if (not (module-loaded? m))
-      (module-load m)))
+  (when (not (module-loaded? m))
+    (if (compile-export-mode?)
+      (when (module-so-file m)
+        (module-load m))
+      (module-load m))))
 
 (define (resolve-module m)
   (module-provide m)

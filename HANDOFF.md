@@ -608,11 +608,92 @@ We test-compiled the 20 core interactive editing modules spanning `table/`, `tex
 - **`define-module-macro` Indirect Exports**:
   - Parameterized `(compile-export-mode? #t)` around `(compile-file trans-scm out-so)` in `compile_kernel.scm`. This allows `define-module-macro` to automatically emit `(indirect-export macro-name helpers ...)` for module-private identifiers (such as `state-slots` in `graphics-env.scm` -> `graphics-group.scm`) without manual export leaks.
 
-### 4. Verification & Clean-State Summary
-- **From-Scratch Compilation (`-recompile-modules`)**: All 116 modules compile and link with **0 failures**.
+### 4. Verification & Clean-State Summary (Historic Checkpoint: 116 Modules)
+- **From-Scratch Compilation (`-recompile-modules`)**: 116 modules compile and link with **0 failures**.
 - **Incremental Rebuild (`-compile-modules`)**: 116 modules up-to-date (cached), 0 recompiled, 0 failures.
 - **Headless Boot Smoke Test**: Passed with `HEADLESS-ALL-GREEN-SUCCESS` (exit code 0, 0 errors, 0 warnings).
-- **Git State**: All changes remain uncommitted in the working tree per Principle #9.
+
+---
+
+## 12. Full-Census Single-Pass AOT Compilation (452 Modules), Interaction Persistence & Circular Dependency Resolution [RESOLVED]
+
+### 1. Milestone Achieved: 100% Single-Pass Clean Compilation (452 / 452 Modules)
+- **Status**: Complete Success.
+- **Metric**: Under `TEXMACS_RECOMPILE_ALL=1`, the entire TeXmacs Scheme codebase—spanning all 7 Tiers (Kernel, Core System, Editing/UI, Menus, Server/Client, Document Tools, and Utilities)—compiles and loads from scratch in a **single pass with zero errors**:
+  ```
+  ========================================================
+    COMPILATION SUMMARY:
+    - Recompiled: 452 modules
+    - Up-to-date (cached): 0 modules
+    - Failures: 0
+  ========================================================
+  ```
+- **Single-Pass Invariant Restored**: Previously, a two-pass build was required because compiling from scratch failed early at `tm-modes.scm` with `Exception: variable make-ahash-table is not bound`. This is completely resolved; single-pass compilation from scratch is 100% operational.
+
+### 2. Root Cause Analysis: `native-load` Evaluator Environment vs. Line 1536 Persistence
+- **Context**:
+  In `compile_kernel.scm:1536`, `register-module-loaded!` executes:
+  ```scheme
+  (when (member rel-path *kernel-files*)
+    (guard-eval 'IMPORT-FAIL (list mod-sym) #f
+      (lambda ()
+        (eval `(import ,mod-sym) (interaction-environment)))))
+  ```
+  This imports each compiled kernel module into `(interaction-environment)` so its exports become persistent and visible to subsequent modules.
+- **The Bug**:
+  At line 13 of `compile_kernel.scm`, `native-load` was originally defined as:
+  ```scheme
+  (define native-load
+    (cond ((top-level-bound? 'primitive-load) primitive-load)
+          (else (top-level-value 'load (scheme-environment)))))
+  ```
+  In `init-texmacs-chez.scm:30-32`, `primitive-load` was bound to `(top-level-value 'load (scheme-environment))`.
+  Because Chez's 1-argument `primitive-load` evaluates files inside `(scheme-environment)`, the `.so` test-loads occurred in an environment completely isolated from `(interaction-environment)`. Consequently, even though `(kernel boot ahash-table)` had been compiled and imported into `(interaction-environment)` at line 1536, subsequent test-loads of `.so` files could not see `make-ahash-table` during single-pass clean builds.
+- **The Fix**:
+  Redefined `native-load` in [`src/Scheme/Chez/compile_kernel.scm:13-15`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/compile_kernel.scm#L13-L15) to evaluate within `(interaction-environment)`:
+  ```scheme
+  (define native-load
+    (lambda (path)
+      (load path (lambda (x) (eval x (interaction-environment))))))
+  ```
+  Now, every compiled `.so` verified via `native-load` executes inside `(interaction-environment)`, ensuring seamless access to all previously imported kernel module exports.
+
+### 3. Circular Dependency Architecture & Runtime Autonomy
+- **Problem**: Upstream TeXmacs has deep mutual dependencies (e.g. `doc/tmdoc-menu.scm` $\leftrightarrow$ `doc/tmdoc-edit.scm`, `dynamic/session-menu.scm` $\leftrightarrow$ `dynamic/program-edit.scm`, `link/link-extern.scm` $\leftrightarrow$ `link/link-navigate.scm`).
+- **Compile-Time Solution (Deferred Syntactic Imports)**:
+  - In `compile_kernel.scm`, when a module `A` declares a dependency on `B`, the compiler checks `(memq s-sym compiled-modules)`.
+  - If `B` is not yet compiled, the syntactic import `(import (for B run expand))` is omitted (`DEFER-CIRCULAR-IMPORT`).
+  - References to `B`'s variables inside `A` are preserved as top-level free variables (`#{var *top*:var}`).
+  - Verification loads in `compile-module-list` are wrapped with `(parameterize ((compile-export-mode? #t)) (register-module-loaded! ...))` so forward-loading checks in `module-provide` know not to attempt loading uncompiled Scheme sources.
+- **Load-Time Solution (Predecessor Injections in `exprs`)**:
+  - In `transpile-module`, `(module-provide '<dep>)` forms are injected at the very start of the module's expression segment (`exprs`), immediately following all internal `defs`:
+    ```scheme
+    (module <mod-sym> ()
+      ,@import-forms
+      ,@export-forms
+      ,@keyword-defs
+      ,@defs
+      ,@dep-provides   ;; (module-provide '<dep>) for all declared dependencies
+      ,@exprs)
+    ```
+  - **R6RS Phasing Compliance**: Because all `defs` precede `dep-provides`, Chez Scheme's definition phasing is strictly maintained (`invalid context for definition` is never triggered).
+  - **Runtime Autonomy**: Any `.so` loaded directly (via `lazy-define`, idle timer, or `module-load`) guarantees all predecessor dependencies are loaded and bound before the module's own expressions (e.g. `tm-menu` `:require` hooks) evaluate.
+  - **Re-entrancy & Cycle Safety**: `boot-chez.scm` tracks active loads using `*module-loading-stack*` to break recursive load cycles in $O(1)$.
+
+### 4. Transpiler Function Generalization
+- **Renaming**:
+  - Renamed `transpile-kernel-module` to [`transpile-module`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/compile_kernel.scm#L1351) at its definition and call site (`transpile-and-compile-module`).
+  - The function is the universal transpiler across all 452 modules in the repository, making the "kernel" moniker misleading.
+
+### 5. Architectural Roadmaps & Future Guidelines
+1. **Macro-Level `module-provide` in `boot-chez.scm`**:
+   - In `boot-chez.scm`, the syntactic macros `use-modules`, `inherit-modules`, `import-from`, and `tm-process-module` should be updated to expand to `(module-provide 'mod)` rather than `(module-load 'mod)`.
+2. **"No More Desugar" Principle**:
+   - In-body `use-modules` / `inherit-modules` forms should be handled natively via macro expansion in Chez Scheme rather than complex transpiler AST desugaring.
+3. **R6RS `(library ...)` Migration Invariant**:
+   - R6RS §7.1 strictly mandates that library dependency graphs must be directed acyclic graphs (DAGs).
+   - Moving from `(module ...)` to R6RS `(library ...)` will require either breaking circular dependencies or co-locating tightly coupled cyclic pairs (such as `tmdoc-menu.scm` and `tmdoc-edit.scm`) into single compilation units, which also unlocks direct compile-time inter-module beta-reduction and procedure inlining.
+
 
 
 

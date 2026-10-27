@@ -11,8 +11,8 @@
 (define os-win32? (if (top-level-bound? 'os-win32?) os-win32? (lambda () #f)))
 (define developer-mode? (if (top-level-bound? 'developer-mode?) developer-mode? #f))
 (define native-load
-  (cond ((top-level-bound? 'primitive-load) primitive-load)
-        (else (top-level-value 'load (scheme-environment)))))
+  (lambda (path)
+    (load path (lambda (x) (eval x (interaction-environment))))))
 
 (define *progs-dir*
   (cond ((and (getenv "TEXMACS_PATH") (file-exists? (string-append (getenv "TEXMACS_PATH") "/progs")))
@@ -718,7 +718,6 @@
                        define-record-type
                        define-values
                        bib-define-style
-		                   lazy-define
                        texmacs-modes
                        tm-property
                        import export indirect-export eval-when meta))))
@@ -1116,6 +1115,7 @@
 	   ((and (pair? x)
 		 (memq (car x) '(tm-define
 				 tm-define-macro
+				 lazy-define
 				 define-group
 				 define-table
 				 define-collection
@@ -1348,7 +1348,7 @@
           (ahash-set! *all-module-deps* spec deps)
           deps))))
 
-(define (transpile-kernel-module rel-path out-path)
+(define (transpile-module rel-path out-path)
   (display (list 'TRANSPILE-START rel-path)) (newline)
   (guard (e (else
               (display (list 'TRANSPILE-ERROR rel-path)) (newline)
@@ -1450,7 +1450,8 @@
                   (for-each eval-eager-form! prepared))
                 (let-values (((defs exprs) (partition-forms prepared)))
                   (let* ((keywords (tm-collect-keywords forms '()))
-                         (keyword-defs (map (lambda (k) `(define ,k ',k)) keywords)))
+                         (keyword-defs (map (lambda (k) `(define ,k ',k)) keywords))
+                         (dep-provides (map (lambda (d) `(module-provide ',d)) deps)))
                     (let ((out-p (open-output-file out-path 'replace)))
                       (dynamic-wind
                         (lambda () #f)
@@ -1462,6 +1463,7 @@
                                     ,@export-forms
                                     ,@keyword-defs
                                     ,@defs
+                                    ,@dep-provides
                                     ,@exprs)
                                  out-p)
                           (newline out-p))
@@ -1470,7 +1472,7 @@
 
 (define (transpile-and-compile-module rel-path trans-scm out-so)
   (parameterize ((compilation-environment (copy-environment (interaction-environment) #t)))
-   (let ((mod-sym (transpile-kernel-module rel-path trans-scm)))
+   (let ((mod-sym (transpile-module rel-path trans-scm)))
     (if mod-sym
         (begin
           (display (list 'COMPILE rel-path '-> out-so)) (newline)
@@ -1519,30 +1521,30 @@
          (spec (rel-path->spec rel-path)))
     (ahash-set! *texmacs-modules-loaded* spec #t)
     (guard (e (else
-               (ahash-remove! *texmacs-modules-loaded* spec)
-               (set! load-ok? #f)
-               (display (list 'NATIVE-LOAD-FAIL rel-path (if (condition? e) (with-output-to-string (lambda () (display-condition e))) e)))
-               (newline)
-               (when (file-exists? out-so) (delete-file out-so))
-               (set! compile-errors (cons (cons rel-path e) compile-errors))))
+                (ahash-remove! *texmacs-modules-loaded* spec)
+                (set! load-ok? #f)
+                (display (list 'NATIVE-LOAD-FAIL rel-path (if (condition? e) (with-output-to-string (lambda () (display-condition e))) e)))
+                (newline)
+                (when (file-exists? out-so) (delete-file out-so))
+                (set! compile-errors (cons (cons rel-path e) compile-errors))))
       (native-load out-so))
     (if load-ok?
-        (begin
-          (when (member rel-path *kernel-files*)
-            (guard-eval 'IMPORT-FAIL (list mod-sym) #f
-	      (lambda ()
-		(eval `(import ,mod-sym) (interaction-environment)))))
-          (set! compiled-modules (cons mod-sym compiled-modules))
-          (if is-cached?
-              (begin
-                (set! cached-count (+ cached-count 1))
-                (display (list 'UP-TO-DATE rel-path)) (newline))
-              (begin
-                (set! compiled-count (+ compiled-count 1))
-                (display (list 'OK rel-path)) (newline))))
-        (begin
-          (display (list 'SKIPPED rel-path))
-          (newline)))))
+      (begin
+        (when (member rel-path *kernel-files*)
+          (guard-eval 'IMPORT-FAIL (list mod-sym) #f
+	          (lambda ()
+		          (eval `(import ,mod-sym) (interaction-environment)))))
+        (set! compiled-modules (cons mod-sym compiled-modules))
+        (if is-cached?
+          (begin
+            (set! cached-count (+ cached-count 1))
+            (display (list 'UP-TO-DATE rel-path)) (newline))
+          (begin
+            (set! compiled-count (+ compiled-count 1))
+            (display (list 'OK rel-path)) (newline))))
+      (begin
+        (display (list 'SKIPPED rel-path))
+        (newline)))))
 
 (define (compile-module-list tier-title file-list)
   (display "========================================================\n")
@@ -1558,9 +1560,11 @@
                           (spec->symbol (rel-path->spec rel-path)))))
         (cond
           ((and (not needs-build?) (file-exists? out-so))
-           (register-module-loaded! rel-path out-so mod-sym #t))
+           (parameterize ((compile-export-mode? #t))
+             (register-module-loaded! rel-path out-so mod-sym #t)))
           (mod-sym
-           (register-module-loaded! rel-path out-so mod-sym #f))
+           (parameterize ((compile-export-mode? #t))
+             (register-module-loaded! rel-path out-so mod-sym #f)))
           (else
            (display (list 'SKIPPED rel-path))
            (newline)))))
