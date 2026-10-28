@@ -190,21 +190,12 @@
     ((_ cond? body ...) (if (not cond?) (begin body ...)))))
 
 (define-syntax while
-  (lambda (x)
-    (syntax-case x ()
-      ((k test body ...)
-       (with-syntax ((break (datum->syntax #'k 'break))
-                     (continue (datum->syntax #'k 'continue)))
-         #'(call/cc
-             (lambda (break-k)
-               (let ((break (case-lambda [() (break-k #f)] [(v) (break-k v)])))
-                 (let loop ()
-                   (when test
-                     (call/cc
-                       (lambda (continue-k)
-                         (let ((continue (lambda () (continue-k #f))))
-                           body ...)))
-                     (loop)))))))))))
+  (syntax-rules ()
+    ((_ test body ...)
+     (let loop ()
+       (when test
+         body ...
+         (loop))))))
 
 (define-syntax with-define
   (syntax-rules ()

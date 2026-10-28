@@ -580,7 +580,7 @@ TeXmacs_main (int argc, char** argv) {
 
 
     if (compile_modules_mode) {
-      url script= "$TEXMACS_PATH/../src/Scheme/Chez/compile_kernel.scm";
+      url script= "$TEXMACS_PATH/../src/Scheme/Chez/compile-texmacs.scm";
       if (compile_modules_script != "") script = url (compile_modules_script);
       cout << "TeXmacs] Executing module compiler: " << concretize (script) << LF;
       exec_file (script);

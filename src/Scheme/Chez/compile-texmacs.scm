@@ -1,7 +1,7 @@
-;;; compile_kernel.scm -- Transpiles and compiles all 39 TeXmacs kernel modules into native Chez Scheme modules
+;;; compile-texmacs.scm -- Transpiles and compiles all TeXmacs modules into native Chez Scheme modules
 ;;;
 ;;; Usage:
-;;;   scheme -q src/Scheme/Chez/compile_kernel.scm
+;;;   scheme -q src/Scheme/Chez/compile-texmacs.scm
 
 (define-top-level-value 'texmacs-chez-compiling? #t)
 (define-top-level-value 'boot-kernel-loaded? #t)

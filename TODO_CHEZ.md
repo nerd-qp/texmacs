@@ -156,6 +156,15 @@ This document tracks identified architectural improvements and performance bottl
   4. **Headless Chez Scheme Worker Driver**: Rather than spinning up the Qt GUI / C++ server, Zuo spawns lightweight native Chez Scheme worker scripts (`scheme --script transpile_module.scm <src> <dst>`) targeting `build-texmacos/boot/`.
   5. **Clean Build System Decoupling**: Easily hooked into CMake (`add_custom_target(scheme_boot ALL COMMAND ${CHEZ_DIR}/bin/zuo build.zuo)`), separating Scheme module compilation from C++ builds and fitting naturally into existing package manager workflows.
 
+### [ ] Transitive Predecessor Invalidation in Incremental Compilation (`compile-texmacs.scm`)
+- **Location**: [`src/Scheme/Chez/compile-texmacs.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/src/Scheme/Chez/compile-texmacs.scm)
+- **Problem & Context**:
+  - The current incremental compilation check (`compile-texmacs.scm`) determines whether a module is `UP-TO-DATE` purely by comparing the timestamp of the module's target `.so` against its own upstream `.scm` source file.
+  - If a predecessor module $A$ is modified (e.g. exporting fewer functions, altering macro definitions, or changing public signatures), downstream module $B$ that depends on $A$ is not automatically invalidated or recompiled if $B$'s own source timestamp has not changed.
+  - In ahead-of-time compiled Chez Scheme binaries, macro expansions and direct variable references across module boundaries can bake in assumptions about predecessor exports. If a predecessor exports fewer functions or reorders bindings, call-sites and address offsets in previously compiled downstream `.so` units can become stale or broken.
+- **Goal / Action Plan**:
+  - Implement transitive dependency checking in the compilation script: check not only the `.scm` file itself, but also walk its dependency DAG (predecessors via `*all-module-deps*`). If any predecessor `.so` was rebuilt or has a newer timestamp than the downstream `.so`, invalidate and trigger recompilation of the dependent module.
+
 ---
 
 ## 2. Medium Priority (GUI & Responsiveness)
@@ -516,3 +525,44 @@ This document tracks identified architectural improvements and performance bottl
     1. Genuine procedure and syntax definitions into `defs` and extracts exported symbols for `(export ...)`.
     2. Any `(%module-side-effect ...)` forms directly into the module's runtime initialization block (`exprs`).
   - Eliminates dummy variables in symbol tables, prevents compiler definition context violations, and cleanly decouples definitions from runtime side-effects.
+
+#### [ ] Item 25: Runtime Unbound Variable `opts` in `(open-preferences)` and `(top-window ...)`
+- **Location**: [`TeXmacs/progs/kernel/gui/menu-widget.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/kernel/gui/menu-widget.scm#L1226), [`TeXmacs/progs/texmacs/menus/preferences-widgets.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/texmacs/menus/preferences-widgets.scm)
+- **Error**: `(TM-APPLY-ERROR variable opts is not bound)`
+- **Symptom**: Triggered when invoking `(open-preferences)` or any window constructor delegating to `(top-window ...)` or `(dialogue-window ...)`.
+- **Diagnosis**: 
+  - Traceback isolated to:
+    ```
+    (FRAME 0 CODE new-val SRC opts LOC ())
+    (FRAME 1 CODE #f SRC (top-window preferences-widget User preferences) LOC ())
+    ```
+  - `top-window` uses `(tm-define (top-window menu-promise name . opts) ... (with (bufs qqq) (decode-options opts) ...))`.
+  - In `(interaction-environment)`, macros like `with`, `tm-widget`, and `receive` interact with rest arguments and dynamic module environments. If `receive` (or destructuring `with`) is not recognized as syntax transformer in the caller's evaluation context, forms like `(receive (opts ...) ...)` or `(with (bufs qqq) ...)` fall back to function applications where `opts` is evaluated as an unbound variable.
+
+#### [ ] Item 26: Document Style Package Lists & Feature Lists Invoked as Procedures in `tm-apply`
+- **Location**: `src/Scheme/Chez/chez_tm.cpp`, `src/Scheme/Scheme/object.cpp`, stylesheet environment handlers
+- **Errors**:
+  - `(TM-APPLY-ERROR ("std" "typeset") is not a procedure)`
+  - `(TM-APPLY-ERROR ("chapter-post-sep" "page-the-page" ...) is not a procedure)`
+  - `(TM-APPLY-ERROR ("item-hsep" "last-item-nr" "item-vsep") is not a procedure)`
+  - `(TM-APPLY-ERROR () is not a procedure)`
+- **Root Cause**:
+  - `("std" "typeset")` is the style package list declared by documents (`use-package`).
+  - `("chapter-post-sep" ...)` and `("item-hsep" ...)` are stylesheet environment variable lists.
+  - In C++, `call_scheme(object_to_tmscm(obj))` or `as_command(obj)->apply()` invokes `tm-apply` on a Scheme object that is expected to be a command or procedure. When C++ passes an evaluated document property, stylesheet list, or raw data list where a callback procedure was expected, `tm-apply` attempts `(apply proc args)`, triggering `<list> is not a procedure`.
+- **Action Plan**:
+  - Guard `tm-apply` in `chez_tm.cpp`: if `fun` is not a symbol, procedure, or callable entity, return `#f` or evaluate data safely rather than raising an unhandled exception.
+  - Audit C++ command callback bridging in `object.cpp` (`object_command_rep`, `call_scheme`) to ensure raw property lists are not passed as callbacks.
+
+#### [ ] Item 27: Tagged Pointer / Blackbox Conversion Error (`<int> is not a proper list / pair`)
+- **Location**: `src/Scheme/Chez/chez_tm.cpp` (`object_to_tmscm`, `tmscm_to_object`), C++ object bridge
+- **Errors**:
+  - `(TM-APPLY-ERROR 4712781216 is not a pair)`
+  - `(TM-APPLY-ERROR 5012788192 is not a proper list)`
+- **Root Cause**:
+  - `4712781216` and `5012788192` are 64-bit memory addresses of C++ objects.
+  - In `chez_tm.cpp`, blackbox objects are tagged or converted between C++ `object` and Scheme representations. When an untagged integer address or an invalid blackbox vector is passed to Scheme list-traversal functions (`apply`, `car`, `cdr`), Chez Scheme raises `<address> is not a pair` or `<address> is not a proper list`.
+- **Action Plan**:
+  - Audit pointer packing and unpacking in `object_to_tmscm` and `tmscm_to_object`.
+  - Ensure all pointer-holding values are wrapped in proper Chez records/foreign pointers rather than raw integer/fixnum addresses that get confused with list structures.
+
