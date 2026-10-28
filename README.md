@@ -1,18 +1,14 @@
-# GNU TeXmacs
-[![Join the chat at https://gitter.im/texmacs/Lobby](https://badges.gitter.im/texmacs/Lobby.svg)](https://gitter.im/texmacs/Lobby?utm_source=badge&utm_medium=badge&utm_campaign=pr-badge&utm_content=badge)
+# GNU TeXmacs (Chez port)
+This is an attempt to make texmacs run on chez scheme. I tested the compile_kernel.scm script in MacOS, and so far most .scm files compile. The TeXmacs program runs but with some existing bugs to iron out.
 
-[GNU TeXmacs](https://texmacs.org) is a free wysiwyw (what you see is what you want) editing platform with special features for scientists. The software aims to provide a unified and user friendly framework for editing structured documents with different types of content (text, graphics, mathematics, interactive content, etc.). The rendering engine uses high-quality typesetting algorithms so as to produce professionally looking documents, which can either be printed out or presented from a laptop.
+Still needs a lot of work to achieve the following:
+1. The program works;
+2. Changes to existing Guile code should be minimal (though some are necessary heavy modification).
+3. Need to figure out the automated build tools.
+4. The project attempt is aided by LLM. I try to review most code and ideas before them. In a final pass, I will try to sit through the entire modifications again.
+5. In the coming days, I will continue working on this: perhaps reverting a lot of the changes and squashing some commits. So not intended for public collaboration yet!
 
-The software includes a text editor with support for mathematical formulas, a small technical picture editor and a tool for making presentations from a laptop. Moreover, TeXmacs can be used as an interface for many external systems for computer algebra, numerical analysis, statistics, etc. New presentation styles can be written by the user and new features can be added to the editor using the Scheme extension language. A native spreadsheet and tools for collaborative authoring are planned for later.
+# Some design points
+Chez Scheme is built on the R6RS, and Guile-1.8's standard differs quite significantly. Some code from Guile-1.8 is not meant to be run on Chez Scheme. Most notably the module systems between the two are the main source of pain for this port. On a high level, this chez-port uses the module system of its own, with no notion of inheritance. Some hacking was done to make it work.
 
-TeXmacs runs on all major Unix platforms and Windows. Documents can be saved in TeXmacs, Xml or Scheme format and printed as Postscript or Pdf files. Converters exist for TeX/LaTeX and Html/Mathml. 
-
-## Documentation
-GNU TeXmacs is self-documented. You may browse the manual in the `Help` menu or browse the online [one](https://www.texmacs.org/tmweb/manual/web-manual.en.html).
-
-For developer, see [this](./COMPILE) to compile the project.
-
-## Contributing
-Please report any [new bugs](https://www.texmacs.org/tmweb/contact/bugs.en.html) and [suggestions](https://www.texmacs.org/tmweb/contact/wishes.en.html) to us. It is also possible to [subscribe](https://www.texmacs.org/tmweb/help/tmusers.en.html) to the <texmacs-users@texmacs.org> mailing list in order to get or give help from or to other TeXmacs users.
-
-You may contribute patches for TeXmacs using the [patch manager](http://savannah.gnu.org/patch/?group=texmacs) on Savannah or by submitting a [pull request](https://github.com/texmacs/texmacs/pulls) on Github.Please note that while we use SVN on Savannah, GitHub serves only as a mirror. To facilitate synchronization, we have a `svn_mirror` branch. Please refrain from submitting pull requests to the `svn_mirror` branch; instead, use the `development` branch as the base to ensure proper merging and integration into the main SVN trunk.
+And the other main issue is the dynamic nature of Guile implementation, whereas, Chez Scheme compilers expect more static definitions. During compilation, within each module Chez compiler demands you put all definitions before any expression can occur. We hack this by rearranging the scheme forms and outputting a new R6RS compilable .scm file by reading the original code. Another problem is that the Guile-port's macro uses internal definitions, which Chez hates when you compile them inside module. Chez enforces two phases of compilation: first phase, it will try to expand all macros (without evaluating the .scm file), and so if you use local functions within said macro, the compiler will not see them (unless you explicitly tell Chez it's for macro-only; in which case, you can't use the same function during run-time). In second phase, Chez will then compile all forms into a .so file.
