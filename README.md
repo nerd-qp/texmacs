@@ -7,6 +7,7 @@ Still needs a lot of work to achieve the following:
 3. Need to figure out the automated build tools.
 4. The project attempt is aided by LLM. I try to review most code and ideas before them. In a final pass, I will try to sit through the entire modifications again.
 5. In the coming days, I will continue working on this: perhaps reverting a lot of the changes and squashing some commits. So not intended for public collaboration yet!
+6. Current compilation of .scm files is quite long on my laptop -- 6 mins. Trying to bring it down with multi-thread compilation.
 
 # Some design points
 Chez Scheme is built on the R6RS, and Guile-1.8's standard differs quite significantly. Some code from Guile-1.8 is not meant to be run on Chez Scheme. Most notably the module systems between the two are the main source of pain for this port. On a high level, this chez-port uses the module system of its own, with no notion of inheritance. Some hacking was done to make it work.
