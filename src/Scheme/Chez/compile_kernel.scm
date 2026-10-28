@@ -1218,9 +1218,9 @@
             (loop (cons (cons 'define-public-macro (cdr x)) (cdr rest)) acc))
            ;; In-body `(use-modules ...)` and `(inherit-modules ...)`:
            ;; R6RS forbids `import` inside expression contexts. We desugar in-body module declarations
-           ;; to runtime `(module-load 'mod)` calls, matching dynamic loading behavior without grammar errors.
+           ;; to runtime `(module-provide 'mod)` calls, matching dynamic loading behavior without grammar errors.
            ((and (pair? x) (memq (car x) '(use-modules inherit-modules)))
-            (loop (append (map (lambda (m) `(module-load ',m)) (cdr x))
+            (loop (append (map (lambda (m) `(module-provide ',m)) (cdr x))
                           (cdr rest))
                   acc))
            ;; Dynamic `define-option-table` registrations (e.g. `:state` and `:state-slots` in `graphics-env.scm`):
@@ -1527,7 +1527,7 @@
                 (newline)
                 (when (file-exists? out-so) (delete-file out-so))
                 (set! compile-errors (cons (cons rel-path e) compile-errors))))
-      (native-load out-so))
+      (load out-so))
     (if load-ok?
       (begin
         (when (member rel-path *kernel-files*)
@@ -1592,7 +1592,7 @@
         (if user-up-to-date?
             (begin
               (display (list 'UP-TO-DATE "texmacs-user.so (kernel snapshot)")) (newline)
-              (native-load user-so))
+              (load user-so))
             (begin
               (display "--------------------------------------------------------\n")
               (display "  Building aggregate texmacs-user environment\n")
@@ -1639,7 +1639,7 @@
                   (lambda () (close-port p))))
               (display (list 'COMPILE user-scm '-> user-so)) (newline)
               (compile-file user-scm user-so)
-              (native-load user-so)
+              (load user-so)
               (display "--------------------------------------------------------\n")
               (display "  SUCCESS: ALL KERNEL MODULES COMPILED & SNAPSHOTTED!\n")
               (display "--------------------------------------------------------\n"))))

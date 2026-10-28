@@ -687,12 +687,65 @@ We test-compiled the 20 core interactive editing modules spanning `table/`, `tex
 
 ### 5. Architectural Roadmaps & Future Guidelines
 1. **Macro-Level `module-provide` in `boot-chez.scm`**:
-   - In `boot-chez.scm`, the syntactic macros `use-modules`, `inherit-modules`, `import-from`, and `tm-process-module` should be updated to expand to `(module-provide 'mod)` rather than `(module-load 'mod)`.
+   - In `boot-chez.scm`, the syntactic macros `use-modules`, `inherit-modules`, `import-from`, and `tm-process-module` should be updated to expand to `(module-provide 'mod)` rather than `(module-load 'mod)`. (Completed & Verified).
 2. **"No More Desugar" Principle**:
    - In-body `use-modules` / `inherit-modules` forms should be handled natively via macro expansion in Chez Scheme rather than complex transpiler AST desugaring.
 3. **R6RS `(library ...)` Migration Invariant**:
    - R6RS §7.1 strictly mandates that library dependency graphs must be directed acyclic graphs (DAGs).
    - Moving from `(module ...)` to R6RS `(library ...)` will require either breaking circular dependencies or co-locating tightly coupled cyclic pairs (such as `tmdoc-menu.scm` and `tmdoc-edit.scm`) into single compilation units, which also unlocks direct compile-time inter-module beta-reduction and procedure inlining.
+
+---
+
+### 6. Compilation Resolution: `module-provide` Guard & `use-modules` Macro Unification (October 2026)
+
+#### A. Root Cause: Premature Dynamic Loading of Forward/Circular Dependencies
+- **Symptom**: During clean `-recompile-modules`, `kernel/texmacs/tm-modes.so` failed verification with:
+  ```text
+  Exception: variable make-ahash-table is not bound
+  (LOAD-ERROR build-texmacos/boot/kernel/texmacs/tm-modes.so variable make-ahash-table is not bound (make-ahash-table))
+  ```
+- **Discovery via Step-by-Step Tracing**:
+  - Instrumentation in `tm-modes.scm` proved that all internal definitions (including `(define texmacs-submode-table (make-ahash-table))` and `(define-public remote-control-remap (make-ahash-table))`) executed completely and without error up to the very last line of the source.
+  - The failure occurred *after* the module body finished evaluating.
+  - At the end of `tm-modes.so`, transpiler-injected runtime autonomy hooks executed:
+    ```scheme
+    (module-provide '(kernel texmacs tm-plugins))
+    ```
+  - In `boot-chez.scm:931`, `module-provide` had:
+    ```scheme
+    (if (compile-export-mode?)
+        (when (module-so-file m)
+          (module-load m))
+        (module-load m))
+    ```
+  - Because `build-texmacos/boot/` retained `.so` files from prior compilations, `(module-so-file '(kernel texmacs tm-plugins))` returned true for the stale `.so` on disk.
+  - `module-provide` therefore eagerly loaded `tm-plugins.so` before `tm-plugins.scm` had even been reached in the compiler's build order!
+  - Inside `tm-plugins.scm:38`, `(define-public connection-defined (make-ahash-table))` failed because `primitive-load` evaluates inside `(scheme-environment)`, attributing the error to `tm-modes.so`.
+
+#### B. The `module-provide` Compile-Export-Mode Fix
+- **Architecture**: During AOT compilation (`compile-export-mode? #t`), `compile_kernel.scm` already compiles and loads every module in strict topological order. Injected `(module-provide '<dep>)` calls are intended purely for runtime dynamic dependency loading.
+- **Fix in `boot-chez.scm:931-936`**:
+  ```scheme
+  (define (module-provide m)
+    (when (and (not (compile-export-mode?))
+               (not (module-loaded? m)))
+      (module-load m)))
+  ```
+- Prevents premature loading of forward dependencies and stale `.so` files during compilation.
+
+#### C. Mode Predicate: `always?` Binding Origin
+- In `tm-modes.scm:35-37`, for mode `(always% #t)`, `defn` produces a dummy definition `(define ,(fresh-tm-dummy) (void))`, while `arch1` and `arch2` reference `always?`.
+- In isolated test harnesses, evaluating this threw `always? is not bound` because `abbrevs.so` had not been loaded.
+- In the actual compilation pipeline (`compile_kernel.scm`), `kernel/boot/abbrevs.scm` is Step 2 in `*kernel-files*`, where `(define-public (always? . l) #t)` is defined and imported into `(interaction-environment)` early.
+- Thus, during the full build, `always?` is always available from `abbrevs.scm`, and `tm-modes.scm` was reverted to upstream.
+
+#### D. In-Body `use-modules` Desugaring & Macro Alignment
+- **Problem**: In-body `(use-modules ...)` in `developer-menu.scm` and `wallet-menu.scm` was previously desugared by `compile_kernel.scm:1223` into direct `(module-load 'mod)` calls, bypassing the `module-provide` compile guard and prematurely loading Tier 7 modules (`prog/scheme-tools.so`) during Tier 4 compilation.
+- **Fixes**:
+  1. Updated `boot-chez.scm:957-970` (`use-modules`, `inherit-modules`, `import-from`) and `boot-chez.scm:983-990` (`tm-process-module`) to expand to `(module-provide 'mod)`.
+  2. Updated `compile_kernel.scm:1223` to desugar in-body module forms to `(module-provide 'mod)`.
+- **Verification**: `developer-menu.so` and `wallet-menu.so` compile and load with **0 LOAD-ERRORs**.
+
 
 
 

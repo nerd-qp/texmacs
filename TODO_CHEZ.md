@@ -106,7 +106,7 @@ This document tracks identified architectural improvements and performance bottl
     - `compile_kernel.scm` detects cyclic dependencies during topological compilation:
       - If module `A` declares a dependency on `B`, and `B` is not yet compiled (`(not (memq s-sym compiled-modules))`), the compile-time syntactic `(import (for B run expand))` is omitted (`DEFER-CIRCULAR-IMPORT`).
       - Identifiers referencing `B` inside `A` are preserved as top-level free variables (`#{var *top*:var}`).
-      - During compile-time verification (`native-load out-so`), `module-provide` is guarded (e.g. when `texmacs-chez-compiling?` is `#t`, it either no-ops or only loads existing `.so` files) so the compiler process does not attempt to load uncompiled source files for forward dependencies.
+      - During compile-time verification (`native-load out-so`), `module-provide` is strictly guarded via `(when (and (not (compile-export-mode?)) (not (module-loaded? m))) (module-load m))` so that AOT compilation never attempts to load uncompiled sources or stale forward/circular `.so` files. [RESOLVED]
   - **Run-Time Design (Self-Sufficient Predecessor Loading in `exprs`)**:
     - In the transpiled Scheme module, insert `(module-provide '<dep>)` calls for all predecessor dependencies at the **beginning of the module's expression segment** (`exprs`), immediately following the definition segment (`defs`) and preceding any menu bindings or executable code:
       ```scheme
@@ -489,3 +489,30 @@ This document tracks identified architectural improvements and performance bottl
   1. Defer stateful table lookups to runtime by generating `(if (ahash-ref ...) ...)` directly inside the emitted runtime code (`begin ...`) rather than evaluating it at macro-expansion time.
   2. Isolate Pass 1 eager evaluation inside a disposable/sandboxed environment so side effects to global tables do not leak into Pass 2 macro expansion.
   3. Where macro output needs private module state across modules, use `define-module-macro` with `indirect-export` instead of unquoting expand-time environment variables.
+
+#### [ ] Item 22: Evaluation Timing & Lazy Resolution of `(doc help-funcs)` for `help-menu`
+- **Location**: [`TeXmacs/progs/doc/help-funcs.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/doc/help-funcs.scm), [`TeXmacs/progs/doc/help-menu.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/doc/help-menu.scm), [`TeXmacs/progs/init-texmacs-chez.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/init-texmacs-chez.scm)
+- **Problem**: When TeXmacs initializes the GUI window during boot (`TIME-OPEN-WINDOW`), the menu bar resolves `help-menu`. If `help-menu` evaluates before `(module-provide '(doc help-funcs))` has run, global multimethods defined via `tm-define` (such as `load-help-article`, `load-help-buffer`, and `url-exists-in-help?`) are not yet bound in `(interaction-environment)`, raising `(TM-APPLY-ERROR variable load-help-article is not bound)`.
+- **Architectural Principle**: `tm-define` definitions are dynamic multimethods in the global dispatch table (`tm-defined-table` / `(interaction-environment)`), NOT static R6RS module exports. Downstream modules do not import them via static `import`; the defining module must simply be evaluated before symbols are resolved.
+- **Action Plan**:
+  1. Audit `(lazy-menu (doc help-menu) help-menu)` and ensure `(doc help-funcs)` is registered via `lazy-define` in `init-texmacs-chez.scm`:
+     `(lazy-define (doc help-funcs) load-help-article load-help-buffer url-exists-in-help? help-file-title)`
+  2. Verify that accessing `help-menu` on demand triggers `load-module` for `(doc help-funcs)` before menu item callbacks fire.
+
+#### [ ] Item 23: Format Escape `~:s` Evaluation Error in `(open-preferences)`
+- **Location**: [`TeXmacs/progs/texmacs/menus/preferences-*.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/texmacs/menus/), [`TeXmacs/progs/kernel/gui/menu-widget.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/gui/menu-widget.scm)
+- **Problem**: Invoking `(open-preferences)` in headless mode raises `(PREF-ERROR: variable ~:s is not bound)` when constructing `(top-window preferences-widget "User preferences")`.
+- **Root Cause**: An unescaped or misquoted format string directive (such as `~:s` from `format`, `texmacs-error`, or `display*`) is being evaluated as a Scheme symbol/variable expression rather than parsed as a formatting specifier.
+- **Action Plan**:
+  1. Locate the call emitting `(PREF-ERROR: ...)` across the preferences widget constructors.
+  2. Fix the quote or macro expansion causing the format string to be evaluated as Scheme code.
+
+#### [ ] Item 24: Module System Modernization via Explicit Side-Effect Wrapping (`%module-side-effect`)
+- **Location**: [`src/Scheme/Chez/compile_kernel.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/compile_kernel.scm), [`TeXmacs/progs/kernel/texmacs/tm-modes.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/texmacs/tm-modes.scm), macro definers across `progs/`
+- **Background & Context**: Upstream GNU TeXmacs used dummy definitions `(define _tm_def_XX (begin ... (void)))` to smuggle runtime side-effects (`set-symbol-procedure!`, `logic-rules`, option registrations) into macro outputs intended for definition contexts.
+- **Proposed Architecture**:
+  - Replace artificial `_tm_def_XX` dummy bindings with an explicit compiler marker form: `(%module-side-effect <expr> ...)`.
+  - In the module compilation/expansion pass, the transpiler cleanly partitions:
+    1. Genuine procedure and syntax definitions into `defs` and extracts exported symbols for `(export ...)`.
+    2. Any `(%module-side-effect ...)` forms directly into the module's runtime initialization block (`exprs`).
+  - Eliminates dummy variables in symbol tables, prevents compiler definition context violations, and cleanly decouples definitions from runtime side-effects.

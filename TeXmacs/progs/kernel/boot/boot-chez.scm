@@ -189,6 +189,23 @@
     ((_ cond?) (if (not cond?) (void)))
     ((_ cond? body ...) (if (not cond?) (begin body ...)))))
 
+(define-syntax while
+  (lambda (x)
+    (syntax-case x ()
+      ((k test body ...)
+       (with-syntax ((break (datum->syntax #'k 'break))
+                     (continue (datum->syntax #'k 'continue)))
+         #'(call/cc
+             (lambda (break-k)
+               (let ((break (case-lambda [() (break-k #f)] [(v) (break-k v)])))
+                 (let loop ()
+                   (when test
+                     (call/cc
+                       (lambda (continue-k)
+                         (let ((continue (lambda () (continue-k #f))))
+                           body ...)))
+                     (loop)))))))))))
+
 (define-syntax with-define
   (syntax-rules ()
     ((_ (name . args) fun-body body ...)
@@ -912,11 +929,15 @@
     (load-module-file which)))
 
 (define (module-provide m)
-  (when (not (module-loaded? m))
-    (if (compile-export-mode?)
-      (when (module-so-file m)
-        (module-load m))
-      (module-load m))))
+  ;; During AOT compilation (compile-export-mode? #t), compile_kernel.scm
+  ;; compiles and loads every module in strict topological order.
+  ;; Injected (module-provide '<dep>) calls in .so files are intended for
+  ;; runtime dynamic dependency loading; executing them during compile-time
+  ;; verification loads would prematurely load forward/deferred circular
+  ;; dependencies or stale .so files left on disk from previous builds.
+  (when (and (not (compile-export-mode?))
+             (not (module-loaded? m)))
+    (module-load m)))
 
 (define (resolve-module m)
   (module-provide m)
@@ -936,17 +957,17 @@
 (define-syntax use-modules
   (syntax-rules ()
     ((_ mod ...)
-     (begin (module-load 'mod) ...))))
+     (begin (module-provide 'mod) ...))))
 
 (define-syntax inherit-modules
   (syntax-rules ()
     ((_ mod ...)
-     (begin (module-load 'mod) ...))))
+     (begin (module-provide 'mod) ...))))
 
 (define-syntax import-from
   (syntax-rules ()
     ((_ mod ...)
-     (begin (module-load 'mod) ...))))
+     (begin (module-provide 'mod) ...))))
 
 (define-syntax with-module
   (syntax-rules ()
@@ -963,9 +984,9 @@
     (lambda (action)
       (if (pair? action)
           (cond ((equal? (car action) ':use)
-                 (for-each module-load (cdr action)))
+                 (for-each module-provide (cdr action)))
                 ((equal? (car action) ':inherit)
-                 (for-each module-load (cdr action)))
+                 (for-each module-provide (cdr action)))
                 ((equal? (car action) ':export)
                  (display "Warning] :export no longer supported\n")))))
     options))

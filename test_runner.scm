@@ -1,0 +1,22 @@
+(load "texmacs/TeXmacs/progs/kernel/boot/boot-chez.scm")
+(load "build-texmacos/boot/kernel/boot/ahash-table.so")
+(eval '(import kernel:boot:ahash-table) (interaction-environment))
+(load "build-texmacos/boot/kernel/logic/logic-bind.so")
+(load "build-texmacos/boot/kernel/logic/logic-unify.so")
+(load "build-texmacos/boot/kernel/logic/logic-rules.so")
+(load "build-texmacos/boot/kernel/logic/logic-query.so")
+(load "build-texmacos/boot/kernel/logic/logic-data.so")
+(load "build-texmacos/boot/kernel/texmacs/tm-define.so")
+(load "build-texmacos/boot/kernel/texmacs/tm-preferences.so")
+
+(parameterize ((compile-export-mode? #t))
+  (compile-file "build-texmacos/boot/kernel/texmacs/tm-modes.scm" "/tmp/test-m.so"))
+
+(display "Compiled /tmp/test-m.so. Now loading...\n")
+(guard (e (else
+           (display-condition e) (newline)
+           (when (irritants-condition? e)
+             (display (list "irritants:" (condition-irritants e))) (newline))))
+  (load "/tmp/test-m.so"))
+(display "Loaded /tmp/test-m.so successfully!\n")
+(exit 0)
