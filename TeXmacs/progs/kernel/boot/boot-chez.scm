@@ -1,3 +1,7 @@
+(when (top-level-bound? '*boot-chez-loaded*)
+  (display "WARNING: boot-chez.scm loaded more than once!\n"))
+(define *boot-chez-loaded* #t)
+
 (define compilation-environment
   (if (top-level-bound? 'compilation-environment)
       compilation-environment
@@ -5,6 +9,47 @@
 
 ;;; Foundational helpers & Guile compatibility primitives
 (define (noop . _) #f)
+
+;; Foreign procedure hooks for C++ blackbox objects (Box representation + Guardian)
+(define c-delete-blackbox
+  (foreign-procedure "tmscm_delete_blackbox" (uptr) void))
+
+(define c-blackbox-equal?
+  (foreign-procedure "tmscm_blackbox_equal" (scheme-object scheme-object) scheme-object))
+
+(define c-blackbox-hash
+  (foreign-procedure "tmscm_blackbox_hash" (scheme-object) iptr))
+
+(define (reap-blackboxes!)
+  (let loop ()
+    (let ((b (tm-blackbox-guardian)))
+      (when b
+        (let ((addr (unbox b)))
+          (when (not (= addr 0))
+            (c-delete-blackbox addr)
+            (set-box! b 0)))
+        (loop)))))
+
+(let ((old-crh (collect-request-handler)))
+  (collect-request-handler
+    (lambda ()
+      (old-crh)
+      (reap-blackboxes!))))
+
+(define chez:equal?
+  (if (top-level-bound? 'chez:equal?) chez:equal? equal?))
+(define (equal? a b)
+  (cond ((eq? a b) #t)
+        ((and (box? a) (box? b))
+         (if (and (top-level-bound? 'blackbox?)
+                  (blackbox? a)
+                  (blackbox? b))
+             (c-blackbox-equal? a b)
+             (chez:equal? (unbox a) (unbox b))))
+        ((and (pair? a) (pair? b))
+         (and (equal? (car a) (car b))
+              (equal? (cdr a) (cdr b))))
+        (else (chez:equal? a b))))
 
 (define (== a b) (equal? a b))
 (define (!= a b) (not (equal? a b)))
@@ -24,11 +69,31 @@
 
 (define (acons k v l) (cons (cons k v) l))
 
+;; Guile-compatible sort: Guile uses (sort seq less?), Chez Scheme uses (sort less? seq)
+(define chez:sort (if (top-level-bound? 'chez:sort) chez:sort sort))
+(define (sort a b)
+  (let ((seq (if (procedure? a) b a))
+        (pred (if (procedure? a) a b)))
+    (if (vector? seq)
+        (vector-sort pred seq)
+        (chez:sort pred seq))))
+(define (sort! a b)
+  (sort a b))
+
 (define (procedure-name p) #f)
 (define (procedure-documentation p) #f)
 
-(define (make-hash-table . _) (make-hashtable equal-hash equal?))
-(define (make-ahash-table . _) (make-hashtable equal-hash equal?))
+(define (tm-equal-hash x)
+  (cond ((and (box? x)
+              (top-level-bound? 'blackbox?)
+              (blackbox? x))
+         (c-blackbox-hash x))
+        ((pair? x)
+         (+ (tm-equal-hash (car x)) (tm-equal-hash (cdr x))))
+        (else (equal-hash x))))
+
+(define (make-hash-table . _) (make-hashtable tm-equal-hash equal?))
+(define (make-ahash-table . _) (make-hashtable tm-equal-hash equal?))
 
 (define (hash-ref t k . default)
   (if (hashtable-contains? t k)
@@ -903,7 +968,7 @@
     (if so
         (begin
           (primitive-load so)
-          (guard (e (else #f))
+          (guard (e (else (display (list 'IMPORT-FAIL (module-spec->symbol which) (tm-error-message e))) (newline) #f))
             (eval `(import ,(module-spec->symbol which)) (interaction-environment))))
         (let ((fname (module-file-name which)))
           (when (file-exists? fname)

@@ -1220,8 +1220,6 @@ command_queue::~command_queue() { clear_pending(); /* implicit */ }
 
 void
 command_queue::exec (object cmd) {
-  fprintf (stderr, "EXEC_QUEUE add exec: %p\n", (void*) cmd.rep);
-  fflush (stderr);
   q << cmd;
   start_times << (((time_t) texmacs_time ()) - 1000000000);
   lapse = texmacs_time();
@@ -1232,8 +1230,6 @@ command_queue::exec (object cmd) {
 
 void
 command_queue::exec_pause (object cmd) {
-  fprintf (stderr, "EXEC_QUEUE add exec_pause: %p\n", (void*) cmd.rep);
-  fflush (stderr);
   q << cmd;
   start_times << ((time_t) texmacs_time ());
   lapse = texmacs_time();
@@ -1249,8 +1245,6 @@ command_queue::exec_pending () {
   q = array<object> (0);
   start_times = array<time_t> (0);
   int i, n = N(a);
-  fprintf (stderr, "EXEC_PENDING begin total=%d\n", n);
-  fflush (stderr);
   for (i = 0; i<n; i++) {
     time_t now =  texmacs_time ();
     if ((now - b[i]) >= 0) {
@@ -1282,6 +1276,9 @@ command_queue::exec_pending () {
     }
   } else
     wait = false;
+#if defined(USE_CHEZ)
+  reap_blackboxes ();
+#endif
 }
 
 void

@@ -17,7 +17,7 @@
 ;; Common notations
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(define-public == equal?)
+(define-public (== x y) (equal? x y))
 (define-public (!= x y) (not (equal? x y)))
 
 (define-public (nsymbol? x) (not (symbol? x)))

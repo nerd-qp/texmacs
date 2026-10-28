@@ -12,6 +12,10 @@
 ;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+(when (top-level-bound? '*init-texmacs-chez-loaded*)
+  (display "WARNING: init-texmacs-chez.scm loaded more than once!\n"))
+(define *init-texmacs-chez-loaded* #t)
+
 ;; TeXmacs's initialization scripts were written against Guile, where the
 ;; following names are interpreter builtins (module system, debugger knobs,
 ;; reader hooks). Chez lacks them, so we provide early stand-ins here; the

@@ -35,7 +35,7 @@ typedef ptr tmscm;
 /* -- global engine state (defined in chez_tm.cpp) ------------------------ */
 
 extern tmscm tm_null;              /* the value of '()                        */
-extern tmscm tm_blackbox_tag;      /* the symbol 'tmscm-blackbox              */
+extern tmscm tm_blackbox_guardian;  /* Guardian procedure for blackboxes      */
 extern tmscm tm_eval_string_proc;  /* (tm-eval-string s)                      */
 extern tmscm tm_load_file_proc;    /* (tm-load-file file)                     */
 extern tmscm tm_apply_proc;        /* (tm-apply fun args-list)                */
@@ -94,18 +94,21 @@ string tmscm_to_string (tmscm obj);
 string tmscm_to_symbol (tmscm obj);
 
 /* -- blackboxes (opaque C++ values kept inside Scheme objects) ------------ */
-/* We represent a blackbox as (cons 'tmscm-blackbox <integer token>), where
-   the token is the address of a heap allocated copy of the C++ blackbox.
-   The copies are intentionally never freed (documented limitation): the
-   Chez kernel C API exposes no finalizer hook, unlike Guile smobs or the
-   s7 branch's c-objects.  Equality of two blackboxes is identity of the
-   token, i.e. two independently converted copies of the same C++ value are
-   NOT equal?.  This matches the needs of the current TeXmacs glue, where
-   blackboxes are mostly used opaquely. */
+/* We represent a blackbox as a Chez Scheme Box (Sbox) containing an integer
+   address token: Sbox (Sinteger ((iptr) ptr)), where ptr is the address of
+   a heap-allocated copy of the C++ blackbox.
+   Because a Box is a first-class, non-pair, non-list Chez Scheme datatype,
+   polymorphic Scheme functions (e.g. tm-car, tm-cdr, pair?, list?) correctly
+   distinguish blackboxes from lists and pairs.
+   Lifetime is managed via a Chez Guardian (tm_blackbox_guardian): upon
+   creation, every blackbox is registered with the guardian, and reclaimed
+   when unreachable by invoking tmscm_delete_blackbox in Scheme / C++. */
 
 bool tmscm_is_blackbox (tmscm obj);
 tmscm blackbox_to_tmscm (blackbox b);
 blackbox tmscm_to_blackbox (tmscm obj);
+void reap_blackboxes ();
+extern "C" void tmscm_delete_blackbox (void* ptr);
 
 /* -- evaluation and calls -------------------------------------------------- */
 

@@ -554,15 +554,18 @@ This document tracks identified architectural improvements and performance bottl
   - Guard `tm-apply` in `chez_tm.cpp`: if `fun` is not a symbol, procedure, or callable entity, return `#f` or evaluate data safely rather than raising an unhandled exception.
   - Audit C++ command callback bridging in `object.cpp` (`object_command_rep`, `call_scheme`) to ensure raw property lists are not passed as callbacks.
 
-#### [ ] Item 27: Tagged Pointer / Blackbox Conversion Error (`<int> is not a proper list / pair`)
-- **Location**: `src/Scheme/Chez/chez_tm.cpp` (`object_to_tmscm`, `tmscm_to_object`), C++ object bridge
+#### [x] Item 27: Tagged Pointer / Blackbox Conversion Error (`<int> is not a proper list / pair`)
+- **Location**: [`src/Scheme/Chez/chez_tm.cpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/chez_tm.cpp), [`src/Scheme/Chez/chez_tm.hpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/chez_tm.hpp), [`TeXmacs/progs/kernel/boot/boot-chez.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/boot/boot-chez.scm), [`TeXmacs/progs/init-texmacs-chez.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/init-texmacs-chez.scm)
 - **Errors**:
   - `(TM-APPLY-ERROR 4712781216 is not a pair)`
   - `(TM-APPLY-ERROR 5012788192 is not a proper list)`
+  - `Exception in map: 4705105096 is not a proper list` in `link-flatten-sub` / `(tm-cdr ln)`
 - **Root Cause**:
-  - `4712781216` and `5012788192` are 64-bit memory addresses of C++ objects.
-  - In `chez_tm.cpp`, blackbox objects are tagged or converted between C++ `object` and Scheme representations. When an untagged integer address or an invalid blackbox vector is passed to Scheme list-traversal functions (`apply`, `car`, `cdr`), Chez Scheme raises `<address> is not a pair` or `<address> is not a proper list`.
-- **Action Plan**:
-  - Audit pointer packing and unpacking in `object_to_tmscm` and `tmscm_to_object`.
-  - Ensure all pointer-holding values are wrapped in proper Chez records/foreign pointers rather than raw integer/fixnum addresses that get confused with list structures.
+  - Blackboxes (`tree`, `widget`, `observer`, etc.) were represented as a Scheme pair `(cons 'tmscm-blackbox <pointer-int>)`.
+  - Polymorphic TeXmacs procedures in `content.scm` (e.g. `(tm-cdr x)`) use `(if (pair? x) x (tree->list x))` to distinguish Scheme lists from C++ trees (which were SMOBs in Guile where `pair?` returned `#f`).
+  - Because Chez Scheme represented blackboxes as pairs, `(pair? tree)` returned `#t`, returning the raw pointer address integer instead of the child trees list and detonating `map`.
+- **Solution (Approach 2 - Native Box Representation + Guardian Lifecycle)**:
+  1. **Chez Box Representation**: Switched `blackbox_to_tmscm` / `tmscm_to_blackbox` to Chez Scheme native Boxes (`Sbox` / `Sunbox` / `Sboxp`). Because Box is a native, non-pair, non-list Chez datatype, `(pair? tree)` correctly returns `#f`, enabling all polymorphic functions (`tm-car`, `tm-cdr`, `tm-label`, `tm-children`, `tm-is?`) to take their intended tree paths.
+  2. **Automatic Lifecycle via Guardians**: Established a Chez Scheme Guardian `(define tm-blackbox-guardian (make-guardian))`. When C++ glue procedures return blackbox objects to Scheme, `tm-register-guardian!` registers them. When objects become unreachable, dead blackboxes are collected and reclaimed via `tmscm_delete_blackbox` / `tm_delete` in both `collect-request-handler` and the Qt idle loop (`command_queue::exec_pending`).
+  3. **Value Equality & Hash Tables**: Implemented C foreign procedures `tmscm_blackbox_equal` and `tmscm_blackbox_hash` hooked into Scheme's `equal?`, `==`, `!=`, and `make-hash-table`, providing full content-equality and persistent hashing for blackbox-keyed structures.
 

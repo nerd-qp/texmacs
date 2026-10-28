@@ -26,7 +26,7 @@ extern bool compile_modules_mode;
  * ---------------------------------------------------------------------- */
 
 tmscm tm_null= 0;
-tmscm tm_blackbox_tag= 0;
+tmscm tm_blackbox_guardian= 0;
 static ptr tm_install_guarded= 0;   /* CHEZDBG debug aid */
 tmscm tm_eval_string_proc= 0;
 tmscm tm_load_file_proc= 0;
@@ -152,21 +152,69 @@ tmscm_to_symbol (tmscm s) {
 
 bool
 tmscm_is_blackbox (tmscm t) {
-  return Spairp (t)
-      && (Scar (t) == tm_blackbox_tag)
-      && (Sfixnump (Scdr (t)) || Sbignump (Scdr (t)));
+  return Sboxp (t)
+      && tmscm_is_int (Sunbox (t))
+      && (Sinteger_value (Sunbox (t)) != 0);
 }
 
 tmscm
 blackbox_to_tmscm (blackbox b) {
   blackbox* ptr= tm_new<blackbox> (b);
-  /* Note: the copy is intentionally never freed (see chez_tm.hpp). */
-  return Scons (tm_blackbox_tag, Sinteger ((iptr) ptr));
+  return Sbox (Sinteger ((iptr) ptr));
 }
 
 blackbox
 tmscm_to_blackbox (tmscm t) {
-  return *((blackbox*) Sinteger_value (Scdr (t)));
+  void* p= (void*) Sinteger_value (Sunbox (t));
+  if (!p) return blackbox ();
+  return *((blackbox*) p);
+}
+
+extern "C" void
+tmscm_delete_blackbox (void* p) {
+  if (p) tm_delete ((blackbox*) p);
+}
+
+extern "C" ptr
+tmscm_blackbox_equal (ptr b1, ptr b2) {
+  if (!Sboxp (b1) || !Sboxp (b2)) return Sboolean (0);
+  void* p1= (void*) Sinteger_value (Sunbox (b1));
+  void* p2= (void*) Sinteger_value (Sunbox (b2));
+  if (p1 == p2) return Sboolean (1);
+  if (!p1 || !p2) return Sboolean (0);
+  return Sboolean (*((blackbox*) p1) == *((blackbox*) p2));
+}
+
+extern "C" iptr
+tmscm_blackbox_hash (ptr b) {
+  if (!Sboxp (b)) return 0;
+  void* p= (void*) Sinteger_value (Sunbox (b));
+  if (!p) return 0;
+  blackbox* bb= (blackbox*) p;
+  if (type_box (*bb) == type_helper<tree>::id) {
+    return (iptr) hash (open_box<tree> (*bb));
+  }
+  return (iptr) type_box (*bb);
+}
+
+void
+reap_blackboxes () {
+  chez_lock lock;
+  chez_activate activate;
+  if (!tm_blackbox_guardian) {
+    FAILED ("reap_blackboxes called but tm_blackbox_guardian is null");
+  }
+  while (true) {
+    tmscm b= Scall0 (tm_blackbox_guardian);
+    if (b == Sboolean (0)) break;
+    if (Sboxp (b)) {
+      void* p= (void*) Sinteger_value (Sunbox (b));
+      if (p) {
+        tm_delete ((blackbox*) p);
+        Sset_box (b, Sinteger (0));
+      }
+    }
+  }
 }
 
 /* ------------------------------------------------------------------------
@@ -296,7 +344,7 @@ chez_install_procedure (const char* name, void* fn, int arity) {
   tm_proc_registry[name]= tm_proc_entry { fn, arity };
   /* define (name . args) as a call into the registry */
   string def= "(define " * string (name) *
-              " (lambda args (tm-call-by-name \"" * string (name) * "\" args)))";
+              " (lambda args (tm-register-guardian! (tm-call-by-name \"" * string (name) * "\" args))))";
   c_string _def (def);
   ptr ok= Scall1 (tm_install_guarded, Sstring (_def));
   if (ok == Sfalse) {
@@ -449,13 +497,17 @@ start_scheme (int argc, char** argv, void (*call_back) (int, char**)) {
 
 static const char* init_prg=
   "(define tmscm-null '())\n"
-  "(define tmscm-blackbox-tag 'tmscm-blackbox)\n"
-  "(define-syntax tmscm-blackbox\n"
-  "  (make-variable-transformer\n"
-  "    (lambda (x)\n"
-  "      (syntax-case x ()\n"
-  "        ((_ . rest) #''(tmscm-blackbox . rest))\n"
-  "        (_          #''tmscm-blackbox)))))\n"
+  "(define tm-blackbox-guardian (make-guardian))\n"
+  "(define (tm-register-guardian! x)\n"
+  "  (cond ((box? x)\n"
+  "         (if (and (top-level-bound? 'blackbox?) (blackbox? x))\n"
+  "             (tm-blackbox-guardian x))\n"
+  "         x)\n"
+  "        ((pair? x)\n"
+  "         (tm-register-guardian! (car x))\n"
+  "         (tm-register-guardian! (cdr x))\n"
+  "         x)\n"
+  "        (else x)))\n"
   "(define tm-user-env (interaction-environment))\n"
   "\n"
   "(define (display-to-string obj)\n"
@@ -648,6 +700,7 @@ static const char* init_prg=
   "  (guard (e (else (begin\n"
   "             (display-condition e)\n"
   "             (newline)\n"
+  "             (tm-backtrace e)\n"
   "             (display (list 'LOAD-ERROR f (tm-error-message e)\n"
   "                            (tm-safe-irritants e)))\n"
   "             (newline)\n"
@@ -697,6 +750,9 @@ initialize_scheme () {
   chez_lock lock;
   fprintf (stderr, "CHEZDBG: Sforeign_symbol\n"); fflush (stderr);
   Sforeign_symbol ("tm-call-by-name", (void*) tm_call_by_name);
+  Sforeign_symbol ("tmscm_delete_blackbox", (void*) tmscm_delete_blackbox);
+  Sforeign_symbol ("tmscm_blackbox_equal", (void*) tmscm_blackbox_equal);
+  Sforeign_symbol ("tmscm_blackbox_hash", (void*) tmscm_blackbox_hash);
   fprintf (stderr, "CHEZDBG: eval init_prg\n"); fflush (stderr);
   eval_string_raw (init_prg);
   if (compile_modules_mode) {
@@ -710,8 +766,8 @@ initialize_scheme () {
      Slock_object pins them (they are process-lifetime, never unlocked). */
   tm_null= Stop_level_value (Sstring_to_symbol ("tmscm-null"));
   Slock_object (tm_null);
-  tm_blackbox_tag= Stop_level_value (Sstring_to_symbol ("tmscm-blackbox-tag"));
-  Slock_object (tm_blackbox_tag);
+  tm_blackbox_guardian= Stop_level_value (Sstring_to_symbol ("tm-blackbox-guardian"));
+  Slock_object (tm_blackbox_guardian);
   tm_eval_string_proc= Stop_level_value (Sstring_to_symbol ("tm-eval-string"));
   Slock_object (tm_eval_string_proc);
   tm_load_file_proc= Stop_level_value (Sstring_to_symbol ("tm-load-file"));
