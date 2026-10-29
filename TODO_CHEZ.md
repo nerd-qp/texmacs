@@ -598,26 +598,52 @@ This document tracks identified architectural improvements and performance bottl
 - **Resolution**:
   - In `init-texmacs-chez.scm`, `eval` now runs `tm-quote-boxes` on incoming forms, automatically wrapping unquoted Box datums in `(quote ...)` (`#&addr` -> `'(#&addr)`). This permits C++ commands and closures carrying blackboxes to evaluate without syntax errors.
 
-#### [x] Item 30: Submenu Expansion Failure (`make-menu-when` / `make-menu-if` Non-Procedure Application) and Menu Latency
-- **Location**: [`TeXmacs/progs/kernel/gui/menu-widget.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/gui/menu-widget.scm#L718-L746), [`src/Scheme/Chez/chez_tm.cpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/chez_tm.cpp), [`TeXmacs/progs/kernel/boot/boot-chez.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/boot/boot-chez.scm)
+#### [x] Item 30: Popup / Menu Expansion Latency & Zero-Height Layout Stalls
+- **Location**: [`src/Scheme/Chez/chez_tm.cpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/chez_tm.cpp), [`TeXmacs/progs/kernel/boot/boot-chez.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/boot/boot-chez.scm)
 - **Symptoms**:
-  - Submenus such as `HELP -> FULL MANUALS -> USER MANUAL` failed to open or produced empty 0-height popup windows (`qt.qpa.window: Window position QRect(1282,1612 318x0) outside any known screen`).
-  - Menu expansion and initial startup had noticeable latency (`TIME-PRE-GUI-LOOP: ~2450 ms`).
+  - Submenus such as `HELP -> FULL MANUALS` appeared delayed or stalled on macOS, logging temporary 0-height popup warnings (`qt.qpa.window: Window position QRect(1282,1612 318x0) outside any known screen`).
+  - Menu expansion and initial startup had high latency (`TIME-PRE-GUI-LOOP: ~2450 ms`).
 - **Diagnosis & Root Cause**:
-  1. **Submenu Failure in `menu-widget.scm`**:
-     - In `make-menu-when`, `make-menu-if`, and `make-menu-mini`, the predicate expression was unconditionally applied as a thunk: `(pred?)`.
-     - When submenus are processed via `menu-expand`, macros like `menu-expand-when` pre-evaluate conditions such as `(url-exists-in-help? ...)` into a raw boolean (`#t` or `#f`).
-     - Calling `(#f)` or `(#t)` threw `Exception: attempt to apply non-procedure #f`.
-     - `wrap-catch` in `make-menu-widget` caught this exception and silently fell back to `(make-menu-empty)`, resulting in an empty menu widget with 0 height (`318x0`) and no menu items.
-  2. **Latency in `chez_tm.cpp`**:
+  1. **Latency in `chez_tm.cpp`**:
      - `tm-register-guardian!` was wrapped around every single foreign C++ procedure return in Scheme.
-     - For large nested data structures (AST trees, menus, styles), `tm-register-guardian!` recursively walked the entire tree in interpreted Scheme and performed `(top-level-bound? 'blackbox?)` on every node, inflating menu building and startup times.
-  3. **Bignum Modular Arithmetic in `hash`**:
-     - `boot-chez.scm` used a handwritten recursive DJB2 hash algorithm doing interpreted arithmetic for every symbol and cons cell during menu caching.
+     - For compound data structures (menus, document trees, stylesheet definitions), `tm-register-guardian!` recursively walked the entire tree in interpreted Scheme and called `(top-level-bound? 'blackbox?)` on every node, inflating menu building times by seconds and stalling Qt layout passes.
+  2. **Bignum Modular Arithmetic in `hash`**:
+     - `boot-chez.scm` used a handwritten recursive DJB2 Scheme function with bignum modular arithmetic on every cons cell and symbol in expanded menu trees during hash map insertions and lookups.
+  3. **Menu Widget Scheme Logic**:
+     - The upstream Scheme menu routines in `menu-widget.scm` (`make-menu-when`, `make-menu-if`) are 100% upstream-compatible: `pred?` in live menus is always a closure thunk evaluated via `(pred?)`.
 - **Resolution**:
-  - In `menu-widget.scm`, updated `make-menu-if`, `make-menu-when`, `make-menu-for`, and `make-menu-mini` to check `(if (procedure? pred?) (pred?) pred?)`, handling both thunks and pre-evaluated booleans gracefully.
   - In `chez_tm.cpp`, eliminated `tm-register-guardian!` entirely. Instead, registered newly created boxes in `blackbox_to_tmscm` directly via `Scall1(tm_blackbox_guardian, box)` in $O(1)$ time in C++, and restored `chez_install_procedure` to call `tm-call-by-name` directly without wrapping.
-  - In `boot-chez.scm`, replaced the recursive Scheme `hash` with Chez Scheme's native `(equal-hash obj)`, dropping menu hashing time to 0 ms.
+  - In `boot-chez.scm`, replaced the recursive Scheme `hash` with Chez Scheme's native `(equal-hash obj)`, dropping menu hashing time to 0 ms and pre-GUI startup time to ~1200 ms.
+  - Kept `make-menu-when`, `make-menu-if`, and `make-menu-mini` completely identical to upstream GNU TeXmacs.
   - Reverted Qt C++ files back to upstream master, maintaining pure Scheme/Chez integration integrity.
+
+#### [ ] Item 31: `while` Macro Resolution & Unbound Variable `t` in `(graphics-exit-right)`
+- **Location**: [`TeXmacs/progs/graphics/graphics-main.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/graphics/graphics-main.scm#L63-L76), [`TeXmacs/progs/kernel/boot/abbrevs.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/boot/abbrevs.scm), [`src/Scheme/Chez/compile-texmacs.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/compile-texmacs.scm)
+- **Error**: `(EVAL-ERROR (graphics-exit-right) variable t is not bound (t))`
+- **Symptom**: Triggered when exiting a graphics canvas, e.g. clicking outside a graphics object, invoking `(graphics-exit-right)`, or mouse release events in `src/Edit/Interface/edit_mouse.cpp:559`.
+- **Diagnosis & Root Cause**:
+  - In `graphics-main.scm`:
+    ```scheme
+    (tm-define (graphics-exit-right)
+      ...
+      ((inside? 'graphics)
+       (with-innermost t 'graphics
+         (while (and (tree-up t) (tree-func? (tree-up t) 'with))
+           (set! t (tree-up t)))
+         (tree-go-to t :end)))
+      ((tree-is? (cursor-tree) 'graphics)
+       (with t (cursor-tree)
+         (while (and (tree-up t) (tree-func? (tree-up t) 'with))
+           (set! t (tree-up t)))
+         (tree-go-to t :end))))
+    ```
+  - In upstream Guile, `while` is a core language syntax form built directly into the Guile runtime.
+  - In Chez Scheme, `while` is defined via `define-syntax` in `boot-chez.scm` in the top-level interaction environment. However, `while` is not exported by `(kernel boot abbrevs)` or the standard R6RS module headers.
+  - When modules like `(graphics graphics-main)` or `(kernel gui menu-widget)` are compiled into isolated R6RS libraries via `compile-texmacs.scm`, the Chez compiler does not recognize `while` as a syntax transformer. It compiles `(while ...)` as a free procedure call, evaluating its arguments under applicative order.
+  - When `(while ...)` is evaluated as a procedure rather than syntax, arguments containing local variable mutations or references (like `(set! t ...)` or `t`) fail with unbound variable errors.
+- **Action Plan**:
+  - Export a hygienic `while` macro from `(kernel boot abbrevs)` so all modules importing `abbrevs` recognize `while` at compilation time.
+  - Audit `compile-texmacs.scm` macro environment to ensure core control structures (`while`, `repeat`, etc.) are in the compilation expansion environment across all module tiers.
+
 
 
