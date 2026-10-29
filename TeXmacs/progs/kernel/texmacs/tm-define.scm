@@ -60,7 +60,7 @@
 (define-public cur-conds '())
 
 (define cur-props-table (make-ahash-table))
-(define cur-props '())
+(define-public cur-props '())
 
 (define (ca*r x) (if (pair? x) (ca*r (car x)) x))
 (define (ca*adr x) (ca*r (cadr x)))

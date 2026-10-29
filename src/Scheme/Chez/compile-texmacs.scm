@@ -719,7 +719,6 @@
                        define-values
                        bib-define-style
                        texmacs-modes
-                       tm-property
                        import export indirect-export eval-when meta))))
 
 (define (has-def? x)
@@ -826,27 +825,6 @@
 (define-top-level-value 'get-module-exports get-module-exports (interaction-environment))
 
 
-(define (desugar-tm-property x)
-  (let ((head (cadr x))
-        (body (cddr x)))
-    (set! cur-conds '())
-    (set! cur-props '())
-    (when (top-level-bound? 'cur-conds (compilation-environment))
-      (eval '(set! cur-conds '()) (compilation-environment)))
-    (when (top-level-bound? 'cur-props (compilation-environment))
-      (eval '(set! cur-props '()) (compilation-environment)))
-    (let ((prop-sub (if (top-level-bound? 'tm-property-sub (compilation-environment))
-                        (top-level-value 'tm-property-sub (compilation-environment))
-                        #f)))
-      (if prop-sub (prop-sub head body)))
-    (let* ((env-cur-props (if (top-level-bound? 'cur-props (compilation-environment))
-                              (top-level-value 'cur-props (compilation-environment))
-                              '()))
-           (effective-cur-props (if (null? env-cur-props) cur-props env-cur-props))
-           (res (map property-rewrite effective-cur-props)))
-      (when (top-level-bound? 'cur-props (compilation-environment))
-        (eval '(set! cur-props '()) (compilation-environment)))
-      res)))
 
 (define (tm-collect-keywords x acc)
   (cond ((and (symbol? x)
@@ -1092,6 +1070,9 @@
       ((eq? head 'putprop)
        (eval-twice x 'WARNING-PUTPROP-FAIL))
 
+      ((eq? head 'tm-property)
+       (eval-and-auto-publish! x 'WARNING-TM-PROPERTY-FAIL))
+
       ((memq head '(define-table-decls define-collection-decls))
        (guard-eval #f '() #f
          (lambda ()
@@ -1120,11 +1101,9 @@
 				 define-table
 				 define-collection
 				 extend-table
-				 extend-collection)))
-	    (loop (cdr rest) (cons x acc)))  
-           ;; AST Transformations for `tm-property`:
-           ((and (pair? x) (eq? (car x) 'tm-property))
-            (loop (append (desugar-tm-property x) (cdr rest)) acc))
+				 extend-collection
+				 tm-property)))
+	    (loop (cdr rest) (cons x acc)))
            ;; Macro definitions: capture define-public-macro-trace, define-macro-trace, tm-define-macro
            ;; BEFORE generic macro expansion so macro definitions are registered as transformers.
            ((and (pair? x) (memq (car x) '(define-public-macro-trace define-macro-trace tm-define-macro)))
