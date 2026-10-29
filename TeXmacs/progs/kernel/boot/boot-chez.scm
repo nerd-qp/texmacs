@@ -244,16 +244,6 @@
     ((_ var val body ...)
      (with var val (and var (begin body ...))))))
 
-(define-syntax when
-  (syntax-rules ()
-    ((_ cond?) (if cond? (void)))
-    ((_ cond? body ...) (if cond? (begin body ...)))))
-
-(define-syntax unless
-  (syntax-rules ()
-    ((_ cond?) (if (not cond?) (void)))
-    ((_ cond? body ...) (if (not cond?) (begin body ...)))))
-
 (define-syntax while
   (syntax-rules ()
     ((_ test body ...)

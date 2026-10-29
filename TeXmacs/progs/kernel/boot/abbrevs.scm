@@ -100,9 +100,28 @@
 ;; Common programming constructs
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+;; NOTE: `when` and `unless` are NOT defined here, and are no longer defined in
+;; boot-chez.scm either -- Chez Scheme provides both as hygienic library forms.
+;; Defining them here with `define-public-macro` (as was done) made them
+;; non-hygienic: the transformer received raw datums and spliced `,cond?` and
+;; `,@body` back without their lexical context. The failure is silent and
+;; indirect -- a plain `(when c ...)` at the top of a body still comes out
+;; renamed, but a `when` produced INSIDE another macro's template does not.
+;; `while` was exactly that case: its template was
+;;     (let loop () (when test body ... (loop)))
+;; so the loop body's identifiers were inserted as bare symbols instead of
+;; references to the enclosing bindings. The observable symptom was
+;;     variable opts is not bound        (menu-widget.scm, decode-options)
+;; with `(pretty-print (expand '(define (decode-options opts) ... (while ...))))`
+;; showing `#{opts ...-1}` in the let* body but plain `opts` inside the loop.
+;; This is the same defect already worked around for `with` below.
+;;
+;; Do not re-add. If a construct is missing, add a hygienic `define-syntax`.
+#;
 (define-public-macro (when cond? . body)
   `(if ,cond? (begin ,@body)))
 
+#;
 (define-public-macro (unless cond? . body)
   `(if (not ,cond?) (begin ,@body)))
 

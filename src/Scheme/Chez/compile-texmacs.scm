@@ -1070,8 +1070,23 @@
       ((eq? head 'putprop)
        (eval-twice x 'WARNING-PUTPROP-FAIL))
 
-      ((eq? head 'tm-property)
-       (eval-and-auto-publish! x 'WARNING-TM-PROPERTY-FAIL))
+      ;; `tm-property` installs NOTHING: no value, no syntax binding. Its whole effect is
+      ;; a side effect on `cur-props-table` via `property-set!`. Both `eval-and-auto-publish!`
+      ;; (publishes newly introduced names -- the diff is empty by construction) and
+      ;; `eval-twice` (installs twice at compile time) are the wrong shape, because they
+      ;; run the side effect at COMPILE time. Values referenced by properties such as
+      ;; (:check-mark *clipboard-test-import?) only exist at module LOAD time, so any
+      ;; compile-time evaluation reports `variable ... is not bound`.
+      ;;
+      ;; So we do not evaluate it here at all: the form stays in the module body, Chez
+      ;; expands it at compile time, and the emitted `(property-set! ...)` runs at load
+      ;; time inside the module's own environment. This is exactly what the deleted
+      ;; `desugar-tm-property` achieved -- it returned the generated forms and spliced
+      ;; them back into the body via `(loop (append (desugar-tm-property x) (cdr rest)) acc)`
+      ;; rather than evaluating them, and it never touched `(interaction-environment)`.
+      ;; We keep that emit-don't-eval behaviour without resurrecting its manual
+      ;; `cur-conds` / `cur-props` two-cell synchroniser.
+      ((eq? head 'tm-property) #f)
 
       ((memq head '(define-table-decls define-collection-decls))
        (guard-eval #f '() #f

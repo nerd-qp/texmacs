@@ -613,6 +613,51 @@ We test-compiled the 20 core interactive editing modules spanning `table/`, `tex
 - **Incremental Rebuild (`-compile-modules`)**: 116 modules up-to-date (cached), 0 recompiled, 0 failures.
 - **Headless Boot Smoke Test**: Passed with `HEADLESS-ALL-GREEN-SUCCESS` (exit code 0, 0 errors, 0 warnings).
 
+### 5. Non-Hygienic `when` / `unless` Shadowing (2026-10-29) [RESOLVED]
+- **Symptom**: opening Preferences died with `TM-APPLY-ERROR variable opts is not bound` inside `decode-options` (`kernel/gui/menu-widget.scm`), `ARGS: ()`.
+- **Root cause**: `when` and `unless` existed **twice**.
+  - [`boot-chez.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/kernel/boot/boot-chez.scm) defined them as hygienic `syntax-rules`.
+  - [`abbrevs.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/kernel/boot/abbrevs.scm) defined them with `define-public-macro`, which is **non-hygienic** and shadowed the boot versions.
+  - The `define-public-macro` transformer receives raw datums and splices `,cond?` / `,@body` back without lexical context. `while`'s template was `(let loop () (when test body ... (loop)))`, so the loop body's identifiers were emitted as bare symbols resolving at top level instead of references to the enclosing lambda parameters.
+- **Fix**: both definitions deleted. `when` / `unless` now come from Chez's library, hygienic by construction. `while` is back to its upstream form with the nested `when`.
+- **Caveat**: Chez's `when` requires at least one body form, so `(when c)` alone is now invalid — write `(when c (void))`.
+- **Related**: the same defect was already worked around for `with` (commented out with `#;` in `abbrevs.scm`, see the NOTE above it). Any construct implemented with `define-public-macro` and used **inside another macro's template** is suspect; `and-with` nests `with` and should be audited next.
+
+### 6. Debugging Technique: `pretty-print` after `expand`
+The fastest way to diagnose a "variable is not bound" that only appears in compiled modules is to inspect the expander's output directly, in the running TeXmacs:
+
+```scheme
+(pretty-print
+ (expand
+  '(define (decode-options opts)
+     (let* ((bufs (list)) (qcmd noop))
+       (while (and (pair? opts) (url? (car opts)))
+         (set! bufs (cons (car opts) bufs))
+         (set! opts (cdr opts)))
+       (list bufs qcmd)))))
+```
+
+**What to look for**: the expander renames every lexically bound identifier to `#{name <unique>}`. If the same source identifier appears **renamed in one part of the form and bare in another**, that region lost its lexical context — almost always a non-hygienic macro in the expansion chain. Example from this bug:
+
+```scheme
+(lambda (#{opts eepet8...-1})
+  (let ([#{qcmd eepet8...-3} noop])
+    ((letrec ([#{loop ...-4} (lambda ()
+                               (if (#2%pair? opts) ...   ; bare -> BUG
+    (if (#2%pair? #{opts eepet8...-1}) ...               ; renamed -> correct
+```
+
+After the fix, the loop body reads `#{opts eepet8...-1}` and the error disappears.
+
+**Running it headlessly** (no GUI clicks needed): `-i` replaces the init file, so copy `init-texmacs-chez.scm`, append a `(load "/tmp/probe.scm")` line, and launch:
+
+```bash
+HOME="$PWD/fakehome" TEXMACS_PATH="$PWD/TeXmacs" \
+  build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -i /tmp/init-probe.scm > /tmp/gui.log 2>&1
+```
+
+The same trick reproduces GUI-triggered bugs without a mouse by appending `(delayed (:idle 3000) (open-preferences))` to the copied init. Probe output goes to stdout, so `grep` the log.
+
 ---
 
 ## 12. Full-Census Single-Pass AOT Compilation (452 Modules), Interaction Persistence & Circular Dependency Resolution [RESOLVED]
