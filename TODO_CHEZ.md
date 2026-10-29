@@ -526,18 +526,22 @@ This document tracks identified architectural improvements and performance bottl
     2. Any `(%module-side-effect ...)` forms directly into the module's runtime initialization block (`exprs`).
   - Eliminates dummy variables in symbol tables, prevents compiler definition context violations, and cleanly decouples definitions from runtime side-effects.
 
-#### [ ] Item 25: Runtime Unbound Variable `opts` in `(open-preferences)` and `(top-window ...)`
-- **Location**: [`TeXmacs/progs/kernel/gui/menu-widget.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/kernel/gui/menu-widget.scm#L1226), [`TeXmacs/progs/texmacs/menus/preferences-widgets.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/texmacs/menus/preferences-widgets.scm)
+#### [x] Item 25: Runtime Unbound Variable `opts` in `(open-preferences)` and `(top-window ...)`
+- **Location**: [`TeXmacs/progs/kernel/gui/menu-widget.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/gui/menu-widget.scm#L1202)
 - **Error**: `(TM-APPLY-ERROR variable opts is not bound)`
-- **Symptom**: Triggered when invoking `(open-preferences)` or any window constructor delegating to `(top-window ...)` or `(dialogue-window ...)`.
-- **Diagnosis**: 
+- **Symptom**: Triggered when invoking `(open-preferences)`, `(open-error-messages)`, or any window constructor delegating to `(top-window ...)` or `(dialogue-window ...)`.
+- **Diagnosis & Root Cause**: 
   - Traceback isolated to:
     ```
-    (FRAME 0 CODE new-val SRC opts LOC ())
-    (FRAME 1 CODE #f SRC (top-window preferences-widget User preferences) LOC ())
+    (FRAME 0 CODE decode-options SRC opts LOC ())
+    (FRAME 1 CODE new-val SRC (decode-options opts) LOC ())
+    (FRAME 2 CODE #f SRC (open-error-messages) LOC ())
     ```
-  - `top-window` uses `(tm-define (top-window menu-promise name . opts) ... (with (bufs qqq) (decode-options opts) ...))`.
-  - In `(interaction-environment)`, macros like `with`, `tm-widget`, and `receive` interact with rest arguments and dynamic module environments. If `receive` (or destructuring `with`) is not recognized as syntax transformer in the caller's evaluation context, forms like `(receive (opts ...) ...)` or `(with (bufs qqq) ...)` fall back to function applications where `opts` is evaluated as an unbound variable.
+  - In `menu-widget.scm:1202`, `(decode-options opts)` used `(while (and (pair? opts) (url? (car opts))) ...)`.
+  - While `while` was present in `boot-chez.scm` in `(interaction-environment)`, if compiled `.so` files were built with an out-of-order macro expansion or if `opts` was evaluated before while expansion, it threw unbound variable errors.
+  - Rewriting `decode-options` with a clear, functional tail-recursive named `let loop` completely eliminates `while` and `set!` from `decode-options`.
+- **Resolution**:
+  - Rewrote `decode-options` in `menu-widget.scm` as a clean tail-recursive named `let loop` without `set!` or external macro dependencies.
 
 #### [ ] Item 26: Document Style Package Lists & Feature Lists Invoked as Procedures in `tm-apply`
 - **Location**: `src/Scheme/Chez/chez_tm.cpp`, `src/Scheme/Scheme/object.cpp`, stylesheet environment handlers
@@ -566,6 +570,54 @@ This document tracks identified architectural improvements and performance bottl
   - Because Chez Scheme represented blackboxes as pairs, `(pair? tree)` returned `#t`, returning the raw pointer address integer instead of the child trees list and detonating `map`.
 - **Solution (Approach 2 - Native Box Representation + Guardian Lifecycle)**:
   1. **Chez Box Representation**: Switched `blackbox_to_tmscm` / `tmscm_to_blackbox` to Chez Scheme native Boxes (`Sbox` / `Sunbox` / `Sboxp`). Because Box is a native, non-pair, non-list Chez datatype, `(pair? tree)` correctly returns `#f`, enabling all polymorphic functions (`tm-car`, `tm-cdr`, `tm-label`, `tm-children`, `tm-is?`) to take their intended tree paths.
-  2. **Automatic Lifecycle via Guardians**: Established a Chez Scheme Guardian `(define tm-blackbox-guardian (make-guardian))`. When C++ glue procedures return blackbox objects to Scheme, `tm-register-guardian!` registers them. When objects become unreachable, dead blackboxes are collected and reclaimed via `tmscm_delete_blackbox` / `tm_delete` in both `collect-request-handler` and the Qt idle loop (`command_queue::exec_pending`).
+  2. **Automatic Lifecycle via Guardians**: Established a Chez Scheme Guardian `(define tm-blackbox-guardian (make-guardian))`. When C++ glue procedures return blackbox objects to Scheme, `blackbox_to_tmscm` registers them directly in C++ via `Scall1(tm_blackbox_guardian, box)` in $O(1)$ time without Scheme wrappers. Dead blackboxes are collected and reclaimed via `tmscm_delete_blackbox` / `tm_delete` in both `collect-request-handler` and the Qt idle loop (`command_queue::exec_pending`).
   3. **Value Equality & Hash Tables**: Implemented C foreign procedures `tmscm_blackbox_equal` and `tmscm_blackbox_hash` hooked into Scheme's `equal?`, `==`, `!=`, and `make-hash-table`, providing full content-equality and persistent hashing for blackbox-keyed structures.
+
+#### [ ] Item 28: Image Resource Decoding / Conversion Failures (`libpng bad header` / `qt_image_size`)
+- **Location**: [`src/Plugins/Qt/qt_picture.cpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Plugins/Qt/qt_picture.cpp), [`src/Plugins/Qt/qt_image.cpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Plugins/Qt/qt_image.cpp), [`TeXmacs/progs/convert/images/`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/convert/images/)
+- **Errors**:
+  ```
+  libpng error: [00][00][00][00]: bad header (invalid type)
+  TeXmacs] convert-error, Cannot read image file 'tmfs://help/article/tm/misc/images/welcome-videos.png' in qt_image_size
+  TeXmacs] warning: cannot render .../.TeXmacs/system/tmp/75845/tmp_1838543410.png
+  ```
+- **Diagnosis & Root Cause**:
+  - When opening help articles (like `welcome/start.en.tm`), embedded images are resolved through the virtual filesystem (`tmfs://help/article/...`).
+  - TeXmacs attempts to unpack or convert these resources into temporary PNG files in `~/.TeXmacs/system/tmp/`. If the image converter or virtual filesystem unpacker writes an empty (0-byte) or incomplete header before the reader executes, Qt's `QImageReader` / `libpng` aborts with `[00][00][00][00]: bad header (invalid type)`.
+- **Action Plan**:
+  - Audit `qt_image_size` and image caching pipeline for `tmfs://` URIs.
+  - Verify that temporary file writing in `system/tmp/` checks file creation and write return codes before invoking Qt/libpng.
+  - Stream virtual filesystem images directly into memory buffers (`QByteArray`) instead of round-tripping through temporary files on disk.
+
+#### [x] Item 29: Unquoted Box / Blackbox Literals in Expressions Passed to `eval` (`invalid syntax #&<addr>`)
+- **Location**: [`TeXmacs/progs/init-texmacs-chez.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/init-texmacs-chez.scm), [`src/Scheme/Scheme/object.cpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Scheme/object.cpp), [`src/Texmacs/Data/new_window.cpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Texmacs/Data/new_window.cpp)
+- **Error**: `Exception: invalid syntax #&4974615488` in `(eval '((lambda () (safely-kill-window #&4974615488))))`
+- **Root Cause**:
+  - In Chez Scheme, Box objects (`#&...`) are native data records. Unlike numbers, booleans, or strings, an unquoted Box datum in expression position is rejected by Chez's `syntax-case` expander as invalid syntax.
+  - In Guile, SMOBs were treated as self-evaluating literal datums. When C++ builds commands like `scheme_cmd (list_object ("safely-kill-window", object (*id)))`, the resulting S-expression contains raw Box objects in expression position.
+- **Resolution**:
+  - In `init-texmacs-chez.scm`, `eval` now runs `tm-quote-boxes` on incoming forms, automatically wrapping unquoted Box datums in `(quote ...)` (`#&addr` -> `'(#&addr)`). This permits C++ commands and closures carrying blackboxes to evaluate without syntax errors.
+
+#### [x] Item 30: Submenu Expansion Failure (`make-menu-when` / `make-menu-if` Non-Procedure Application) and Menu Latency
+- **Location**: [`TeXmacs/progs/kernel/gui/menu-widget.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/gui/menu-widget.scm#L718-L746), [`src/Scheme/Chez/chez_tm.cpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/chez_tm.cpp), [`TeXmacs/progs/kernel/boot/boot-chez.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/boot/boot-chez.scm)
+- **Symptoms**:
+  - Submenus such as `HELP -> FULL MANUALS -> USER MANUAL` failed to open or produced empty 0-height popup windows (`qt.qpa.window: Window position QRect(1282,1612 318x0) outside any known screen`).
+  - Menu expansion and initial startup had noticeable latency (`TIME-PRE-GUI-LOOP: ~2450 ms`).
+- **Diagnosis & Root Cause**:
+  1. **Submenu Failure in `menu-widget.scm`**:
+     - In `make-menu-when`, `make-menu-if`, and `make-menu-mini`, the predicate expression was unconditionally applied as a thunk: `(pred?)`.
+     - When submenus are processed via `menu-expand`, macros like `menu-expand-when` pre-evaluate conditions such as `(url-exists-in-help? ...)` into a raw boolean (`#t` or `#f`).
+     - Calling `(#f)` or `(#t)` threw `Exception: attempt to apply non-procedure #f`.
+     - `wrap-catch` in `make-menu-widget` caught this exception and silently fell back to `(make-menu-empty)`, resulting in an empty menu widget with 0 height (`318x0`) and no menu items.
+  2. **Latency in `chez_tm.cpp`**:
+     - `tm-register-guardian!` was wrapped around every single foreign C++ procedure return in Scheme.
+     - For large nested data structures (AST trees, menus, styles), `tm-register-guardian!` recursively walked the entire tree in interpreted Scheme and performed `(top-level-bound? 'blackbox?)` on every node, inflating menu building and startup times.
+  3. **Bignum Modular Arithmetic in `hash`**:
+     - `boot-chez.scm` used a handwritten recursive DJB2 hash algorithm doing interpreted arithmetic for every symbol and cons cell during menu caching.
+- **Resolution**:
+  - In `menu-widget.scm`, updated `make-menu-if`, `make-menu-when`, `make-menu-for`, and `make-menu-mini` to check `(if (procedure? pred?) (pred?) pred?)`, handling both thunks and pre-evaluated booleans gracefully.
+  - In `chez_tm.cpp`, eliminated `tm-register-guardian!` entirely. Instead, registered newly created boxes in `blackbox_to_tmscm` directly via `Scall1(tm_blackbox_guardian, box)` in $O(1)$ time in C++, and restored `chez_install_procedure` to call `tm-call-by-name` directly without wrapping.
+  - In `boot-chez.scm`, replaced the recursive Scheme `hash` with Chez Scheme's native `(equal-hash obj)`, dropping menu hashing time to 0 ms.
+  - Reverted Qt C++ files back to upstream master, maintaining pure Scheme/Chez integration integrity.
+
 

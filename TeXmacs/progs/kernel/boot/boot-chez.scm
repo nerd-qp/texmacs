@@ -452,19 +452,8 @@
 ;; so any deterministic well-distributed value works.
 (define hash
   (lambda (obj n)
-    (define (str-h s)
-      (let loop ((i (- (string-length s) 1)) (acc 5381))
-        (if (< i 0) acc
-            (loop (- i 1)
-                  (modulo (+ (* acc 33) (char->integer (string-ref s i)))
-                          4294967296)))))
-    (define (any-h o)
-      (cond ((fixnum? o) (if (< o 0) (- o) o))
-            ((string? o) (str-h o))
-            ((symbol? o) (str-h (symbol->string o)))
-            ((pair? o) (+ (* 5 (any-h (car o))) (any-h (cdr o))))
-            (else 7919)))
-    (if (= n 0) 0 (modulo (any-h obj) n))))
+    (if (= n 0) 0
+        (modulo (abs (equal-hash obj)) n))))
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

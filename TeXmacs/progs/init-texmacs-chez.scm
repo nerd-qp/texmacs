@@ -47,13 +47,23 @@
 ;; define shadows the immutable import; set! would not, hence no set! usage.
 (define tm-orig-eval (if (top-level-bound? 'tm-orig-eval) tm-orig-eval (top-level-value 'eval (scheme-environment))))
 (define primitive-eval tm-orig-eval)
+
+(define (tm-quote-boxes x)
+  (cond ((box? x) (list 'quote x))
+        ((pair? x)
+         (if (eq? (car x) 'quote)
+             x
+             (cons (tm-quote-boxes (car x)) (tm-quote-boxes (cdr x)))))
+        (else x)))
+
 (define eval
   (lambda (form . env)
-    (if (null? env)
-        (tm-orig-eval form (if (top-level-bound? 'current-module-env)
-                               (current-module-env)
-                               tm-user-env))
-        (tm-orig-eval form (car env)))))
+    (let ((form* (if (or (box? form) (pair? form)) (tm-quote-boxes form) form)))
+      (if (null? env)
+          (tm-orig-eval form* (if (top-level-bound? 'current-module-env)
+                                  (current-module-env)
+                                  tm-user-env))
+          (tm-orig-eval form* (car env))))))
 
 ;; Guile exports POSIX select (fd multiplexing) from its default module;
 ;; Chez does not.  regexp-select.scm aliases it as guile-select before

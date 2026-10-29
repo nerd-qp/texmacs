@@ -104,10 +104,9 @@ tmscm_is_equal (tmscm o1, tmscm o2) {
      on the C++ side, before delegating. */
   if (tmscm_is_blackbox (o1) && tmscm_is_blackbox (o2))
     return tmscm_to_blackbox (o1) == tmscm_to_blackbox (o2);
-  /* Guard the delegation: Stop_level_value hands back 0x1e (the unbound
-     marker) rather than 0 when a symbol is unbound, so "!= 0" alone would let
-     an unbound handle through and detonate inside Scall2.  Sprocedurep asks
-     the question we actually care about -- did we get a callable procedure? */
+  ptr equal_proc= Stop_level_value (Sstring_to_symbol ("equal?"));
+  if (equal_proc != 0 && Sprocedurep (equal_proc))
+    return Sboolean_value (Scall2 (equal_proc, o1, o2));
   if (tm_equal_pred != 0 && Sprocedurep (tm_equal_pred))
     return Sboolean_value (Scall2 (tm_equal_pred, o1, o2));
   return o1 == o2;
@@ -159,8 +158,12 @@ tmscm_is_blackbox (tmscm t) {
 
 tmscm
 blackbox_to_tmscm (blackbox b) {
-  blackbox* ptr= tm_new<blackbox> (b);
-  return Sbox (Sinteger ((iptr) ptr));
+  blackbox* p= tm_new<blackbox> (b);
+  tmscm box= Sbox (Sinteger ((iptr) p));
+  if (tm_blackbox_guardian) {
+    Scall1 (tm_blackbox_guardian, box);
+  }
+  return box;
 }
 
 blackbox
@@ -344,7 +347,7 @@ chez_install_procedure (const char* name, void* fn, int arity) {
   tm_proc_registry[name]= tm_proc_entry { fn, arity };
   /* define (name . args) as a call into the registry */
   string def= "(define " * string (name) *
-              " (lambda args (tm-register-guardian! (tm-call-by-name \"" * string (name) * "\" args))))";
+              " (lambda args (tm-call-by-name \"" * string (name) * "\" args)))";
   c_string _def (def);
   ptr ok= Scall1 (tm_install_guarded, Sstring (_def));
   if (ok == Sfalse) {
@@ -498,16 +501,6 @@ start_scheme (int argc, char** argv, void (*call_back) (int, char**)) {
 static const char* init_prg=
   "(define tmscm-null '())\n"
   "(define tm-blackbox-guardian (make-guardian))\n"
-  "(define (tm-register-guardian! x)\n"
-  "  (cond ((box? x)\n"
-  "         (if (and (top-level-bound? 'blackbox?) (blackbox? x))\n"
-  "             (tm-blackbox-guardian x))\n"
-  "         x)\n"
-  "        ((pair? x)\n"
-  "         (tm-register-guardian! (car x))\n"
-  "         (tm-register-guardian! (cdr x))\n"
-  "         x)\n"
-  "        (else x)))\n"
   "(define tm-user-env (interaction-environment))\n"
   "\n"
   "(define (display-to-string obj)\n"
