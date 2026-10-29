@@ -1080,12 +1080,7 @@
       ;;
       ;; So we do not evaluate it here at all: the form stays in the module body, Chez
       ;; expands it at compile time, and the emitted `(property-set! ...)` runs at load
-      ;; time inside the module's own environment. This is exactly what the deleted
-      ;; `desugar-tm-property` achieved -- it returned the generated forms and spliced
-      ;; them back into the body via `(loop (append (desugar-tm-property x) (cdr rest)) acc)`
-      ;; rather than evaluating them, and it never touched `(interaction-environment)`.
-      ;; We keep that emit-don't-eval behaviour without resurrecting its manual
-      ;; `cur-conds` / `cur-props` two-cell synchroniser.
+      ;; time inside the module's own environment.
       ((eq? head 'tm-property) #f)
 
       ((memq head '(define-table-decls define-collection-decls))

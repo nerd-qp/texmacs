@@ -810,14 +810,14 @@
                         (newtheorem ,prim* (!option ,nonum) (!translate ,name))
                         ,@after "\n")))))
 
-(define-macro-trace (latex-texmacs-theorem prim name)
+(define-macro (latex-texmacs-theorem prim name)
   `(latex-texmacs-thmenv ,prim ,name '() '()))
 
-(define-macro-trace (latex-texmacs-remark prim name)
+(define-macro (latex-texmacs-remark prim name)
   `(latex-texmacs-thmenv
     ,prim ,name ("{" (!recurse (theorembodyfont "\\rmfamily"))) ("}")))
 
-(define-macro-trace (latex-texmacs-exercise prim name)
+(define-macro (latex-texmacs-exercise prim name)
   `(latex-texmacs-thmenv
     ,prim ,name ("{" (!recurse (theorembodyfont "\\rmfamily\\small"))) ("}")))
 
