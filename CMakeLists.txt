@@ -260,6 +260,17 @@ if (${CMAKE_SYSTEM_NAME} STREQUAL "CYGWIN_NT-5.1")
   set (CONFIG_BFLAGS "-Wl,-stack,8388608")
 endif (${CMAKE_SYSTEM_NAME} STREQUAL "CYGWIN_NT-5.1")
 
+# macOS. Without this block CONFIG_OS stays "GNU_LINUX" (the default set above),
+# tm_configure.hpp emits `#define OS_LINUX`, and every `#ifdef OS_MACOS` branch
+# is compiled out -- including the .app bundle lookup in
+# src/Plugins/Unix/unix_entrypoint.cpp:47 and the Cocoa/Qt integration paths.
+# The autotools build gets this right via configure:7132 (CONFIG_OS="MACOS").
+if (${CMAKE_SYSTEM_NAME} STREQUAL "Darwin")
+  message (STATUS "final adjustments for a macOS host")
+  set (CONFIG_OS "MACOS")
+  set (CONFIG_OS_SUFFIX "macos")
+endif (${CMAKE_SYSTEM_NAME} STREQUAL "Darwin")
+
 ### --------------------------------------------------------------------
 ### Package Data
 ### --------------------------------------------------------------------

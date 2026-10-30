@@ -658,6 +658,26 @@ HOME="$PWD/fakehome" TEXMACS_PATH="$PWD/TeXmacs" \
 
 The same trick reproduces GUI-triggered bugs without a mouse by appending `(delayed (:idle 3000) (open-preferences))` to the copied init. Probe output goes to stdout, so `grep` the log.
 
+### 7. Macros Must Exist at COMPILE Time: Module Ordering (2026-10-30) [RESOLVED]
+- **Symptom**: `Exception: attempt to apply non-procedure :idle` in `lazy-plugin-initialize` (`kernel/texmacs/tm-plugins.scm:645`), on a fresh profile only.
+- **Root cause**: a macro must already be a *syntax binding* when the consuming module is compiled. It cannot be resolved later, and `define-top-level-syntax` afterwards does not repair an already-compiled call.
+- **Proof** (`/tmp/chez-phase/late.ss`): compile a module whose body calls an undefined `late-macro`, then install it with `define-top-level-syntax` and call the function:
+  ```text
+  compiled and loaded OK
+  define-top-level-syntax installed
+  calling (f) -> ERROR: variable late-macro is not bound
+  ```
+  In TeXmacs the same situation reads `attempt to apply non-procedure :idle` instead, because `delayed` *does* have a top-level value: the call resolves, arguments are evaluated first, and `(:idle 1000)` fails before the call.
+- **Why it hit `tm-plugins`**: `compile-texmacs.scm` listed `tm-plugins.scm` (line 74) *before* `tm-dialogue.scm` (line 77), and `delayed` is a `define-public-macro` in `tm-dialogue.scm:129`. At `tm-plugins` expansion time the syntax did not exist, so `(delayed (:idle 1000) ...)` compiled as a procedure call.
+- **Fix**: moved `kernel/texmacs/tm-dialogue.scm` ahead of `tm-plugins.scm` in the module list, and added `(kernel texmacs tm-dialogue)` to `tm-plugins`'s `:use`. Both were needed — the `:use` clause alone was inert while the order was wrong, which is itself diagnostic: **if a declared dependency never appears in the emitted `(import ...)`, suspect ordering.**
+- **Verification**:
+  ```text
+  (import (for kernel:texmacs:tm-dialogue ...))     <- now emitted
+  ./misc/chez-probe.sh '(lazy-plugin-initialize "texmacs")'   ->  no-error
+  ```
+- **General rule**: any module whose body uses a macro defined by another module must be compiled *after* it. Kernel modules do not need `:use` for plain functions (free identifiers resolve at top level), but they do for macros. When a macro is used from another module, declare the `:use` **and** confirm the ordering.
+- **Tool**: `misc/chez-probe.sh '<expr>'` evaluates an expression in a real TeXmacs process from the shell (uses the `-i` init hook, throwaway `$HOME`, exits 0/1). This is the fastest way to reproduce GUI-only Scheme errors.
+
 ---
 
 ## 12. Full-Census Single-Pass AOT Compilation (452 Modules), Interaction Persistence & Circular Dependency Resolution [RESOLVED]

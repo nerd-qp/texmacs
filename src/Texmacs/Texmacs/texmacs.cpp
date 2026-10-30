@@ -189,6 +189,14 @@ TeXmacs_init_paths (int& argc, char** argv) {
   // is in a .app bundle on MacOSX
   if (is_empty (current_texmacs_path))
     set_env ("TEXMACS_PATH", as_string(exedir * "../Resources/share/TeXmacs"));
+  // Chez needs its heap images (petite.boot, scheme.boot) to start. Without
+  // SCHEMEHEAPDIRS the boot fails silently and init_texmacs() falls back to
+  // Guile, which is not linked, giving "guile could not be found". The bundle
+  // ships them under Resources/share/chez.
+  if (is_empty (get_env ("SCHEMEHEAPDIRS"))) {
+    url chez = exedir * "../Resources/share/chez";
+    if (exists (chez)) set_env ("SCHEMEHEAPDIRS", as_string (chez));
+  }
   //cout << get_env("PATH") * ":" * as_string(url("$PWD") * argv[0]
   // * "../../Resources/share/TeXmacs/bin") << LF;
   string shell= get_env ("SHELL");
