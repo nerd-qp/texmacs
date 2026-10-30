@@ -60,14 +60,19 @@
        (cddr header))
       (reverse deps)))
 
-  (define (scan-defined-name head)
-    (cond ((symbol? head) head)
-          ((and (pair? head) (symbol? (car head))) (car head))
+  (define (scan-leftmost-symbol x)
+    (cond ((symbol? x) x)
+          ((pair? x) (scan-leftmost-symbol (car x)))
           (else #f)))
 
+  (define (scan-defined-name form head)
+    (or (scan-leftmost-symbol head)
+        (error 'compiler-scan
+               "declaration has no valid name"
+               form)))
+
   (define (scan-macro-impl-name name)
-    (and name
-         (string->symbol (string-append (symbol->string name) "$impl"))))
+    (string->symbol (string-append (symbol->string name) "$impl")))
 
   (define (scan-flatten-begins forms)
     (let loop ((rest forms) (acc '()))
@@ -99,29 +104,29 @@
                (arg (and (pair? form) (pair? (cdr form)) (cadr form))))
           (cond
            ((memq head '(define-public provide-public))
-            (let ((name (scan-defined-name arg)))
+            (let ((name (scan-defined-name form arg)))
               (loop (cdr rest)
-                    (if name (cons name exports) exports)
+                    (cons name exports)
                     globals macros impls)))
            ((eq? head 'define-public-macro)
-            (let ((name (scan-defined-name arg)))
+            (let ((name (scan-defined-name form arg)))
               (loop (cdr rest)
-                    (if name (cons name exports) exports)
+                    (cons name exports)
                     globals macros impls)))
            ((eq? head 'tm-define)
-            (let ((name (scan-defined-name arg)))
+            (let ((name (scan-defined-name form arg)))
               (loop (cdr rest)
                     exports
-                    (if name (cons name globals) globals)
+                    (cons name globals)
                     macros impls)))
            ((eq? head 'tm-define-macro)
-            (let* ((name (scan-defined-name arg))
+            (let* ((name (scan-defined-name form arg))
                    (impl (scan-macro-impl-name name)))
               (loop (cdr rest)
                     exports
                     globals
-                    (if name (cons name macros) macros)
-                    (if impl (cons impl impls) impls))))
+                    (cons name macros)
+                    (cons impl impls))))
            (else
             (loop (cdr rest) exports globals macros impls))))))))
 

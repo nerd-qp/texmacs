@@ -94,6 +94,12 @@
 
 (write-source "test/no-header.scm" "(display \"plain\")\n")
 (write-source "test/unreadable.scm" "(")
+(write-source "test/bad-public.scm"
+              "(texmacs-module (test bad))\n(define-public)\n")
+(write-source "test/nested.scm"
+              (string-append
+               "(texmacs-module (test nested))\n"
+               "(tm-define ((nested-call a . rest) . args) args)\n"))
 
 ;;; Scan ----------------------------------------------------------------------
 
@@ -103,6 +109,15 @@
 (check "file-list db count" 2 (length modules))
 (check "file-list db a" '(foo pm)
        (module-info-exports (compiler-db-ref db '(test a))))
+
+(check "malformed declaration rejected" #t
+       (guard (e (else #t))
+         (scan-source-file root "test/bad-public.scm")
+         #f))
+
+(check "nested tm-define head" '(nested-call)
+       (module-info-global-values
+        (scan-source-file root "test/nested.scm")))
 
 (check "module count" 2 (length modules))
 (check "first module" '(test a) (module-info-name (car modules)))
