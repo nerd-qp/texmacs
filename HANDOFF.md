@@ -678,7 +678,18 @@ The same trick reproduces GUI-triggered bugs without a mouse by appending `(dela
 - **General rule**: any module whose body uses a macro defined by another module must be compiled *after* it. Kernel modules do not need `:use` for plain functions (free identifiers resolve at top level), but they do for macros. When a macro is used from another module, declare the `:use` **and** confirm the ordering.
 - **Tool**: `misc/chez-probe.sh '<expr>'` evaluates an expression in a real TeXmacs process from the shell (uses the `-i` init hook, throwaway `$HOME`, exits 0/1). This is the fastest way to reproduce GUI-only Scheme errors.
 
+### 8. Stale `system/cache` Breaks Rendering After a `TEXMACS_PATH` Change (2026-10-30) [RESOLVED]
+- **Symptom**: after switching from a source-tree launch to the packaged `.app`, menu entries (`Equation`, `LaTeX`, `Item`, `Section`) and style macros (`chapter`, `section`, `table-of-contents`, `paragraph*`) silently disappear. No error, no popup — they simply are not there.
+- **Cause**: `$TEXMACS_HOME_PATH/system/cache` holds `dir_cache.scm` and `file_cache`, which memoise filesystem lookups by **absolute path**, plus compiled style caches (`__generic__`, `__book__`, ...). A cache built while `TEXMACS_PATH` pointed at `./TeXmacs` is wrong for a bundle whose path is completely different, and the app trusts it.
+- **Immediate recovery** for an affected profile:
+  ```bash
+  mv ~/.TeXmacs/system/cache ~/.TeXmacs/system/cache.bak   # or delete it
+  ```
+- **Permanent fix**: the Chez build now defaults `TEXMACS_HOME_PATH` to `~/.TeXmacs-chez` instead of `~/.TeXmacs` (`texmacs.cpp`, `immediate_options`, guarded by `TEXMACS_ENGINE_CHEZ`). Guile and Chez installations therefore never share a cache. `TEXMACS_HOME_PATH` still overrides.
+- **Diagnostic rule**: when a packaged build renders differently from a source-tree build, clear the cache **before** suspecting missing files. Two of the three symptoms chased in this session were cache or ordering, not packaging.
+
 ---
+
 
 ## 12. Full-Census Single-Pass AOT Compilation (452 Modules), Interaction Persistence & Circular Dependency Resolution [RESOLVED]
 

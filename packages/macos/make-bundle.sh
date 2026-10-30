@@ -155,7 +155,11 @@ else
   done
 fi
 
-for d in fonts styles texts langs misc doc examples; do
+# packages/ holds the style packages (.ts) that define chapter, section,
+# table-of-contents, paragraph* and the rest of the document macros. Without it
+# those constructs resolve to nothing and render as raw markup. include/ ships
+# the C++ headers plugins compile against.
+for d in fonts styles texts langs misc doc examples packages include; do
   [ -d "$ROOT/TeXmacs/$d" ] || continue
   rsync -a --exclude '.git*' --exclude '*.o' --exclude '*.so' \
         "$ROOT/TeXmacs/$d" "$SHARE/"

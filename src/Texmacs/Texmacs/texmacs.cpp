@@ -715,7 +715,17 @@ immediate_options (int argc, char** argv) {
 #elif defined(OS_HAIKU)
     set_env ("TEXMACS_HOME_PATH", get_env ("HOME") * "/config/settings/TeXmacs");
 #else
+#ifdef TEXMACS_ENGINE_CHEZ
+    // Separate home directory for the Chez port. Sharing ~/.TeXmacs with a
+    // Guile build is unsafe: system/cache holds dir_cache/file_cache keyed by
+    // absolute path plus compiled style caches, and switching between two
+    // installations with different TEXMACS_PATH silently breaks rendering
+    // (menus and style macros disappear without any error). Override with
+    // TEXMACS_HOME_PATH if you really want to share.
+    set_env ("TEXMACS_HOME_PATH", get_env ("HOME") * "/.TeXmacs-chez");
+#else
     set_env ("TEXMACS_HOME_PATH", get_env ("HOME") * "/.TeXmacs");
+#endif
 #endif
   if (get_env ("TEXMACS_HOME_PATH") == "") return;
   if (get_env ("TEXMACS_SERVER_CERT_DIR") == "")
