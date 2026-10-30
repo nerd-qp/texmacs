@@ -1,7 +1,9 @@
+;;; TODO: UNDER REVIEWED AI GENERATED CODE.
+;;;
 ;;; compile-texmacs.scm -- Transpiles and compiles all TeXmacs modules into native Chez Scheme modules
 ;;;
 ;;; Usage:
-;;;   scheme -q src/Scheme/Chez/compile-texmacs.scm
+;;;  ENV=??? TeXmacs --compile-modules
 
 (define-top-level-value 'texmacs-chez-compiling? #t)
 (define-top-level-value 'boot-kernel-loaded? #t)
@@ -29,6 +31,19 @@
 
 (unless (top-level-bound? 'boot-chez-loaded?)
   (load (string-append *progs-dir* "/kernel/boot/boot-chez.scm")))
+
+(define *compiler-dir*
+  (cond ((file-exists? "compiler-db.scm") ".")
+        ((file-exists? "src/Scheme/Chez/compiler-db.scm") "src/Scheme/Chez")
+        ((file-exists? "texmacs/src/Scheme/Chez/compiler-db.scm") "texmacs/src/Scheme/Chez")
+        (else
+         (error 'compile-texmacs "cannot find compiler-db.scm"))))
+
+(primitive-load (string-append *compiler-dir* "/compiler-db.scm"))
+(import (compiler-db))
+(primitive-load (string-append *compiler-dir* "/compiler-scan.scm"))
+(import (compiler-scan))
+
 (unless (top-level-bound? 'compilation-environment)
   (define-top-level-value 'compilation-environment
     (make-parameter (interaction-environment))))
@@ -540,6 +555,18 @@
     "version/version-menu.scm"
     "version/version-svn.scm"
    ))
+
+(define *source-files*
+  (append *kernel-files*
+          *tier2-files*
+          *tier3-files*
+          *tier4-files*
+          *tier5-convert-files*
+          *tier6-dynamic-files*
+          *tier7-extended-files*))
+
+(define *compiler-db*
+  (scan-source-files->db *progs-dir* *source-files*))
 
 (define (spec->symbol spec)
   (let* ((parts (if (pair? spec)
@@ -1639,6 +1666,8 @@
       (compile-module-list "Compiling Tier 6 (Dynamic & Interactive Sessions) Modules" *tier6-dynamic-files*)
       (compile-module-list "Compiling Tier 7 (Extended Subsystems & Plugins) Modules" *tier7-extended-files*)
       (save-module-deps-manifest!)
+      (write-compiler-db *compiler-db*
+                         (string-append *boot-dir* "/compiler-db.fasl"))
       (newline)
       (display "========================================================\n")
       (display "  COMPILATION SUMMARY:\n")

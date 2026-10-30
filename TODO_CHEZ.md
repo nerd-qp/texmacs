@@ -645,5 +645,83 @@ This document tracks identified architectural improvements and performance bottl
   - Export a hygienic `while` macro from `(kernel boot abbrevs)` so all modules importing `abbrevs` recognize `while` at compilation time.
   - Audit `compile-texmacs.scm` macro environment to ensure core control structures (`while`, `repeat`, etc.) are in the compilation expansion environment across all module tiers.
 
+---
+
+## 5. Boot File Loading & Foreign Symbol Initialization (Design Note)
+
+### [ ] Move foreign-symbol registration into `Sbuild_heap` `custom_init`
+
+- **Status**: Not implemented; design note.
+- **Location**: [`src/Scheme/Chez/chez_tm.cpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/chez_tm.cpp#L439-L498), [`src/Scheme/Chez/chez_tm.cpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/chez_tm.cpp#L741-L750), [`src/Scheme/Chez/chez_tm.hpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/chez_tm.hpp)
+- **Current state**:
+  - `start_scheme` registers `petite.boot`, `scheme.boot`, and optionally `TEXMACS_BOOT_FILE`, then calls `Sbuild_heap (argv[0], custom_init)`.
+  - `custom_init` is currently empty.
+  - `initialize_scheme` registers `tm-call-by-name`, `tmscm_delete_blackbox`, `tmscm_blackbox_equal`, and `tmscm_blackbox_hash` with `Sforeign_symbol` **after** `Sbuild_heap` returns.
+  - Consequence: a boot file that evaluates `(foreign-procedure "tm-call-by-name" ...)` at top level during heap construction cannot resolve the symbol yet.
+- **Core idea**:
+  - `Sbuild_heap` initializes the Chez kernel and symbol table, then calls `custom_init()` **before** running the registered boot files.
+  - Registering C++ wrappers in `custom_init` makes them visible to any `foreign-procedure` evaluated by the boot files.
+  - Alternatively, defer `foreign-procedure` bindings and calls to `scheme-start` or a post-`Sbuild_heap` callback.
+- **C++ shape**:
+  ```cpp
+  extern "C" int cpp_engine_compute (int x) {
+    return g_engine->compute (x);
+  }
+
+  static void
+  register_cpp_interfaces (void) {
+    g_engine= new Engine ();
+    Sforeign_symbol ("cpp_engine_compute", (void*) cpp_engine_compute);
+  }
+
+  int
+  main (int argc, const char *argv[]) {
+    Sscheme_init (nullptr);
+    Sregister_boot_file ("petite.boot");
+    Sregister_boot_file ("app.boot");
+    Sbuild_heap (argv[0], register_cpp_interfaces);
+    int status= Sscheme_start (argc, argv);
+    Sscheme_deinit ();
+    delete g_engine;
+    return status;
+  }
+  ```
+- **Scheme shape**:
+  ```scheme
+  (import (chezscheme))
+
+  ;; Safe during boot loading because custom_init ran first.
+  (define engine-compute
+    (foreign-procedure "cpp_engine_compute" (int) int))
+
+  (scheme-start
+    (lambda fns
+      (printf "Result from C++ Engine: ~a\n" (engine-compute 10))))
+  ```
+- **Mapping to TeXmacs**:
+  - Move the four existing `Sforeign_symbol` calls from `initialize_scheme` into `custom_init`, or split registration into a dedicated `register_tm_foreign_symbols()` called from both places.
+  - Keep `custom_init` free of TeXmacs server/window state; it runs before normal application initialization.
+  - Ensure any C++ object used by a wrapper is constructed before `Sbuild_heap`, or make the wrapper tolerate a null/uninitialized object until `scheme-start`.
+  - If a boot file binds `(foreign-procedure "tm-call-by-name" ...)` at top level, the symbol must be registered in `custom_init`.
+- **Deferred alternative**:
+  - If registration remains after `Sbuild_heap`, boot files may still define libraries that **bind** `foreign-procedure` inside functions or inside `scheme-start`.
+  - They must not **call** the foreign function at top level while the library is being defined.
+  - `foreign-procedure` resolves its name when the expression is evaluated, so a later `Sforeign_symbol` registration works if evaluation is deferred.
+- **Caveats**:
+  - `custom_init` runs after Chez kernel initialization but before boot files; it is not a general C++ static-initialization hook.
+  - Use `extern "C"` wrappers to avoid C++ name mangling.
+  - `Sforeign_symbol` names must match the strings used by `foreign-procedure` exactly.
+  - Boot heaps are Chez-version and platform specific; rebuild `app.boot` when Chez changes.
+  - `SCHEMEHEAPDIRS` and `TEXMACS_BOOT_FILE` control boot-file discovery; keep both paths consistent.
+  - Current TeXmacs embedding does not call `Sscheme_start`; it calls a C++ callback after `Sbuild_heap`. The `scheme-start` route would need an explicit entry point in the boot file or a callback bridge.
+- **Concrete test**:
+  - Build a tiny boot file containing a top-level `(define f (foreign-procedure "cpp_engine_compute" (int) int))`.
+  - With the current empty `custom_init`, heap construction should fail to resolve the symbol.
+  - After moving `Sforeign_symbol` into `custom_init`, the same boot file should load and `(f 10)` should return `420`.
+- **Expected benefit**:
+  - Boot files can bind foreign procedures at definition time.
+  - Fewer runtime initialization steps and a shorter startup path.
+  - A more natural split between heap construction, foreign-symbol registration, and application entry.
+
 
 

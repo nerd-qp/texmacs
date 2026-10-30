@@ -1027,4 +1027,18 @@
     options))
 
 (define (tm-syntax-context s) s)
+
+;; TODO: to rewrite in here.
+;; (define *procedure-sources* (make-weak-eq-hashtable))
+
+;; (define-syntax lambda/source
+;;   (syntax-rules ()
+;;     [(_ formals body1 body2 ...)
+;;      (let ([proc (lambda formals body1 body2 ...)])
+;;        (hashtable-set! *procedure-sources* proc '(lambda formals body1 body2 ...))
+;;        proc)]))
+
+;; (define (procedure-source proc)
+;;   (hashtable-ref *procedure-sources* proc #f))
+
 (define-top-level-value 'boot-chez-loaded? #t)
