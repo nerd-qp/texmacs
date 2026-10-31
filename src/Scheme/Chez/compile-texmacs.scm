@@ -43,6 +43,11 @@
 (import (compiler-db))
 (primitive-load (string-append *compiler-dir* "/compiler-scan.scm"))
 (import (compiler-scan))
+;; Progress reporting lives in a library rather than here: it imports
+;; (chezscheme) explicitly, so its procedures do not depend on what the boot
+;; script left bound in the environment this file is exec'd into.
+(primitive-load (string-append *compiler-dir* "/compiler-progress.scm"))
+(import (compiler-progress))
 
 (unless (top-level-bound? 'compilation-environment)
   (define-top-level-value 'compilation-environment
@@ -564,8 +569,9 @@
           *tier6-dynamic-files*
           *tier7-extended-files*))
 
-(define *compiler-db*
-  (scan-source-files->db *progs-dir* *source-files*))
+;; The tiers below are compiled in the order *source-files* was appended, so
+;; index n is always the nth module of that list.
+(progress-start! (length *source-files*))
 
 (define (spec->symbol spec)
   (let* ((parts (if (pair? spec)
@@ -623,104 +629,7 @@
            (file-newer? trans-scm out-so))))))
 
 (when *recompile-all?*
-  (display "========================================================\n")
-  (display "  MODE: RECOMPILE FROM SCRATCH (FALLBACK / CLEAN)\n")
-  (display "========================================================\n"))
-
-(define (hex-digit? c)
-  (or (char<=? #\0 c #\9)
-      (char<=? #\a c #\f)
-      (char<=? #\A c #\F)))
-
-(define (normalize-guile-string-escapes str)
-  (let ((len (string-length str))
-        (out (open-output-string)))
-    (let loop ((i 0) (in-string? #f))
-      (if (>= i len)
-          (get-output-string out)
-          (let ((c (string-ref str i)))
-            (cond
-              ;; Outside string
-              ((not in-string?)
-               (cond
-                 ;; Character literal `#\"`
-                 ((and (char=? c #\#)
-                       (< (+ i 2) len)
-                       (char=? (string-ref str (+ i 1)) #\\)
-                       (char=? (string-ref str (+ i 2)) #\"))
-                  (display "#\\\"" out)
-                  (loop (+ i 3) #f))
-                 ;; Start of string literal
-                 ((char=? c #\")
-                  (write-char c out)
-                  (loop (+ i 1) #t))
-                 ;; Line comment
-                 ((char=? c #\;)
-                  (let comment-loop ((j i))
-                    (if (or (>= j len) (char=? (string-ref str j) #\newline))
-                        (begin
-                          (display (substring str i j) out)
-                          (loop j #f))
-                        (comment-loop (+ j 1)))))
-                 (else
-                  (write-char c out)
-                  (loop (+ i 1) #f))))
-              ;; Inside string
-              (else
-               (cond
-                 ;; Escaped character inside string
-                 ((char=? c #\\)
-                  (if (>= (+ i 1) len)
-                      (begin (write-char c out) (loop (+ i 1) #t))
-                      (let ((next-c (string-ref str (+ i 1))))
-                        (cond
-                          ;; \\ or \"
-                          ((or (char=? next-c #\\) (char=? next-c #\"))
-                           (write-char c out)
-                           (write-char next-c out)
-                           (loop (+ i 2) #t))
-                          ;; \x or \X hex escape
-                          ((and (or (char=? next-c #\x) (char=? next-c #\X))
-                                (< (+ i 3) len)
-                                (hex-digit? (string-ref str (+ i 2)))
-                                (hex-digit? (string-ref str (+ i 3))))
-                           (let ((h1 (string-ref str (+ i 2)))
-                                 (h2 (string-ref str (+ i 3))))
-                             (if (and (< (+ i 4) len)
-                                      (char=? (string-ref str (+ i 4)) #\;))
-                                 ;; Already has semicolon \xNN;
-                                 (begin
-                                   (display (substring str i (+ i 5)) out)
-                                   (loop (+ i 5) #t))
-                                 ;; Missing semicolon \xNN -> \xNN;
-                                 (begin
-                                   (display (substring str i (+ i 4)) out)
-                                   (write-char #\; out)
-                                   (loop (+ i 4) #t)))))
-                          (else
-                           (write-char c out)
-                           (write-char next-c out)
-                           (loop (+ i 2) #t))))))
-                 ;; End of string
-                 ((char=? c #\")
-                  (write-char c out)
-                  (loop (+ i 1) #f))
-                 (else
-                  (write-char c out)
-                  (loop (+ i 1) #t))))))))))
-
-(define (read-all-forms file-path)
-  (let* ((port (open-input-file file-path))
-         (content (get-string-all port)))
-    (close-port port)
-    (let* ((str (if (eof-object? content) "" content))
-           (normalized (normalize-guile-string-escapes str))
-           (in-port (open-string-input-port normalized)))
-      (let loop ((acc '()))
-        (let ((x (read in-port)))
-          (if (eof-object? x)
-              (reverse acc)
-              (loop (cons x acc))))))))
+  (emit-progress-line "mode: recompile from scratch (clean build)"))
 
 (define (ensure-dir path)
   (let loop ((i (- (string-length path) 1)))
@@ -792,59 +701,28 @@
 (define current-used-symbols '())
 (define module-exports-table (make-eq-hashtable))
 
+;; First pass: read every whitelisted file once and record its interface.
+(define *compiler-db*
+  (scan-source-files->db *progs-dir* *source-files*))
+
+;; Seed the export table from that database. Every module the build can ask
+;; about already has its public names recorded, so no transpiled file is ever
+;; opened again to find out what a module exports.
+(for-each
+  (lambda (info)
+    (hashtable-set! module-exports-table
+                    (spec->symbol (module-info-name info))
+                    (module-info-exports info)))
+  (compiler-db-modules *compiler-db*))
+
+;; A module transpiled in this run overwrites its own entry with the exact
+;; export list it emitted; everything else is answered from the database.
 (define (get-module-exports mod-sym)
   (or (hashtable-ref module-exports-table mod-sym #f)
-      (let* ((str (symbol->string mod-sym))
-             (len (string-length str))
-             (out (open-output-string)))
-        (let loop ((i 0))
-          (when (< i len)
-            (let ((c (string-ref str i)))
-              (write-char (if (char=? c #\:) #\/ c) out)
-              (loop (+ i 1)))))
-        (let* ((rel (get-output-string out))
-               (scm-path (string-append *boot-dir* "/" rel ".scm")))
-          (if (not (file-exists? scm-path))
-              '()
-              (let* ((p (open-input-file scm-path))
-                     (forms (let rloop ((acc '()))
-                              (let ((x (read p)))
-                                (if (eof-object? x) (reverse acc)
-                                    (rloop (cons x acc)))))))
-                (close-port p)
-                (let loop ((rest forms) (exports '()))
-                  (if (null? rest)
-                      (begin
-                        (hashtable-set! module-exports-table mod-sym (reverse exports))
-                        (reverse exports))
-                      (let ((f (car rest)))
-                        (if (and (pair? f) (eq? (car f) 'module) (pair? (cddr f)))
-                            (let body-loop ((b (cdddr f)) (acc exports))
-                              (if (null? b)
-                                  (loop (cdr rest) acc)
-                                  (let ((stmt (car b)))
-                                    (cond
-                                      ((and (pair? stmt)
-                                            (memq (car stmt) '(define-public provide-public))
-                                            (pair? (cdr stmt)))
-                                       (let* ((head (cadr stmt))
-                                              (var (let vloop ((h head)) (if (pair? h) (vloop (car h)) h))))
-                                         (if (and (symbol? var) (not (memq var acc)))
-                                             (body-loop (cdr b) (cons var acc))
-                                             (body-loop (cdr b) acc))))
-                                      ((and (pair? stmt)
-                                            (eq? (car stmt) 'export)
-                                            (pair? (cdr stmt))
-                                            (pair? (cadr stmt))
-                                            (eq? (caadr stmt) 'import)
-                                            (pair? (cdadr stmt)))
-                                       (let* ((dep-mod (cadadr stmt))
-                                              (dep-exports (get-module-exports dep-mod)))
-                                         (body-loop (cdr b)
-                                                    (append (filter (lambda (v) (not (memq v acc))) dep-exports)
-                                                            acc))))
-                                      (else (body-loop (cdr b) acc))))))
-                            (loop (cdr rest) exports)))))))))))
+      (begin
+        (log-note (format "exports unknown for ~a" mod-sym))
+        (hashtable-set! module-exports-table mod-sym '())
+        '())))
 
 (define-top-level-value 'module-exports-table module-exports-table)
 (define-top-level-value 'module-exports-table module-exports-table (interaction-environment))
@@ -1276,8 +1154,8 @@
                    (cond
                      ((symbol? e)
                       (when (memq e mutated-vars)
-                        (display (list 'WARNING-MID-LOAD-MUTATION-HAZARD mod-name 'def: (cadr x) 'reads-mutated: e))
-                        (newline)))
+                        (log-note (format "warning: ~a defines ~a before ~a is set"
+                                          mod-name (cadr x) e))))
                      ((pair? e)
                       (has-hazard? (car e))
                       (has-hazard? (cdr e))))))))
@@ -1298,47 +1176,19 @@
 (define compile-errors '())
 (define *all-module-deps* (make-ahash-table))
 
-(define (read-module-header file-path)
-  (guard (e (else
-             (display (string-append "ERROR: read-module-header failed for " file-path "\n"))
-             (display-condition e)
-             (newline)
-             #f))
-    (call-with-input-file file-path
-      (lambda (p)
-        (let loop ()
-          (let ((x (read p)))
-            (cond ((eof-object? x) #f)
-                  ((and (pair? x) (eq? (car x) 'texmacs-module)) x)
-                  (else (loop)))))))))
-
-(define (header->deps header mod-spec)
-  (let ((deps '()))
-    (for-each
-      (lambda (opt)
-        (when (and (pair? opt) (memq (car opt) '(:use :inherit)))
-          (for-each
-            (lambda (s)
-              (unless (or (equal? s mod-spec) (member s deps))
-                (set! deps (cons s deps))))
-            (cdr opt))))
-      (cddr header))
-    (reverse deps)))
-
 (define (get-module-deps rel-path)
-  (let ((spec (rel-path->spec rel-path)))
-    (or (ahash-ref *all-module-deps* spec)
-        (let* ((src (string-append *progs-dir* "/" rel-path))
-               (hdr (and (file-exists? src) (read-module-header src)))
-               (deps (if hdr (header->deps hdr spec) '())))
+  (let* ((spec (rel-path->spec rel-path))
+         (cached (ahash-ref *all-module-deps* spec)))
+    (or cached
+        (let* ((info (compiler-db-ref *compiler-db* spec))
+               (deps (if info (module-info-deps info) '())))
           (ahash-set! *all-module-deps* spec deps)
           deps))))
 
 (define (transpile-module rel-path out-path)
-  (display (list 'TRANSPILE-START rel-path)) (newline)
   (guard (e (else
-              (display (list 'TRANSPILE-ERROR rel-path)) (newline)
-              (display-condition e) (newline)
+              (log-progress "FAILED" rel-path)
+              (log-note (condition-text e))
               (set! compile-errors (cons (cons rel-path e) compile-errors))
               #f))
     (let* ((src (string-append *progs-dir* "/" rel-path))
@@ -1351,13 +1201,17 @@
       (tm-bind-keywords forms)
       (ensure-dir out-path)
       (if (not has-header?)
-          (begin
-            (display (list 'SKIP rel-path "no texmacs-module header")) (newline)
-            #f)
+          ;; Reported as `Skipped` by compile-module-list.
+          #f
           (let* ((mod-spec (cadr hdr))
                  (mod-sym (spec->symbol mod-spec))
                  (options (cddr hdr))
-                 (deps (header->deps hdr mod-spec)))
+                 ;; Every whitelisted module was scanned into the database, so a
+                 ;; miss means the scan and this loop disagree about the file.
+                 (info (or (compiler-db-ref *compiler-db* mod-spec)
+                           (error 'transpile-module
+                                  "no compiler-db record for module" mod-spec)))
+                 (deps (module-info-deps info)))
             (ahash-set! *all-module-deps* mod-spec deps)
 
             ;; Track declared dependencies for overload resolution
@@ -1412,8 +1266,7 @@
                                                (append (filter (lambda (v) (not (memq v conflicts))) s-exports)
                                                        seen-imported)))))
                                      (begin
-                                       (display (list 'DEFER-CIRCULAR-IMPORT mod-sym '-> s-sym))
-                                       (newline)))))
+                                       (log-note (format "deferred circular import ~a -> ~a" mod-sym s-sym))))))
                              specs))
                           ((eq? kind ':inherit)
                            (for-each
@@ -1423,8 +1276,7 @@
                                      (set! import-forms
                                        (cons `(import (for ,s-sym run expand)) import-forms))
                                      (begin
-                                       (display (list 'DEFER-CIRCULAR-IMPORT mod-sym '-> s-sym))
-                                       (newline)))
+                                       (log-note (format "deferred circular import ~a -> ~a" mod-sym s-sym))))
                                  (set! export-forms
                                    (cons `(export (import ,s-sym)) export-forms))))
                              specs))))))
@@ -1461,22 +1313,26 @@
    (let ((mod-sym (transpile-module rel-path trans-scm)))
     (if mod-sym
         (begin
-          (display (list 'COMPILE rel-path '-> out-so)) (newline)
+          ;; Emitted only once the module is known to be buildable, so a file
+          ;; without a header reports `Skipped` alone and a transpile error
+          ;; reports `FAILED` alone -- one line per module either way.
+          (log-progress "Compiling" (string-append rel-path " -> " (path-basename out-so)))
           (call/cc
             (lambda (k)
               (with-exception-handler
                 (lambda (e)
                   (if (serious-condition? e)
                       (begin
-                        (display (list 'FAIL rel-path)) (newline)
-                        (display-condition e) (newline)
+                        (log-progress "FAILED" rel-path)
+                        (emit-progress-line
+                          (with-output-to-string (lambda () (display-condition e))))
                         (when (who-condition? e)
-                          (display (list 'WHO: (condition-who e))) (newline))
+                          (log-note (format "who: ~a" (condition-who e))))
                         (when (irritants-condition? e)
-                          (display (list 'IRRITANTS: (condition-irritants e))) (newline))
+                          (log-note (format "irritants: ~s" (condition-irritants e))))
                         (when (syntax-violation? e)
-                          (display (list 'FORM: (syntax-violation-form e))) (newline)
-                          (display (list 'SUBFORM: (syntax-violation-subform e))) (newline))
+                          (log-note (format "form: ~s" (syntax-violation-form e)))
+                          (log-note (format "subform: ~s" (syntax-violation-subform e))))
                         (set! compile-errors (cons (cons rel-path e) compile-errors))
                         (k #f))
                       (void)))
@@ -1490,7 +1346,7 @@
 (define cached-count 0)
 (define (save-module-deps-manifest!)
   (let ((manifest-file (string-append *boot-dir* "/module-deps.scm")))
-    (display (list 'SAVING-MANIFEST manifest-file)) (newline)
+    (log-progress-pct "Writing" (string-append "module dependency manifest " manifest-file))
     (let ((out-p (open-output-file manifest-file 'replace)))
       (dynamic-wind
         (lambda () #f)
@@ -1509,35 +1365,30 @@
     (guard (e (else
                 (ahash-remove! *texmacs-modules-loaded* spec)
                 (set! load-ok? #f)
-                (display (list 'NATIVE-LOAD-FAIL rel-path (if (condition? e) (with-output-to-string (lambda () (display-condition e))) e)))
-                (newline)
+                (log-progress "FAILED" rel-path)
+                (log-note (condition-text e))
                 (when (file-exists? out-so) (delete-file out-so))
                 (set! compile-errors (cons (cons rel-path e) compile-errors))))
       (load out-so))
-    (if load-ok?
-      (begin
-        (when (member rel-path *kernel-files*)
-          (guard-eval 'IMPORT-FAIL (list mod-sym) #f
+    (when load-ok?
+      (when (member rel-path *kernel-files*)
+        (guard-eval 'IMPORT-FAIL (list mod-sym) #f
 	          (lambda ()
 		          (eval `(import ,mod-sym) (interaction-environment)))))
-        (set! compiled-modules (cons mod-sym compiled-modules))
-        (if is-cached?
-          (begin
-            (set! cached-count (+ cached-count 1))
-            (display (list 'UP-TO-DATE rel-path)) (newline))
-          (begin
-            (set! compiled-count (+ compiled-count 1))
-            (display (list 'OK rel-path)) (newline))))
-      (begin
-        (display (list 'SKIPPED rel-path))
-        (newline)))))
+      (set! compiled-modules (cons mod-sym compiled-modules))
+      (if is-cached?
+        (begin
+          (set! cached-count (+ cached-count 1))
+          (log-progress "Up-to-date" rel-path))
+        ;; A recompiled module already reported itself as `Compiling`; the
+        ;; successful load adds no second line for the same index.
+        (set! compiled-count (+ compiled-count 1))))))
 
 (define (compile-module-list tier-title file-list)
-  (display "========================================================\n")
-  (display (string-append "  " tier-title "\n"))
-  (display "========================================================\n")
+  (emit-progress-line (string-append "-- " tier-title " --"))
   (for-each
     (lambda (rel-path)
+      (progress-tick!)
       (let* ((trans-scm (string-append *boot-dir* "/" rel-path))
              (out-so (string-append (substring trans-scm 0 (- (string-length trans-scm) 4)) ".so"))
              (needs-build? (module-needs-recompile? rel-path trans-scm out-so))
@@ -1551,9 +1402,10 @@
           (mod-sym
            (parameterize ((compile-export-mode? #t))
              (register-module-loaded! rel-path out-so mod-sym #f)))
-          (else
-           (display (list 'SKIPPED rel-path))
-           (newline)))))
+          ;; Every real failure was already reported by the transpile or load
+          ;; handler; what is left is a file without a `texmacs-module` header.
+          ((not (assoc rel-path compile-errors))
+           (log-progress "Skipped" (string-append rel-path " (no texmacs-module header)"))))))
     file-list))
 
 (compile-module-list "Compiling TeXmacs Kernel Modules" *kernel-files*)
@@ -1577,12 +1429,10 @@
                                                 (loop (cdr l)))))))))
         (if user-up-to-date?
             (begin
-              (display (list 'UP-TO-DATE "texmacs-user.so (kernel snapshot)")) (newline)
+              (log-progress-pct "Up-to-date" "texmacs-user.so (kernel snapshot)")
               (load user-so))
             (begin
-              (display "--------------------------------------------------------\n")
-              (display "  Building aggregate texmacs-user environment\n")
-              (display "--------------------------------------------------------\n")
+              (log-progress-pct "Building" "aggregate kernel snapshot texmacs-user.so")
               (let ((p (open-output-file user-scm 'replace)))
                 (dynamic-wind
                   (lambda () #f)
@@ -1623,12 +1473,9 @@
                            p)
                     (newline p))
                   (lambda () (close-port p))))
-              (display (list 'COMPILE user-scm '-> user-so)) (newline)
               (compile-file user-scm user-so)
               (load user-so)
-              (display "--------------------------------------------------------\n")
-              (display "  SUCCESS: ALL KERNEL MODULES COMPILED & SNAPSHOTTED!\n")
-              (display "--------------------------------------------------------\n"))))
+              (log-progress-pct "Verified" "texmacs-user.so"))))
       (compile-module-list "Compiling Tier 2 (Application Core) Modules" *tier2-files*)
       (compile-module-list "Compiling Tier 3 (Core Editing) Modules" *tier3-files*)
       (compile-module-list "Compiling Tier 4 (Desktop GUI & Menus) Modules" *tier4-files*)
@@ -1640,24 +1487,29 @@
                          (string-append *boot-dir* "/compiler-db.fasl"))
       (newline)
       (display "========================================================\n")
-      (display "  COMPILATION SUMMARY:\n")
-      (display (list "  - Recompiled:" compiled-count "modules")) (newline)
-      (display (list "  - Up-to-date (cached):" cached-count "modules")) (newline)
-      (display (list "  - Failures:" (length compile-errors))) (newline)
+      (display "[100%] Built target texmacs-chez-modules:\n")
+      (display (string-append "  - Recompiled: " (number->string compiled-count)
+                              " module" (if (= compiled-count 1) "" "s") "\n"))
+      (display (string-append "  - Up-to-date (cached): " (number->string cached-count)
+                              " module" (if (= cached-count 1) "" "s") "\n"))
+      (display (string-append "  - Failures: "
+                              (number->string (length compile-errors)) "\n"))
       (when (pair? compile-errors)
         (for-each
           (lambda (err)
-            (display (list "    * FAIL:" (car err))) (newline))
+            (display (string-append "    * FAILED: " (car err) "\n")))
           (reverse compile-errors)))
       (display "========================================================\n"))
     (begin
-      (display "--------------------------------------------------------\n")
-      (display (list "FAILED KERNEL MODULES COUNT:" (length compile-errors))) (newline)
+      (display "========================================================\n")
+      (display (string-append "[FAILED] Built target texmacs-chez-modules: "
+                              (number->string (length compile-errors))
+                              " failure(s)\n"))
       (for-each
         (lambda (err)
-          (display (list "  - " (car err))) (newline))
+          (display (string-append "  - " (car err) "\n")))
         compile-errors)
-      (display "--------------------------------------------------------\n")))
+      (display "========================================================\n")))
 
 (when (and (top-level-bound? 'quit-TeXmacs)
            (not (top-level-bound? '*dont-quit*)))

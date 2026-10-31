@@ -6,10 +6,110 @@
 ;;; the TeXmacs runtime.
 
 (library (compiler-scan)
-  (export scan-source-file
+  (export read-all-forms
+          scan-source-file
           scan-source-files
           scan-source-files->db)
   (import (chezscheme) (compiler-db))
+
+  ;;; -------------------------------------------------------------------------
+  ;;; Source reader
+  ;;; -------------------------------------------------------------------------
+
+  ;; TeXmacs sources are Guile-flavoured: they write \xNN escapes without
+  ;; the trailing semicolon Chez insists on, and use #\" as a character
+  ;; literal. Normalise the text before reading it, so every consumer of
+  ;; this library sees the same forms the transpiler sees.
+
+  ;; A hex digit, or #f for anything else (including end of input).
+  (define (hex-digit? c)
+    (and c
+         (or (char<=? #\0 c #\9)
+             (char<=? #\a c #\f)
+             (char<=? #\A c #\F))))
+
+  ;; Copy STR, adding the semicolon Chez demands after \xNN and rewriting the
+  ;; `#\"` character literal. Everything else is copied through untouched.
+  (define (normalize-guile-string-escapes str)
+    (define len (string-length str))
+    (define out (open-output-string))
+    (define (at i) (and (< i len) (string-ref str i)))
+    (define (emit x) (display x out))
+
+    ;; Index of the newline that ends the line starting at I, or LEN.
+    (define (line-end i)
+      (let scan ((j i))
+        (cond ((>= j len) len)
+              ((char=? (string-ref str j) #\newline) j)
+              (else (scan (+ j 1))))))
+
+    ;; Is there a \xNN escape at I?
+    (define (hex-escape? i)
+      (and (memv (at (+ i 1)) '(#\x #\X))
+           (hex-digit? (at (+ i 2)))
+           (hex-digit? (at (+ i 3)))))
+
+    ;; Copy the escape at I, adding a semicolon if it lacks one; next index.
+    (define (copy-hex-escape i)
+      (let* ((terminated? (eqv? (at (+ i 4)) #\;))
+             (end (if terminated? (+ i 5) (+ i 4))))
+        (emit (substring str i end))
+        (unless terminated? (emit ";"))
+        end))
+
+    (let loop ((i 0) (in-string? #f))
+      (let ((c (at i)))
+        (cond
+          ((not c)
+           (get-output-string out))
+
+          ;; `#\"` is a character literal, not the start of a string.
+          ((and (not in-string?) (eqv? c #\#)
+                (eqv? (at (+ i 1)) #\\) (eqv? (at (+ i 2)) #\"))
+           (emit "#\\\"")
+           (loop (+ i 3) #f))
+
+          ;; A quote opens a string outside one and closes it inside one.
+          ((eqv? c #\")
+           (emit c)
+           (loop (+ i 1) (not in-string?)))
+
+          ;; Comments are copied whole, so a quote inside one stays put.
+          ((and (not in-string?) (eqv? c #\;))
+           (let ((end (line-end i)))
+             (emit (substring str i end))
+             (loop end #f)))
+
+          ;; Escapes only matter inside a string.
+          ((and in-string? (eqv? c #\\) (hex-escape? i))
+           (loop (copy-hex-escape i) #t))
+
+          ((and in-string? (eqv? c #\\) (at (+ i 1)))
+           (emit c)
+           (emit (at (+ i 1)))
+           (loop (+ i 2) #t))
+
+          ;; A backslash at the very end of the input.
+          ((and in-string? (eqv? c #\\))
+           (emit c)
+           (loop (+ i 1) #t))
+
+          (else
+           (emit c)
+           (loop (+ i 1) in-string?))))))
+
+  (define (read-all-forms file-path)
+    (let* ((port (open-input-file file-path))
+           (content (get-string-all port)))
+      (close-port port)
+      (let* ((str (if (eof-object? content) "" content))
+             (normalized (normalize-guile-string-escapes str))
+             (in-port (open-string-input-port normalized)))
+        (let loop ((acc '()))
+          (let ((x (read in-port)))
+            (if (eof-object? x)
+                (reverse acc)
+                (loop (cons x acc))))))))
 
   ;;; -------------------------------------------------------------------------
   ;;; File and form helpers
@@ -19,16 +119,6 @@
     (let ((n (string-length path)))
       (and (> n 4)
            (string=? (substring path (- n 4) n) ".scm"))))
-
-  (define (scan-read-forms path)
-    (guard (e (else #f))
-      (call-with-input-file path
-        (lambda (port)
-          (let loop ((acc '()))
-            (let ((x (read port)))
-              (if (eof-object? x)
-                  (reverse acc)
-                  (loop (cons x acc)))))))))
 
   (define (scan-read-text path)
     (guard (e (else #f))
@@ -147,44 +237,39 @@
   ;;; One file
   ;;; -------------------------------------------------------------------------
 
+  ;; A file that cannot be read raises: the build stops where the problem is,
+  ;; instead of silently dropping a module from the database.
   (define (scan-source-file progs-dir rel-path)
     (let* ((full (string-append progs-dir "/" rel-path))
-           (forms (scan-read-forms full)))
+           (forms (read-all-forms full))
+           (header (scan-header forms)))
       (cond
-       ((not forms)
-        (display "SCAN-SKIP read-error " (current-error-port))
+       ((not header)
+        (display "SCAN-SKIP no-header " (current-error-port))
         (display rel-path (current-error-port))
         (newline (current-error-port))
         #f)
        (else
-        (let ((header (scan-header forms)))
-          (cond
-           ((not header)
-            (display "SCAN-SKIP no-header " (current-error-port))
-            (display rel-path (current-error-port))
-            (newline (current-error-port))
-            #f)
-           (else
-            (let* ((mod-spec (cadr header))
-                   (deps (scan-header->deps header mod-spec))
-                   (text (scan-read-text full)))
-              (call-with-values
-               (lambda () (scan-collect forms))
-               (lambda (exports globals macros impls)
-                 (make-module-info
-                  mod-spec
-                  rel-path
-                  exports
-                  globals
-                  macros
-                  impls
-                  deps
-                  '()                          ; compile-uses
-                  '()                          ; runtime-uses
-                  (scan-interface-hash exports macros impls)
-                  (scan-source-hash text)
-                  #f                           ; artifact-hash
-                  (time-second (current-time)))))))))))))
+        (let* ((mod-spec (cadr header))
+               (deps (scan-header->deps header mod-spec))
+               (text (scan-read-text full)))
+          (call-with-values
+           (lambda () (scan-collect forms))
+           (lambda (exports globals macros impls)
+             (make-module-info
+              mod-spec
+              rel-path
+              exports
+              globals
+              macros
+              impls
+              deps
+              '()                          ; compile-uses
+              '()                          ; runtime-uses
+              (scan-interface-hash exports macros impls)
+              (scan-source-hash text)
+              #f                           ; artifact-hash
+              (time-second (current-time))))))))))
 
   ;;; -------------------------------------------------------------------------
   ;;; Multiple files and trees
