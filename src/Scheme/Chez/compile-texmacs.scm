@@ -440,7 +440,6 @@
     "fonts/font-sample.scm"
     "fonts/font-new-widgets.scm"
     "fonts/font-old-menu.scm"
-    "kernel/boot/boot.scm"
     "kernel/gui/menu-convert.scm"
     "kernel/library/iterator.scm"
     "kernel/logic/logic-test.scm"
@@ -746,6 +745,7 @@
                        define-values
                        bib-define-style
                        texmacs-modes
+                       cas-define-test
                        import export indirect-export eval-when meta))))
 
 (define (has-def? x)
@@ -889,9 +889,6 @@
            (pair? (cddr e)) (string? (caddr e)) (pair? (cdddr e)))
       (cons (car e) (cons (cadr e) (cdddr e)))
       e))
-
-
-
 
 (define (expand-macro-def x)
   (let* ((kind (car x))
@@ -1074,6 +1071,9 @@
          (lambda ()
            (eval x (compilation-environment)))))
 
+      ((eq? head 'cas-define-test)
+       (eval-in-compile x 'WARNING-CAS-DEFINE-TEST-FAIL))
+
       ((eq? head 'define-state)
        (guard-eval 'WARNING-DEFINE-STATE-EVAL-FAIL (list (cadr x)) #f
          (lambda ()
@@ -1127,109 +1127,79 @@
         (reverse acc)
         (let ((x (car rest)))
           (cond
-           ((not x) (loop (cdr rest) acc))
-           ((and (pair? x) (eq? (car x) 'begin))
-            (loop (append (cdr x) (cdr rest)) acc))
-	   ((and (pair? x)
-		 (memq (car x) '(tm-define
-				 tm-define-macro
-				 lazy-define
-				 define-group
-				 define-table
-				 define-collection
-				 extend-table
-				 extend-collection
-				 tm-property)))
-	    (loop (cdr rest) (cons x acc)))
-           ;; Macro definitions: capture define-public-macro-trace, define-macro-trace, tm-define-macro
-           ;; BEFORE generic macro expansion so macro definitions are registered as transformers.
-           ((and (pair? x) (memq (car x) '(define-public-macro-trace define-macro-trace tm-define-macro)))
-            (let-values (((nm proc-expr expanded-forms) (expand-macro-def x)))
-              (guard-eval 'WARNING-MACRO-EVAL-FAIL (list nm) #f
-			  (lambda ()
-			    (let ((proc (eval proc-expr (compilation-environment))))
-			      (when proc (putprop nm 'macro-transformer proc)))))
-              (loop (append expanded-forms (cdr rest)) acc)))
-           ;; Stateful macro trace expansion:
-           ;; Macros defined via define-public-macro-trace or tm-define-macro have their transformer procedure
-           ;; attributed via `(putprop nm 'macro-transformer proc)`.
-           ;; When `prepare-forms` encounters any macro with `'macro-transformer`, it invokes
-           ;; the authentic Scheme transformer directly in `(compilation-environment)` in source order,
-           ;; captures the emitted S-expression trace, and puts the expanded form back onto `rest`
-           ;; (`(loop (cons expanded (cdr rest)) acc)`).
-           ;; This expands nested macros ahead of Chez Scheme, ensuring that dynamic state mutations
-           ;; (like `cur-conds`, `cur-props`, and option registrations) run cleanly before Chez Scheme
-           ;; compiles the resulting definitions and expressions.
-           ((and (pair? x)
-                 (symbol? (car x))
-                 (getprop (car x) 'macro-transformer))
-            (let* ((nm (car x))
-                   (xfrm (getprop (car x) 'macro-transformer))
-                   (expanded (apply xfrm (cdr x))))
-              (when (memq nm '(tm-define tm-define-overloaded menu-dynamic tm-define-macro))
-                (display (list 'XFRM nm (if (pair? (cadr x)) (caar (cdr x)) (cadr x))))
-                (newline))
-              (loop (cons expanded (cdr rest)) acc)))
-           ((and (pair? x) (memq (car x) '(define-top-level-syntax putprop)))
-            (loop (cdr rest) (cons x acc)))
-           ((and (pair? x)
-                 (eq? (car x) 'define)
-                 (symbol? (cadr x))
-                 (pair? (cddr x))
-                 (symbol? (caddr x))
-                 (let* ((var-str (symbol->string (cadr x)))
-                        (val-str (symbol->string (caddr x))))
-                   (and (> (string-length var-str) 4)
-                        (string=? (substring var-str 0 4) "cpp-")
-                        (string=? (substring var-str 4 (string-length var-str)) val-str))))
-            (let* ((var (cadr x))
-                   (val (caddr x)))
-              (loop (cdr rest) (cons `(define ,var (top-level-value ',val)) acc))))
-           ((and (pair? x) (memq (car x) '(define define-public provide-public define-menu define-widget)))
-            (let* ((x (tm-strip-docstring (tm-maybe-uncurry x)))
-                   (head (cadr x))
-                   (var (if (pair? head) (ca*r head) head)))
-              (when (symbol? var)
-                (unless (memq var module-local-defs)
-                  (set! module-local-defs (cons var module-local-defs))))
-              (when (and (symbol? var) (memq (car x) '(define-public provide-public)))
-                (unless (memq var module-public-vars)
-                  (set! module-public-vars (cons var module-public-vars))))
-              (loop (cdr rest) (cons x acc))))
-           ((and (pair? x) (memq (car x) '(define-macro define-public-macro define-module-macro)))
-            (let* ((head (cadr x))
-                   (nm (if (pair? head) (ca*r head) head)))
-              (when (symbol? nm)
-                (unless (memq nm module-local-defs)
-                  (set! module-local-defs (cons nm module-local-defs))))
-              (when (and (symbol? nm) (memq (car x) '(define-public-macro define-module-macro)))
-                (unless (memq nm module-public-vars)
+            ((not x) (loop (cdr rest) acc))
+            ((and (pair? x) (eq? (car x) 'begin))
+              (loop (append (cdr x) (cdr rest)) acc))
+            ((and (pair? x)
+               (memq (car x) '(tm-define
+                                tm-define-macro
+                                lazy-define
+                                define-group
+                                define-table
+                                define-collection
+                                extend-table
+                                extend-collection
+                                tm-property)))
+              (loop (cdr rest) (cons x acc)))
+            ((and (pair? x) (memq (car x) '(define-top-level-syntax putprop)))
+              (loop (cdr rest) (cons x acc)))
+            ((and (pair? x)
+               (eq? (car x) 'define)
+               (symbol? (cadr x))
+               (pair? (cddr x))
+               (symbol? (caddr x))
+               (let* ((var-str (symbol->string (cadr x)))
+                       (val-str (symbol->string (caddr x))))
+                 (and (> (string-length var-str) 4)
+                   (string=? (substring var-str 0 4) "cpp-")
+                   (string=? (substring var-str 4 (string-length var-str)) val-str))))
+              (let* ((var (cadr x))
+                      (val (caddr x)))
+                (loop (cdr rest) (cons `(define ,var (top-level-value ',val)) acc))))
+            ((and (pair? x) (memq (car x) '(define define-public provide-public define-menu define-widget)))
+              (let* ((x (tm-strip-docstring (tm-maybe-uncurry x)))
+                      (head (cadr x))
+                      (var (if (pair? head) (ca*r head) head)))
+                (when (symbol? var)
+                  (unless (memq var module-local-defs)
+                    (set! module-local-defs (cons var module-local-defs))))
+                (when (and (symbol? var) (memq (car x) '(define-public provide-public)))
+                  (unless (memq var module-public-vars)
+                    (set! module-public-vars (cons var module-public-vars))))
+                (loop (cdr rest) (cons x acc))))
+            ((and (pair? x) (memq (car x) '(define-macro define-public-macro define-module-macro)))
+              (let* ((head (cadr x))
+                      (nm (if (pair? head) (ca*r head) head)))
+                (when (symbol? nm)
+                  (unless (memq nm module-local-defs)
+                    (set! module-local-defs (cons nm module-local-defs))))
+                (when (and (symbol? nm) (memq (car x) '(define-public-macro define-module-macro)))
+                  (unless (memq nm module-public-vars)
                   (set! module-public-vars (cons nm module-public-vars))))
               (loop (cdr rest) (cons x acc))))
-           ((and (pair? x) (eq? (car x) 'define-syntax))
-            (let ((var (cadr x)))
-              (when (symbol? var)
-                (unless (memq var module-local-defs)
-                  (set! module-local-defs (cons var module-local-defs))))
+            ((and (pair? x) (eq? (car x) 'define-syntax))
+              (let ((var (cadr x)))
+                (when (symbol? var)
+                  (unless (memq var module-local-defs)
+                    (set! module-local-defs (cons var module-local-defs))))
+                (loop (cdr rest) (cons x acc))))
+            ((and (pair? x) (eq? (car x) 'bib-define-style))
+              (let* ((s (cadr x))
+                      (pred (string->symbol (string-append "bib-" s "?"))))
+                (unless (memq pred module-local-defs)
+                  (set! module-local-defs (cons pred module-local-defs)))
+                (unless (memq pred module-public-vars)
+                  (set! module-public-vars (cons pred module-public-vars)))
               (loop (cdr rest) (cons x acc))))
-           ((and (pair? x) (eq? (car x) 'bib-define-style))
-            (let* ((s (cadr x))
-                   (pred (string->symbol (string-append "bib-" s "?"))))
-              (unless (memq pred module-local-defs)
-                (set! module-local-defs (cons pred module-local-defs)))
-              (unless (memq pred module-public-vars)
-                (set! module-public-vars (cons pred module-public-vars)))
-              (loop (cdr rest) (cons x acc))))
-           ;; AST Decomposition:
-           ;; In GNU Guile, module bodies allow arbitrary interleaving of definitions
-           ;; and expressions. In Chez Scheme R6RS `(module M () defs ... exprs ...)`,
-           ;; definitions cannot follow expressions.
-           ;; We desugar compound definers here into separate definitions and initialization calls
-           ;; so `partition-forms` can group definitions at the top and expressions at the bottom.
-           ;; `define-export-macro` in `graphics/graphics-utils.scm`:
-           ;; Upstream used a local macro helper to avoid historical Guile 1.8 macro caching bugs.
-           ;; We convert it directly to `define-public-macro` so it is placed into `defs` rather than
-           ;; `exprs`, avoiding "invalid context for definition" errors in Chez R6RS modules.
+            ((and (pair? x) (eq? (car x) 'cas-define-test))
+              (let* ((nm (cadr x))
+                     (tbl (string->symbol (string-append (symbol->string nm) "-table")))
+                     (pred (string->symbol (string-append (symbol->string nm) "?"))))
+                (unless (memq tbl module-local-defs)
+                  (set! module-local-defs (cons tbl module-local-defs)))
+                (unless (memq pred module-local-defs)
+                  (set! module-local-defs (cons pred module-local-defs)))
+                (loop (cdr rest) (cons x acc))))
            ((and (pair? x) (eq? (car x) 'define-export-macro))
             (loop (cons (cons 'define-public-macro (cdr x)) (cdr rest)) acc))
            ;; In-body `(use-modules ...)` and `(inherit-modules ...)`:

@@ -822,6 +822,99 @@ The same trick reproduces GUI-triggered bugs without a mouse by appending `(dela
   2. Updated `compile_kernel.scm:1223` to desugar in-body module forms to `(module-provide 'mod)`.
 - **Verification**: `developer-menu.so` and `wallet-menu.so` compile and load with **0 LOAD-ERRORs**.
 
+---
+
+## 13. Compilation Cost Profile: Tier 7 and Transpile `eval` [MEASURED]
+
+Benchmarks on macOS/arm64, Chez 10.5.0, fresh C++ Release binary, `-recompile-modules`, all 452 modules recompiled, 0 failures.
+
+### 13.1 Full rebuild by tier
+
+Wall-clock timing around each `compile-module-list` call:
+
+| Tier | Time |
+| :--- | ---: |
+| Kernel | **6.8 s** |
+| Tier 2 (Application Core) | **12.1 s** |
+| Tier 3 (Core Editing) | **20.4 s** |
+| Tier 4 (Desktop GUI & Menus) | **24.4 s** |
+| Tier 5 (Document Converters) | **44.0 s** |
+| Tier 6 (Dynamic & Interactive Sessions) | **33.3 s** |
+| Tier 7 (Extended Subsystems & Plugins) | **340.0 s** |
+
+Full rebuild: **8 m 6 s**. Tier 7 is about **70%** of the total.
+
+Cumulative subset runs were consistent:
+
+```text
+kernel + tier2       28.5 s
+through tier3        39.5 s
+through tier4        59.1 s
+through tier5        93.2 s
+```
+
+Earlier 297–318 s runs were **transpile + load existing `.so`** with `compile-file` commented out; they were not full native rebuilds.
+
+### 13.2 Tier 7 isolated
+
+Touching only tier-7 sources and running `-compile-modules`:
+
+```text
+211 modules recompiled
+transpile   16.7 s
+compile     21.3 s
+load         4.5 s
+wall        131 s
+```
+
+No single pathological module. Slowest compile times were 0.2–1.1 s:
+
+```text
+1.06 s  kernel/gui/menu-convert.scm
+0.68 s  education/edu-drd.scm
+0.54 s  utils/literate/lp-edit.scm
+0.51 s  client/client-widgets.scm
+0.47 s  server/server-base.scm
+0.45 s  version/version-git.scm
+0.40 s  math/math-speech.scm
+```
+
+Tier 7 is many medium-sized modules. The same tier was slower inside the full rebuild (340 s vs 131 s), consistent with cumulative heap/GC and I/O pressure rather than one outlier.
+
+### 13.3 Transpile subphases
+
+With `compile-file` commented out, all 452 modules transpiled and existing `.so` files loaded. Subphase totals:
+
+```text
+read forms          787 ms
+bind keywords       112 ms
+prepare forms        15 ms
+hazard check          0 ms
+eval eager forms  51,089 ms
+partition forms       5 ms
+collect keywords     22 ms
+```
+
+Measured transpile total: **~52.0 s**. `eval` is **98%** of transpile time.
+
+Conclusion: the expensive part of transpilation is:
+
+```scheme
+(for-each eval-eager-form! prepared)
+```
+
+`eval-eager-form!` evaluates every `tm-define`, `define-public`, `define-macro`, `define-state`, `define-table`, etc. into `compilation-environment`, so Chez expands/compiles each definition during transpile, then `compile-file` compiles the generated module again. Walking forms, preparing them, and collecting keywords are negligible.
+
+Caveat: the full wall time of that run was about 6 minutes, while measured transpile phases sum to ~52 s. The remainder is outside `transpile-module`: loading existing `.so` modules, aggregate `texmacs-user` handling, and I/O.
+
+### 13.4 Practical implications
+
+- Optimizing `prepare-forms` or source generation will not move the needle.
+- The two real costs are `eval` during transpile and native `compile-file` afterward.
+- Tier 7 dominates because it has many modules, not because of a single slow file.
+- Reducing duplicate work between eager `eval` and `compile-file` is the highest-leverage optimization.
+- The benchmark instrumentation was temporary; `compile-texmacs.scm` was restored to the original `compile-file` call afterward.
+
 
 
 

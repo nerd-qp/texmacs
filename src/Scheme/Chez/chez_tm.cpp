@@ -118,8 +118,14 @@ tmscm_is_equal (tmscm o1, tmscm o2) {
 
 tmscm
 string_to_tmscm (string s) {
-  c_string _s (s);
-  return Sstring_of_length (_s, (iptr) N (s));
+  // Sstring_of_length stops copying at the first '\0' byte, corrupting binary data (e.g. PNGs).
+  // We allocate an uninitialized string and explicitly copy all n bytes via Sstring_set.
+  iptr n= (iptr) N (s);
+  tmscm res= Smake_uninitialized_string (n);
+  for (iptr i= 0; i < n; i++) {
+    Sstring_set (res, i, (unsigned char) s[i]);
+  }
+  return res;
 }
 
 string

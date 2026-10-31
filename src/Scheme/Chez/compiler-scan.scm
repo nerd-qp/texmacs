@@ -8,10 +8,7 @@
 (library (compiler-scan)
   (export scan-source-file
           scan-source-files
-          scan-source-files->db
-          ;; scan-source-tree
-          ;; scan-source-tree->db
-    )
+          scan-source-files->db)
   (import (chezscheme) (compiler-db))
 
   ;;; -------------------------------------------------------------------------
@@ -92,43 +89,34 @@
                (globals '())
                (macros '())
                (impls '()))
-      (cond
-       ((null? rest)
-        (values (reverse exports)
-                (reverse globals)
-                (reverse macros)
-                (reverse impls)))
-       (else
-        (let* ((form (car rest))
-               (head (and (pair? form) (car form)))
-               (arg (and (pair? form) (pair? (cdr form)) (cadr form))))
-          (cond
-           ((memq head '(define-public provide-public))
-            (let ((name (scan-defined-name form arg)))
-              (loop (cdr rest)
-                    (cons name exports)
-                    globals macros impls)))
-           ((eq? head 'define-public-macro)
-            (let ((name (scan-defined-name form arg)))
-              (loop (cdr rest)
-                    (cons name exports)
-                    globals macros impls)))
-           ((eq? head 'tm-define)
-            (let ((name (scan-defined-name form arg)))
-              (loop (cdr rest)
-                    exports
-                    (cons name globals)
-                    macros impls)))
-           ((eq? head 'tm-define-macro)
-            (let* ((name (scan-defined-name form arg))
-                   (impl (scan-macro-impl-name name)))
-              (loop (cdr rest)
-                    exports
-                    globals
-                    (cons name macros)
-                    (cons impl impls))))
-           (else
-            (loop (cdr rest) exports globals macros impls))))))))
+      (if (null? rest)
+          (values (reverse exports)
+                  (reverse globals)
+                  (reverse macros)
+                  (reverse impls))
+          (let* ((form (car rest))
+                 (head (and (pair? form) (car form)))
+                 (arg (and (pair? form) (pair? (cdr form)) (cadr form))))
+            (case head
+              ((define-public provide-public define-public-macro)
+               (loop (cdr rest)
+                     (cons (scan-defined-name form arg) exports)
+                     globals macros impls))
+              ((tm-define)
+               (loop (cdr rest)
+                     exports
+                     (cons (scan-defined-name form arg) globals)
+                     macros impls))
+              ((tm-define-macro)
+               (let* ((name (scan-defined-name form arg))
+                      (impl (scan-macro-impl-name name)))
+                 (loop (cdr rest)
+                       exports
+                       globals
+                       (cons name macros)
+                       (cons impl impls))))
+              (else
+               (loop (cdr rest) exports globals macros impls)))))))
 
   ;;; -------------------------------------------------------------------------
   ;;; Canonical hashes
@@ -210,52 +198,6 @@
                (loop (cdr rest)
                      (if info (cons info acc) acc)))))))
 
-  (define (scan-skip-directory? name)
-    (or (string=? name ".git")
-        (string=? name ".svn")
-        (string=? name "CVS")))
-
-  (define (scan-sorted-entries dir)
-    (sort (lambda (a b) (string<? a b))
-          (directory-list dir)))
-
-  (define (scan-walk progs-dir dir rel acc)
-    (let loop ((entries (scan-sorted-entries dir)) (acc acc))
-      (cond
-       ((null? entries) acc)
-       (else
-        (let* ((name (car entries))
-               (full (string-append dir "/" name))
-               (rel-path (if (string=? rel "")
-                             name
-                             (string-append rel "/" name))))
-          (cond
-           ((file-directory? full)
-            (loop (cdr entries)
-                  (if (scan-skip-directory? name)
-                      acc
-                      (scan-walk progs-dir full rel-path acc))))
-           ((scan-scm-file? name)
-            (let ((info (scan-source-file progs-dir rel-path)))
-              (loop (cdr entries)
-                    (if info (cons info acc) acc))))
-           (else
-            (loop (cdr entries) acc))))))))
-
-  (define (scan-spec<? a b)
-    (cond ((null? a) (pair? b))
-          ((null? b) #f)
-          ((eq? (car a) (car b))
-           (scan-spec<? (cdr a) (cdr b)))
-          (else
-           (string<? (symbol->string (car a))
-                     (symbol->string (car b))))))
-
-  ;; (define (scan-source-tree progs-dir)
-  ;;   (sort (lambda (a b)
-  ;;           (scan-spec<? (module-info-name a) (module-info-name b)))
-  ;;         (scan-walk progs-dir progs-dir "" '())))
-
   (define (scan-source-files->db progs-dir rel-paths)
     (let ((db (make-empty-compiler-db)))
       (for-each
@@ -265,9 +207,4 @@
              (compiler-db-set! db info))))
        rel-paths)
       db))
-
-  ;; (define (scan-source-tree->db progs-dir)
-  ;;   (make-compiler-db (scheme-version)
-  ;;                     (time-second (current-time))
-  ;;                     (scan-source-tree progs-dir)))
 )

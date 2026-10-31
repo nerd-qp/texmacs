@@ -389,9 +389,7 @@ tm_window_rep::get_menu_widget (int which, string menu, widget& w) {
     tm_view vw= concrete_view (window_to_view (id));
     if (vw != NULL) the_drd= vw->ed->drd;
   }
-  time_t t_gm0 = texmacs_time ();
   object xmenu= call ("menu-expand", eval ("'" * menu));
-  time_t t_gm1 = texmacs_time ();
   the_drd= old_drd;
   //if (which == 10) cout << "xmenu= " << xmenu << "\n";
   //cout << "xmenu= " << xmenu << "\n";
@@ -404,8 +402,6 @@ tm_window_rep::get_menu_widget (int which, string menu, widget& w) {
       menu_current (which)= xmenu;
       //cout << "Cached " << menu << "\n";
       w= menu_cache [xmenu];
-      fprintf (stderr, "GET_MENU_WIDGET which=%d: expand=%ld ms (cached)\n", which, t_gm1 - t_gm0);
-      fflush (stderr);
       return true;
     }
   }
@@ -416,10 +412,6 @@ tm_window_rep::get_menu_widget (int which, string menu, widget& w) {
   object umenu= eval ("'" * menu);
   if (which == 10 || which == 11) w= make_menu_widget (umenu, 400, 1000);
   else w= make_menu_widget (umenu);
-  time_t t_gm2 = texmacs_time ();
-  fprintf (stderr, "GET_MENU_WIDGET which=%d: expand=%ld ms, make_widget=%ld ms\n",
-           which, t_gm1 - t_gm0, t_gm2 - t_gm1);
-  fflush (stderr);
   if (menu_caching)
     if (which >= 10 || as_bool (call ("cache-menu?", xmenu))) {
       //if (which == 10) cout << which << " -> cached" << LF;

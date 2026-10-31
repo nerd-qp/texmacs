@@ -551,7 +551,7 @@
           (else (set-message "Unsecure script refused" "Evaluate script")))))
 
 (tm-define (new-execute-script s secure-origin? args)
-  (let* ((sym-fun (eval (string->object (string-append "'" s))))
+  (let* ((sym-fun (string->symbol s))
 	 (sym-cmd (cons sym-fun (map (lambda (x) (list 'quote x)) args)))
          (ok? (or secure-origin? (secure? sym-cmd)))
 	 (cmd (eval (list 'lambda (list) sym-cmd))))

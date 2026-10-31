@@ -80,7 +80,7 @@
    (lambda (x) (append-map tmsymbol->cas (math-group-members x)))
    grs))
 
-(define-macro-trace (cas-define-test name . grs)
+(define-macro (cas-define-test name . grs)
   (let* ((t (symbol-append name '-table))
 	 (p (symbol-append name '?)))
     `(begin
