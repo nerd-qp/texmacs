@@ -43,6 +43,8 @@
 (import (compiler-db))
 (primitive-load (string-append *compiler-dir* "/compiler-scan.scm"))
 (import (compiler-scan))
+(primitive-load (string-append *compiler-dir* "/compile-graph.scm"))
+(import (compile-graph))
 ;; Progress reporting lives in a library rather than here: it imports
 ;; (chezscheme) explicitly, so its procedures do not depend on what the boot
 ;; script left bound in the environment this file is exec'd into.
@@ -704,6 +706,49 @@
 ;; First pass: read every whitelisted file once and record its interface.
 (define *compiler-db*
   (scan-source-files->db *progs-dir* *source-files*))
+
+;; ========================================================
+;; Dependency graph report (TEXMACS_COMPILE_GRAPH=1)
+;; ========================================================
+
+(define (compile-graph-mode?)
+  (let ((v (getenv "TEXMACS_COMPILE_GRAPH")))
+    (and v (not (string=? v "")) (not (string=? v "0")))))
+
+(define (report-tier full title files)
+  (let* ((g (compile-graph-subgraph full (map rel-path->spec files)))
+         (waves (compile-graph-waves g))
+         (cycles (compile-graph-cycles g)))
+    (format #t "  ~a: ~a modules, ~a waves ~a, ~a cycles~n"
+            title (length (compile-graph-nodes g))
+            (length waves) (map length waves) (length cycles))
+    (for-each (lambda (c) (format #t "      cycle ~s~n" c)) cycles)))
+
+(define (report-compile-graph)
+  (let ((full (make-compile-graph-from-db *compiler-db*)))
+    (format #t "~%Dependency graph~%")
+    (format #t "========================================================~%")
+    (report-tier full "kernel" *kernel-files*)
+    (report-tier full "tier2" *tier2-files*)
+    (report-tier full "tier3" *tier3-files*)
+    (report-tier full "tier4" *tier4-files*)
+    (report-tier full "tier5-convert" *tier5-convert-files*)
+    (report-tier full "tier6-dynamic" *tier6-dynamic-files*)
+    (report-tier full "tier7-extended" *tier7-extended-files*)
+    (let ((waves (compile-graph-waves full)))
+      (format #t "--------------------------------------------------------~%")
+      (format #t "  whole tree: ~a modules, ~a waves ~a~%"
+              (length (compile-graph-nodes full))
+              (length waves) (map length waves))
+      (format #t "  macro-defining modules: ~a~%"
+              (length (compile-graph-macro-nodes full)))
+      (format #t "  cycles: ~a~%" (length (compile-graph-cycles full)))
+      (format #t "========================================================~%"))))
+
+(when (compile-graph-mode?)
+  (report-compile-graph)
+  (exit 0))
+
 
 ;; Seed the export table from that database. Every module the build can ask
 ;; about already has its public names recorded, so no transpiled file is ever

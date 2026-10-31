@@ -1,5 +1,3 @@
-;;; TODO: UNDER REVIEWED AI GENERATED CODE.
-;;;
 ;;; compiler-progress.scm -- CMake-style progress lines for the Chez TeXmacs build.
 ;;;
 ;;; This library depends only on Chez Scheme. It does not load the TeXmacs

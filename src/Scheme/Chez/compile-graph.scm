@@ -1,0 +1,226 @@
+;;; compile-graph.scm -- Dependency graph for the Chez TeXmacs build.
+;;;
+;;; Builds an explicit DAG from the (compiler-db) records: adjacency in both
+;;; directions, Tarjan strongly connected components, a deterministic
+;;; topological order, and the parallel waves a scheduler can dispatch.
+;;;
+;;; Pure Chez Scheme; no TeXmacs runtime, no external libraries.
+
+(library (compile-graph)
+  (export compile-graph?
+          compile-graph-nodes
+          compile-graph-prereqs
+          compile-graph-dependents
+          make-compile-graph-from-modules
+          make-compile-graph-from-db
+          compile-graph-subgraph
+          compile-graph-scc
+          compile-graph-cycles
+          compile-graph-topological-sort
+          compile-graph-waves
+          compile-graph-macro-nodes
+          compile-graph-macro-free?)
+  (import (chezscheme) (compiler-db))
+
+  ;;; -------------------------------------------------------------------------
+  ;;; Record
+  ;;; -------------------------------------------------------------------------
+
+  ;; Only dependencies that are themselves nodes are kept: a module may name a
+  ;; library outside the build (ice-9 rdelim, for one), and that must not turn
+  ;; into a phantom node or a phantom cycle.
+  (define-record-type (compile-graph %make-compile-graph compile-graph?)
+    (fields
+      (immutable nodes)         ; sorted list of module specs
+      (immutable prereqs)       ; spec -> sorted (spec ...) inside the graph
+      (immutable dependents)    ; spec -> sorted (spec ...) inside the graph
+      (immutable macros))       ; spec -> #t when the module defines macros
+    (nongenerative compile-graph-v1))
+
+  ;;; -------------------------------------------------------------------------
+  ;;; Spec ordering
+  ;;; -------------------------------------------------------------------------
+
+  (define (spec<? a b)
+    (cond ((null? a) (pair? b))
+          ((null? b) #f)
+          ((eq? (car a) (car b)) (spec<? (cdr a) (cdr b)))
+          (else
+           (string<? (symbol->string (car a))
+                     (symbol->string (car b))))))
+
+  (define (sort-specs specs)
+    (sort spec<? specs))
+
+  ;;; -------------------------------------------------------------------------
+  ;;; Construction
+  ;;; -------------------------------------------------------------------------
+
+  ;; Keep only the edges whose target is in SPECS, sorted. Used by both the
+  ;; constructor and the induced subgraph.
+  (define (restrict prereqs specs)
+    (let ((inside (make-hashtable equal-hash equal?))
+          (out (make-hashtable equal-hash equal?)))
+      (for-each (lambda (s) (hashtable-set! inside s #t)) specs)
+      (for-each
+       (lambda (s)
+         (hashtable-set! out s
+                        (sort-specs
+                         (filter (lambda (d) (hashtable-ref inside d #f))
+                                 (hashtable-ref prereqs s '())))))
+       specs)
+      out))
+
+  (define (build-graph nodes prereqs macros)
+    (let ((dependents (make-hashtable equal-hash equal?)))
+      (for-each (lambda (n) (hashtable-set! dependents n '())) nodes)
+      (for-each
+       (lambda (n)
+         (for-each (lambda (p)
+                     (hashtable-update! dependents p (lambda (ds) (cons n ds)) '()))
+                   (hashtable-ref prereqs n '())))
+       nodes)
+      (for-each (lambda (n)
+                  (hashtable-set! dependents n
+                                 (sort-specs (hashtable-ref dependents n '()))))
+                nodes)
+      (%make-compile-graph nodes prereqs dependents macros)))
+
+  (define (make-compile-graph-from-modules infos)
+    (let ((nodes (sort-specs (map module-info-name infos)))
+          (raw (make-hashtable equal-hash equal?))
+          (macros (make-hashtable equal-hash equal?)))
+      (for-each
+       (lambda (info)
+         (hashtable-set! raw (module-info-name info) (module-info-deps info))
+         (unless (null? (module-info-global-macros info))
+           (hashtable-set! macros (module-info-name info) #t)))
+       infos)
+      (build-graph nodes (restrict raw nodes) macros)))
+
+  (define (make-compile-graph-from-db db)
+    (make-compile-graph-from-modules (compiler-db-modules db)))
+
+  ;; Induced subgraph: keep only the named specs and their internal edges.
+  ;; Unknown specs are ignored rather than invented.
+  (define (compile-graph-subgraph g specs)
+    (let* ((all (compile-graph-prereqs g))
+           (keep (sort-specs (filter (lambda (s) (hashtable-ref all s #f)) specs))))
+      (build-graph keep (restrict all keep) (compile-graph-macros g))))
+
+  ;;; -------------------------------------------------------------------------
+  ;;; Tarjan's strongly connected components
+  ;;; -------------------------------------------------------------------------
+
+  ;; Returns the components in dependency order: a component appears only after
+  ;; every component it depends on. That is already a valid build order, which
+  ;; is why compile-graph-topological-sort can return it unchanged.
+  (define (compile-graph-scc g)
+    (let ((prereqs (compile-graph-prereqs g))
+          (index (make-hashtable equal-hash equal?))
+          (low (make-hashtable equal-hash equal?))
+          (on-stack (make-hashtable equal-hash equal?))
+          (stack '())
+          (counter 0)
+          (components '()))
+
+      (define (visit v)
+        (hashtable-set! index v counter)
+        (hashtable-set! low v counter)
+        (set! counter (+ counter 1))
+        (set! stack (cons v stack))
+        (hashtable-set! on-stack v #t)
+        (for-each
+         (lambda (w)
+           (cond
+            ((not (hashtable-ref index w #f))
+             (visit w)
+             (hashtable-set! low v
+                            (min (hashtable-ref low v #f)
+                                 (hashtable-ref low w #f))))
+            ((hashtable-ref on-stack w #f)
+             (hashtable-set! low v
+                            (min (hashtable-ref low v #f)
+                                 (hashtable-ref index w #f))))))
+         (hashtable-ref prereqs v '()))
+        (when (= (hashtable-ref low v #f) (hashtable-ref index v #f))
+          (let pop ((acc '()))
+            (let ((w (car stack)))
+              (set! stack (cdr stack))
+              (hashtable-set! on-stack w #f)
+              (if (eq? w v)
+                  (set! components (cons (reverse (cons w acc)) components))
+                  (pop (cons w acc)))))))
+
+      (for-each
+       (lambda (v) (unless (hashtable-ref index v #f) (visit v)))
+       (compile-graph-nodes g))
+      (reverse components)))
+
+  (define (compile-graph-cycles g)
+    (let ((prereqs (compile-graph-prereqs g)))
+      (filter (lambda (c)
+                (or (> (length c) 1)
+                    ;; A one-node component is a cycle only if it depends on
+                    ;; itself; the scan drops self dependencies, so this is
+                    ;; here for graphs built by hand.
+                    (member (car c) (hashtable-ref prereqs (car c) '()))))
+              (compile-graph-scc g))))
+
+  ;; Each element is one build step: a single module, or an SCC that has to be
+  ;; compiled as a cluster because its members depend on each other.
+  (define (compile-graph-topological-sort g)
+    (compile-graph-scc g))
+
+  ;;; -------------------------------------------------------------------------
+  ;;; Parallel waves
+  ;;; -------------------------------------------------------------------------
+
+  ;; Wave n holds every module whose prerequisites all live in waves < n.
+  ;; Members of one SCC always land in the same wave. Components arrive in
+  ;; dependency order, so a component's level only reads levels already set.
+  (define (compile-graph-waves g)
+    (let ((prereqs (compile-graph-prereqs g))
+          (level (make-hashtable equal-hash equal?))
+          (buckets '()))                     ; (level . specs), unordered
+
+      ;; Prerequisites inside the component itself do not raise its level.
+      (define (level-of c v)
+        (fold-left
+         (lambda (acc p)
+           (if (member p c)
+               acc
+               (max acc (+ 1 (hashtable-ref level p 0)))))
+         0
+         (hashtable-ref prereqs v '())))
+
+      (for-each
+       (lambda (c)
+         (let ((lv (apply max 0 (map (lambda (v) (level-of c v)) c))))
+           (for-each (lambda (v) (hashtable-set! level v lv)) c)
+           (let ((bucket (assv lv buckets)))
+             (if bucket
+                 (set-cdr! bucket (append c (cdr bucket)))
+                 (set! buckets (cons (cons lv c) buckets))))))
+       (compile-graph-scc g))
+
+      (map (lambda (b) (sort-specs (cdr b)))
+           (sort (lambda (a b) (< (car a) (car b))) buckets))))
+
+  ;;; -------------------------------------------------------------------------
+  ;;; Macro safety
+  ;;; -------------------------------------------------------------------------
+
+  (define (compile-graph-macro-nodes g)
+    (sort-specs
+     (vector->list (hashtable-keys (compile-graph-macros g)))))
+
+  ;; A macro-free set can be expanded without racing on another worker's
+  ;; compile-time definitions.
+  (define (compile-graph-macro-free? g . opt-specs)
+    (let ((specs (if (null? opt-specs)
+                     (compile-graph-nodes g)
+                     (car opt-specs)))
+          (macros (compile-graph-macros g)))
+      (not (exists (lambda (s) (hashtable-ref macros s #f)) specs))))
+)
