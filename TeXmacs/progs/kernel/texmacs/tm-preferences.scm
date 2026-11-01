@@ -21,18 +21,21 @@
 (define-public preferences-default (make-ahash-table))
 (define-public preferences-call-back (make-ahash-table))
 
-(define (define-preference x)
+;; TODO: should be private
+(define-public (define-preference x)
   (with (which value call-back) x
     `(if (not (ahash-ref preferences-default ,which))
          (ahash-set! preferences-default ,which ,value))))
 
-(define (define-preference-call-back x)
+;; TODO: should be private
+(define-public (define-preference-call-back x)
   (with (which value call-back) x
     `(begin
        (ahash-set! preferences-call-back ,which ,call-back)
        (notify-preference ,which))))
 
-(define-public-macro (define-preferences . l)
+(define-public-macro
+  (define-preferences . l)
   (append '(begin)
           (map-in-order define-preference l)
           (map-in-order define-preference-call-back l)))

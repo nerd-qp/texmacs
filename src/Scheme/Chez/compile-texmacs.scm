@@ -576,17 +576,17 @@
 ;; index n is always the nth module of that list.
 (progress-start! (length *source-files*))
 
-(define (spec->symbol spec)
-  (let* ((parts (if (pair? spec)
-                    (map symbol->string spec)
-                    (list (symbol->string spec))))
+(define (mod-name->symbol mod-name)
+  (let* ((parts (if (pair? mod-name)
+                    (map symbol->string mod-name)
+                    (list (symbol->string mod-name))))
          (joined (let loop ((p parts))
                    (if (null? (cdr p))
                        (car p)
                        (string-append (car p) ":" (loop (cdr p)))))))
     (string->symbol joined)))
 
-(define (rel-path->spec rel-path)
+(define (rel-path->mod-name rel-path)
   (let* ((without-ext (if (and (>= (string-length rel-path) 4)
                                (string=? (substring rel-path (- (string-length rel-path) 4) (string-length rel-path)) ".scm"))
                           (substring rel-path 0 (- (string-length rel-path) 4))
@@ -717,7 +717,7 @@
     (and v (not (string=? v "")) (not (string=? v "0")))))
 
 (define (report-tier full title files)
-  (let* ((g (compile-graph-subgraph full (map rel-path->spec files)))
+  (let* ((g (compile-graph-subgraph full (map rel-path->mod-name files)))
          (waves (compile-graph-waves g))
          (cycles (compile-graph-cycles g)))
     (format #t "  ~a: ~a modules, ~a waves ~a, ~a cycles~n"
@@ -757,7 +757,7 @@
 (for-each
   (lambda (info)
     (hashtable-set! module-exports-table
-                    (spec->symbol (module-info-name info))
+                    (mod-name->symbol (module-info-name info))
                     (module-info-exports info)))
   (compiler-db-modules *compiler-db*))
 
@@ -1032,7 +1032,11 @@
       ;; So we do not evaluate it here at all: the form stays in the module body, Chez
       ;; expands it at compile time, and the emitted `(property-set! ...)` runs at load
       ;; time inside the module's own environment.
-      ((eq? head 'tm-property) #f)
+      ;; `texmacs-modes` joins them: the predicates it generates (mode tests,
+      ;; `logic-rules` registrations, `set-symbol-procedure!` hooks) are runtime
+      ;; values only. No macro reads them at expand time, and evaluating them
+      ;; here needs `logic-rules` and friends bound before their module loads.
+      ((memq head '(tm-property define-preferences texmacs-modes)) #f)
 
       ((memq head '(define-table-decls define-collection-decls))
        (guard-eval #f '() #f
@@ -1063,7 +1067,8 @@
                                 define-collection
                                 extend-table
                                 extend-collection
-                                tm-property)))
+                                tm-property
+                                define-preferences)))
               (loop (cdr rest) (cons x acc)))
             ((and (pair? x) (memq (car x) '(define-top-level-syntax putprop)))
               (loop (cdr rest) (cons x acc)))
@@ -1140,11 +1145,6 @@
            ((and (pair? x) (eq? (car x) 'ahash-set!)
                  (pair? (cdr x)) (eq? (cadr x) 'define-option-table))
             (loop (cdr rest) (cons x acc)))
-           ((and (pair? x) (eq? (car x) 'define-preferences))
-            (let* ((l (cdr x))
-                   (pref-exprs (append (map define-preference l)
-                                       (map define-preference-call-back l))))
-              (loop (append pref-exprs (cdr rest)) acc)))
            ((cond-def? x)
             (let* ((kind (car x))
                    (raw-test (cadr x))
@@ -1222,10 +1222,10 @@
 (define compile-errors '())
 
 (define (get-module-deps rel-path)
-  (let* ((spec (rel-path->spec rel-path))
-         (info (or (compiler-db-ref *compiler-db* spec)
+  (let* ((mod-name (rel-path->mod-name rel-path))
+         (info (or (compiler-db-ref *compiler-db* mod-name)
                    (error 'get-module-deps
-                          "no compiler-db record for module" rel-path spec))))
+                          "no compiler-db record for module" rel-path mod-name))))
     (module-info-deps info)))
 
 (define (transpile-module rel-path out-path)
@@ -1246,23 +1246,23 @@
       (if (not has-header?)
           ;; Reported as `Skipped` by compile-module-list.
           #f
-          (let* ((mod-spec (cadr hdr))
-                 (mod-sym (spec->symbol mod-spec))
+          (let* ((mod-name (cadr hdr))
+                 (mod-sym (mod-name->symbol mod-name))
                  (options (cddr hdr))
                  ;; Every whitelisted module was scanned into the database, so a
                  ;; miss means the scan and this loop disagree about the file.
-                 (info (or (compiler-db-ref *compiler-db* mod-spec)
+                 (info (or (compiler-db-ref *compiler-db* mod-name)
                            (error 'transpile-module
-                                  "no compiler-db record for module" mod-spec)))
+                                  "no compiler-db record for module" mod-name)))
                  (deps (module-info-deps info)))
 
             ;; Track declared dependencies for overload resolution
-            (set! current-used-symbols (map spec->symbol deps))
+            (set! current-used-symbols (map mod-name->symbol deps))
 
             ;; Import declared dependencies into this file's isolated compilation environment
             (for-each
               (lambda (s)
-                (let ((s-sym (spec->symbol s)))
+                (let ((s-sym (mod-name->symbol s)))
                   (when (memq s-sym compiled-modules)
                     (guard-eval #f '() #f
                       (lambda ()
@@ -1284,12 +1284,12 @@
                   (lambda (opt)
                     (when (pair? opt)
                       (let ((kind (car opt))
-                            (specs (cdr opt)))
+                            (mod-names (cdr opt)))
                         (cond
                           ((eq? kind ':use)
                            (for-each
                              (lambda (s)
-                               (let ((s-sym (spec->symbol s)))
+                               (let ((s-sym (mod-name->symbol s)))
                                  (if (memq s-sym compiled-modules)
                                      (let* ((s-exports (get-module-exports s-sym))
                                             (conflicts (filter (lambda (v)
@@ -1309,11 +1309,11 @@
                                                        seen-imported)))))
                                      (begin
                                        (log-note (format "deferred circular import ~a -> ~a" mod-sym s-sym))))))
-                             specs))
+                             mod-names))
                           ((eq? kind ':inherit)
                            (for-each
                              (lambda (s)
-                               (let ((s-sym (spec->symbol s)))
+                               (let ((s-sym (mod-name->symbol s)))
                                  (if (memq s-sym compiled-modules)
                                      (set! import-forms
                                        (cons `(import (for ,s-sym run expand)) import-forms))
@@ -1321,7 +1321,7 @@
                                        (log-note (format "deferred circular import ~a -> ~a" mod-sym s-sym))))
                                  (set! export-forms
                                    (cons `(export (import ,s-sym)) export-forms))))
-                             specs))))))
+                             mod-names))))))
                   options)
                 (set! import-forms (reverse import-forms))
                 (set! export-forms (reverse export-forms))
@@ -1404,10 +1404,10 @@
 (define (register-module-loaded! rel-path out-so mod-sym is-cached?)
   (get-module-deps rel-path)
   (let* ((load-ok? #t)
-         (spec (rel-path->spec rel-path)))
-    (ahash-set! *texmacs-modules-loaded* spec #t)
+         (mod-name (rel-path->mod-name rel-path)))
+    (hashtable-set! *texmacs-modules-loaded* mod-name #t)
     (guard (e (else
-                (ahash-remove! *texmacs-modules-loaded* spec)
+                (hashtable-delete! *texmacs-modules-loaded* mod-name)
                 (set! load-ok? #f)
                 (log-progress "FAILED" rel-path)
                 (log-note (condition-text e))
@@ -1438,7 +1438,7 @@
              (needs-build? (module-needs-recompile? rel-path trans-scm out-so))
              (mod-sym (if needs-build?
                           (transpile-and-compile-module rel-path trans-scm out-so)
-                          (spec->symbol (rel-path->spec rel-path)))))
+                          (mod-name->symbol (rel-path->mod-name rel-path)))))
         (cond
           ((and (not needs-build?) (file-exists? out-so))
            (parameterize ((compile-export-mode? #t))
@@ -1489,7 +1489,7 @@
                           (write `(primitive-load ,out-so) p)
                           (newline p)))
                       *kernel-files*)
-                    (let* ((all-mods (map (lambda (rel) (spec->symbol (rel-path->spec rel))) *kernel-files*))
+                    (let* ((all-mods (map (lambda (rel) (mod-name->symbol (rel-path->mod-name rel))) *kernel-files*))
                            (imports (map (lambda (m) `(import (for ,m run expand))) all-mods))
                            (exports (map (lambda (m) `(export (import ,m))) all-mods)))
                       (write `(module texmacs-user ()

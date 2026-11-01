@@ -5,7 +5,7 @@
 ;;; This file is loaded by compile-texmacs.scm. It has no dependency on the
 ;;; TeXmacs runtime; it only needs Chez Scheme.
 ;;;
-;;; In memory the database is a hash table keyed by module spec. On disk it is
+;;; In memory the database is a hash table keyed by module name. On disk it is
 ;;; a list-based snapshot record, so fasl files stay simple and ordered.
 
 ;; The record accessor compiler-db-table is generated below; the earmuffed
@@ -52,7 +52,7 @@
 
   (define-record-type (module-info %make-module-info module-info?)
     (fields
-      (immutable name)             ; module spec, e.g. (database db-base)
+      (immutable name)             ; module name, e.g. (database db-base)
       (immutable path)             ; source path relative to progs
       (immutable exports)          ; define-public names
       (immutable global-values)    ; tm-define names; duplicates allowed (overloads)
@@ -96,11 +96,11 @@
   (define (compiler-db-list-of-symbols? x)
     (and (list? x) (andmap symbol? x)))
 
-  (define (compiler-db-module-spec? x)
+  (define (compiler-db-mod-name? x)
     (and (list? x) (pair? x) (andmap symbol? x)))
 
-  (define (compiler-db-list-of-module-specs? x)
-    (and (list? x) (andmap compiler-db-module-spec? x)))
+  (define (compiler-db-list-of-mod-names? x)
+    (and (list? x) (andmap compiler-db-mod-name? x)))
 
   (define (compiler-db-duplicates-symbols lst)
     (let loop ((rest lst) (seen '()) (dups '()))
@@ -110,7 +110,7 @@
             (else
              (loop (cdr rest) (cons (car rest) seen) dups)))))
 
-  (define (compiler-db-duplicates-specs lst)
+  (define (compiler-db-duplicates-mod-names lst)
     (let loop ((rest lst) (seen '()) (dups '()))
       (cond ((null? rest) (reverse dups))
             ((member (car rest) seen)
@@ -118,11 +118,11 @@
             (else
              (loop (cdr rest) (cons (car rest) seen) dups)))))
 
-  (define (compiler-db-spec<? a b)
+  (define (compiler-db-mod-name<? a b)
     (cond ((null? a) (pair? b))
           ((null? b) #f)
           ((eq? (car a) (car b))
-           (compiler-db-spec<? (cdr a) (cdr b)))
+           (compiler-db-mod-name<? (cdr a) (cdr b)))
           (else
            (string<? (symbol->string (car a))
                      (symbol->string (car b))))))
@@ -150,15 +150,15 @@
              (string-append field " must be a list of symbols")
              value)))
 
-  (define (compiler-db-check-module-spec-list field value)
-    (unless (compiler-db-list-of-module-specs? value)
+  (define (compiler-db-check-mod-names field value)
+    (unless (compiler-db-list-of-mod-names? value)
       (error 'compiler-db
-             (string-append field " must be a list of module specs")
+             (string-append field " must be a list of module names")
              value))
-    (let ((dups (compiler-db-duplicates-specs value)))
+    (let ((dups (compiler-db-duplicates-mod-names value)))
       (when (pair? dups)
         (error 'compiler-db
-               (string-append field " contains duplicate module specs")
+               (string-append field " contains duplicate module names")
                dups))))
 
   (define (compiler-db-check-hash field value)
@@ -171,7 +171,7 @@
     (unless (module-info? info)
       (error 'compiler-db "not a module-info record" info))
 
-    (unless (compiler-db-module-spec? (module-info-name info))
+    (unless (compiler-db-mod-name? (module-info-name info))
       (error 'compiler-db
              "module name must be a non-empty list of symbols"
              (module-info-name info)))
@@ -186,7 +186,7 @@
      'global-values (module-info-global-values info))
     (compiler-db-check-symbol-list 'global-macros (module-info-global-macros info))
     (compiler-db-check-symbol-list 'macro-impls (module-info-macro-impls info))
-    (compiler-db-check-module-spec-list 'deps (module-info-deps info))
+    (compiler-db-check-mod-names 'deps (module-info-deps info))
     (compiler-db-check-symbol-list 'compile-uses (module-info-compile-uses info))
     (compiler-db-check-symbol-list 'runtime-uses (module-info-runtime-uses info))
 
@@ -282,7 +282,7 @@
 
   (define (compiler-db-modules db)
     (sort (lambda (a b)
-            (compiler-db-spec<? (module-info-name a)
+            (compiler-db-mod-name<? (module-info-name a)
                                 (module-info-name b)))
           (vector->list (hashtable-values (compiler-db-table db)))))
 

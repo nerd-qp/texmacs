@@ -134,14 +134,14 @@
              (car rest))
             (else (loop (cdr rest))))))
 
-  (define (scan-header->deps header mod-spec)
+  (define (scan-header->deps header mod-name)
     (let ((deps '()))
       (for-each
        (lambda (opt)
          (when (and (pair? opt) (memq (car opt) '(:use :inherit)))
            (for-each
             (lambda (s)
-              (unless (or (equal? s mod-spec) (member s deps))
+              (unless (or (equal? s mod-name) (member s deps))
                 (set! deps (cons s deps))))
             (cdr opt))))
        (cddr header))
@@ -250,14 +250,14 @@
         (newline (current-error-port))
         #f)
        (else
-        (let* ((mod-spec (cadr header))
-               (deps (scan-header->deps header mod-spec))
+        (let* ((mod-name (cadr header))
+               (deps (scan-header->deps header mod-name))
                (text (scan-read-text full)))
           (call-with-values
            (lambda () (scan-collect forms))
            (lambda (exports globals macros impls)
              (make-module-info
-              mod-spec
+              mod-name
               rel-path
               exports
               globals

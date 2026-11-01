@@ -57,9 +57,11 @@
 (define-public tm-defined-module (make-ahash-table))
 (define-public define-option-table (make-hash-table 100))
 
+;; TODO: should be private
 (define-public cur-conds '())
 
 (define cur-props-table (make-ahash-table))
+;; TODO: should be private
 (define-public cur-props '())
 
 (define (ca*r x) (if (pair? x) (ca*r (car x)) x))
@@ -157,7 +159,8 @@
   (let* ((key (cons var prop)))
     (ctx-resolve (ahash-ref cur-props-table key) #f)))
 
-(define (property-rewrite l)
+;; TODO: private before; made public; to change later.
+(define-public (property-rewrite l)
   `(property-set! ,@l (list ,@cur-conds)))
 
 (define ((define-property . l) opt decl)
