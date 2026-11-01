@@ -65,7 +65,8 @@
 (define (ca*r x) (if (pair? x) (ca*r (car x)) x))
 (define (ca*adr x) (ca*r (cadr x)))
 
-(define (lambda* head body)
+;; lambda* was private before, now exported as public
+(define-public (lambda* head body)
   (if (pair? head)
       (lambda* (car head) `((lambda ,(cdr head) ,@body)))
       (car body)))

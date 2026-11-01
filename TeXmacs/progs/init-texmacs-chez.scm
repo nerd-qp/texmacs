@@ -217,7 +217,8 @@
   ;; modules (via internal module imports and topological compilation order).
   ;; Therefore, runtime `inherit-modules` is not needed; we simply load all
   ;; prerequisites into the runtime environment via `use-modules`.
-  (use-modules (kernel boot compat) (kernel boot abbrevs)
+  (use-modules (kernel boot chez-compat)
+               (kernel boot compat) (kernel boot abbrevs)
                (kernel boot debug) (kernel boot srfi)
                (kernel boot ahash-table) (kernel boot prologue))
   (use-modules (kernel library base) (kernel library list)

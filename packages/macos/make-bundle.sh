@@ -96,7 +96,10 @@ fi
 # ---------------------------------------------------------------- fresh app
 mkdir -p "$APP/Contents/MacOS" "$RES" "$SHARE"
 
-cp "$SRC_APP/Contents/MacOS/TeXmacs" "$APP/Contents/MacOS/TeXmacs"
+cp "$SRC_APP/Contents/MacOS/TeXmacs" "$APP/Contents/MacOS/texmacs.bin"
+chmod +x "$APP/Contents/MacOS/texmacs.bin"
+
+cp "$ROOT/packages/macos/TeXmacs" "$APP/Contents/MacOS/TeXmacs"
 chmod +x "$APP/Contents/MacOS/TeXmacs"
 
 # The generated plist in build-texmacos was malformed (a bare <array> where
@@ -147,6 +150,7 @@ else
            "$ROOT/TeXmacs/progs/init-texmacs.scm" \
            "$ROOT/TeXmacs/progs/tm-mode.el" "$SHARE/progs/"
   rsync -a "$ROOT/TeXmacs/progs/kernel/boot/boot-chez.scm" \
+           "$ROOT/TeXmacs/progs/kernel/boot/chez-compat.scm" \
            "$SHARE/progs/kernel/boot/"
   for sub in forms client/forms server; do
     [ -d "$ROOT/TeXmacs/progs/$sub" ] || continue
@@ -215,7 +219,7 @@ fi
 if [ "$BUNDLE_QT" = 1 ]; then
   if command -v macdeployqt >/dev/null 2>&1; then
     say "bundling Qt frameworks (macdeployqt)"
-    macdeployqt "$APP" -always-overwrite >/dev/null
+    macdeployqt "$APP" -executable="$APP/Contents/MacOS/texmacs.bin" -always-overwrite >/dev/null
   else
     echo "warning: macdeployqt not found; the app will depend on the build machine's Qt" >&2
     echo "         install it with 'brew install qt' or drop --bundle-qt" >&2

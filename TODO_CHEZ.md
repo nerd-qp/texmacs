@@ -202,6 +202,165 @@ This document tracks identified architectural improvements and performance bottl
 
 ## 4. Bug Fixes & Stability
 
+### [x] Bracket Syntax Incompatibility in `latex-command-drd.scm` (`[ ]` parsed as `()` in Chez Scheme) [RESOLVED]
+- **Location**: [`TeXmacs/progs/convert/latex/latex-command-drd.scm:31`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/convert/latex/latex-command-drd.scm#L31)
+- **Problem**:
+  In upstream GNU Guile 1.8, square brackets `[` and `]` were treated as individual symbol tokens in standard syntax. In Chez Scheme (and standard R6RS/R7RS), `[` and `]` are reader syntax equivalent to parentheses `(` and `)`.
+  As a result, Chez Scheme's reader parsed `[ ]` in `(logic-group latex-command-0% ... [ ] ...)` as `()` (the empty list). This added `()` as a member of `latex-command-0%`, satisfying `(latex-tag% ())`.
+  When `tmtex.scm` executed `(map as-string (logic-apply-list '(latex-tag%)))`, it evaluated `(as-string '())` -> `(symbol->string '())`, throwing:
+  ```scheme
+  (TM-APPLY-ERROR () is not a symbol FUN: #<procedure new-val> ARGS: (#&5521720120 (table-vmode itemize-3* ...)))
+  Exception in symbol->string: () is not a symbol
+  ```
+  Furthermore, the LaTeX display math brackets `[` and `]` were missing from `latex-command-0%`.
+- **Solution**:
+  In `TeXmacs/progs/convert/latex/latex-command-drd.scm`, replaced `[ ]` with `,(string->symbol "[") ,(string->symbol "]")`, matching how other special single-character symbols (`" "`, `";"`, `","`, `":"`, `"|"`) are already written.
+
+### [x] `lazy-define` Stub Dispatch Failure When Target Module Was Pre-loaded (`Could not retrieve serialize-latex` / `texmacs->latex`) [RESOLVED]
+- **Location**: [`TeXmacs/progs/kernel/texmacs/tm-define.scm:321-340`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/kernel/texmacs/tm-define.scm#L321-L340)
+- **Problem**:
+  `lazy-define-one` generates dynamic lazy stubs for procedures defined across modules.
+  When a subsystem (such as `converter-function` in `tm-convert.scm` or an event hook) captures a procedure reference at declaration time (e.g. `(converter latex-stree latex-snippet (:function serialize-latex))` in `init-latex.scm`), the captured reference is the lazy stub procedure object.
+  If the target module (`(convert latex texout)`) is loaded before this captured stub is invoked (for example, when `texmacs->latex` in `tmtex.scm` loads `texout` during Step 2 of conversion), `(tm-define (serialize-latex x) ...)` updates `serialize-latex` in `(interaction-environment)` with the real procedure.
+  When the captured stub was later invoked in Step 3, `lazy-define-one` evaluated:
+  ```scheme
+  (let* ((old (and (defined? ',name) (top-level-value ',name (interaction-environment))))
+         (m (resolve-module ',module))
+         (r (and (defined? ',name) (top-level-value ',name (interaction-environment)))))
+    (if (or (not r) (eq? r old))
+        (texmacs-error "lazy-define" (string-append "Could not retrieve " (symbol->string name))))
+    (apply r args))
+  ```
+  Because `texout` was already loaded, `old` was ALREADY the real procedure before `resolve-module`. `resolve-module` was a no-op, so `r` was also the real procedure, making `(eq? r old)` `#t` and erroneously raising:
+  `Exception in lazy-define: Could not retrieve serialize-latex`.
+- **Solution**:
+  Updated `lazy-define-one` so the stub procedure closure captures its own identity `stub` at definition time:
+  ```scheme
+  (define-public (lazy-define-one module opts name)
+    (let* ((old (ahash-ref lazy-define-table name))
+           (new (if old (cons module old) (list module))))
+      (ahash-set! lazy-define-table name new))
+    (with name-star (string->symbol (string-append (symbol->string name) "*"))
+      `(when (not (defined? ',name))
+         (letrec ((stub #f))
+           (tm-define (,name . args)
+             ,@opts
+             (unless (module-loaded? ',module)
+               (resolve-module ',module))
+             (let ((r (and (defined? ',name) (top-level-value ',name (interaction-environment)))))
+               (if (or (not r) (eq? r stub))
+                   (texmacs-error "lazy-define"
+                                  ,(string-append "Could not retrieve "
+                                                  (symbol->string name))))
+               (apply r args)))
+           (set! stub (top-level-value ',name (interaction-environment)))))))
+  ```
+  Now:
+  1. If `module` is already loaded or is loaded by `resolve-module`, and `(top-level-value ',name)` has been updated to the real procedure, `(eq? r stub)` evaluates to `#f` and the real procedure is dispatched directly.
+  2. If `module` failed to define `name`, `r` remains `stub` (`(eq? r stub)` is `#t`), cleanly triggering `Could not retrieve` without recursion.
+  3. Recompiled all 452 modules from scratch with `-recompile-modules`. End-to-end tests for `(texmacs->generic doc "latex-snippet")` and `(convert doc "texmacs-tree" "latex-snippet")` pass with exit code 0.
+
+### [x] Missing Guile String & POSIX Procedures in Chez Scheme (`string-split`, `string-count`, `getpwnam`) [RESOLVED]
+- **Locations**: [`TeXmacs/progs/kernel/boot/boot-chez.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/kernel/boot/boot-chez.scm), [`TeXmacs/progs/server/server-authentication.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/server/server-authentication.scm), [`TeXmacs/progs/database/db-users.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/database/db-users.scm), [`plugins/jupyter/progs/init-jupyter.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/plugins/jupyter/progs/init-jupyter.scm)
+- **Problem**:
+  1. Guile/SRFI-13 builtins `string-split` and `string-count` do not exist in Chez Scheme. When `server-authentication.scm` tested crypt hashes (`password-parse-crypt-style`), `gpg-widgets.scm` counted passphrase character classes, or `jupyter` found kernels (`jupyter-find-kernels`), runtime exceptions occurred (`variable string-count is not bound`, `variable string-split is not bound`).
+  2. Guile builtin POSIX user database procedure `getpwnam` does not exist in Chez Scheme. Calling `safe-getpwnam` in `db-users.scm` logged `Error in getpwnam: (#t #f variable ~:s is not bound (getpwnam) ())`.
+- **Solution**:
+  1. Added implementations of `string-split` (supporting char, predicate, and char-set delimiters) and `string-count` (supporting char, predicate, and char-set counters with optional bounds) to `boot-chez.scm`.
+  2. Added POSIX user database compatibility procedures (`getpwnam`, `getpwuid`, `passwd:name`, `passwd:gecos`, `gecos:name`) backed by `USER`/`HOME` environment variables to `boot-chez.scm`.
+
+### [x] Reader Hex Escape Syntax Incompatibility in `plugins/cocoa5/progs/init-cocoa5.scm` [RESOLVED]
+- **Location**: [`plugins/cocoa5/progs/init-cocoa5.scm:14-18`](file:///Users/king-kong/Documents/GitHub/texmacs/plugins/cocoa5/progs/init-cocoa5.scm#L14-L18)
+- **Problem**:
+  In `init-cocoa5.scm`, line 16 contained `"cocoa5 --prompt '\x05\x02verbatim:'"`. In Chez Scheme (R6RS), `\x` hex string escapes require a terminating semicolon `\x<hex-scalar>;`. The unterminated sequence `\x05\x02` caused Chez Scheme's reader to fail during plugin initialization with:
+  `Exception in read: invalid character \ in string hex escape at line 16, char 25`.
+- **Solution**:
+  Constructed the prompt string via portable character codes `(string (integer->char 5) (integer->char 2))` and `string-append`, which eliminates non-standard reader escape dependencies across Guile 1.8, 2.0, 3.0, and Chez Scheme.
+
+### [ ] Top-Level Definitions Inside Conditional Expressions in Plugin Inits (`invalid context for definition`)
+- **Locations**:
+  - [`plugins/coq/progs/init-coq.scm:24-26`](file:///Users/king-kong/Documents/GitHub/texmacs/plugins/coq/progs/init-coq.scm#L24-L26)
+  - [`plugins/giac/progs/init-giac.scm:30-36`](file:///Users/king-kong/Documents/GitHub/texmacs/plugins/giac/progs/init-giac.scm#L30-L36)
+  - [`plugins/mupad/progs/init-mupad.scm:28-30`](file:///Users/king-kong/Documents/GitHub/texmacs/plugins/mupad/progs/init-mupad.scm#L28-L30)
+  - [`plugins/reduce/progs/init-reduce.scm:29`](file:///Users/king-kong/Documents/GitHub/texmacs/plugins/reduce/progs/init-reduce.scm#L29)
+- **Problem**:
+  In GNU Guile 1.8, top-level code was evaluated dynamically by an interpreter. When evaluating `(when (supports-<plugin>?) ...)`, if the plugin CLI tool was not installed on the host system, the test returned `#f` and Guile skipped the body without evaluating or inspecting internal definitions.
+  In Chez Scheme, `(load "file.scm")` is not an interpreter; it compiles each top-level form to native machine code ahead of time via `compile` / `sc-expand`. `when` expands into `(if test (begin ...))`. In standard R6RS and Chez Scheme, `if` is an expression form, and definitions (`define`, `texmacs-modes`) are strictly forbidden inside an expression context. Consequently, even when the plugin is not installed and the condition would evaluate to `#f`, Chez Scheme's compiler fails during the compilation/expansion phase with:
+  ```
+  Exception: invalid context for definition (define ...)
+  ```
+  Specific plugin occurrences:
+  - `init-coq.scm`: wraps declarative `(texmacs-modes (in-coq-style% ...))` inside `(when (supports-coq?) ...)`.
+  - `init-mupad.scm`: wraps declarative `(texmacs-modes (in-mupad-math% ...) (in-mupad-prog% ...))` inside `(when (supports-mupad?) ...)`.
+  - `init-giac.scm`: places `(define (giac-eval) ...)` inside `(when (supports-giac?) ...)`.
+  - `init-reduce.scm`: places `(define reduce-help #f)` inside `(when (supports-reduce?) ...)`.
+- **Status / Options**:
+  Upstream plugin source files are currently kept pristine.
+  Possible approaches:
+  1. Hoist declarative definitions (`define`, `texmacs-modes`) outside `(when ...)` to top level in the plugin files, or
+  2. Provide a top-level unrolling loader or dynamic macro for uncompiled `.scm` plugin files.
+
+### [x] App Bundle Wrapper & Binary Layout for `process_running(pid)` (`packages/macos/`) [RESOLVED]
+- **Locations**: [`packages/macos/make-bundle.sh:99-103`](file:///Users/king-kong/Documents/GitHub/texmacs/packages/macos/make-bundle.sh#L99-L103), [`packages/macos/TeXmacs`](file:///Users/king-kong/Documents/GitHub/texmacs/packages/macos/TeXmacs)
+- **Problem**:
+  In `clean_temp_dirs()` ([`init_texmacs.cpp`](file:///Users/king-kong/Documents/GitHub/texmacs/src/System/Boot/init_texmacs.cpp#L148-L156)), stale temporary directories are detected using `process_running(pid)`, which checks `occurs("texmacs", ret)`.
+  When `make-bundle.sh` copied the compiled binary directly as `Contents/MacOS/TeXmacs`, `ps -p <pid>` output only capitalized `.../TeXmacs`, causing `occurs("texmacs", ret)` to return `#f` and prematurely delete active temporary directories.
+- **Solution**:
+  `init_texmacs.cpp` remains **100% original and untouched**.
+  Restored the official macOS bundle packaging layout in `make-bundle.sh`:
+  1. The compiled executable is packaged as `Contents/MacOS/texmacs.bin`.
+  2. The bundle entry point `Contents/MacOS/TeXmacs` is the official wrapper script (`packages/macos/TeXmacs`), which sets environment paths and calls `exec "$LAUNCH_DIR/texmacs.bin" "$@"`.
+  Running under `texmacs.bin` satisfies `occurs("texmacs", ret)` natively.
+
+### [x] Consolidation of Guile Compatibility Primitives into `chez-compat.scm` [RESOLVED]
+- **Locations**:
+  - New module: [`TeXmacs/progs/kernel/boot/chez-compat.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/kernel/boot/chez-compat.scm) (with alias [`TeXmacs/progs/kernel/chez-compat.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/kernel/chez-compat.scm))
+  - Cleaned boot file: [`TeXmacs/progs/kernel/boot/boot-chez.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/kernel/boot/boot-chez.scm)
+  - Cleaned debug module: [`TeXmacs/progs/kernel/boot/debug.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/kernel/boot/debug.scm)
+- **Problem**:
+  Dozens of Guile compatibility procedures (numeric, list, alist, I/O, POSIX, and string operations) were arbitrarily dumped into `boot-chez.scm`, duplicated across `debug.scm` and `boot-chez.scm`, or referenced across modules without clean encapsulation.
+- **Solution**:
+  Extracted all self-contained Guile compatibility primitives into the dedicated kernel module `(kernel boot chez-compat)`:
+  - **Numeric & List**: `1+`, `1-`, `first`, `second`, `third`, `fourth`, `delq!`, `delv!`, `delete!`, `delq`, `acons`, `copy-tree`, `sort`, `sort!`
+  - **Association Lists**: `assoc-ref`, `assoc-set!`, `assoc-remove!`, `assq-ref`, `assq-set!`, `assq-remove!`
+  - **I/O & Introspection**: `display*`, `write*`, `read-line`, `force-output`, `make-soft-port`, `procedure-name`, `procedure-documentation`
+  - **POSIX Compatibility**: `getpid`, `current-time`, `getpwnam`, `getpwuid`, `passwd:name`, `passwd:gecos`, `gecos:name`, `select`
+  - **Strings & Character Sets**: `char-in-set?`, `string-index`, `string-rindex`, `string-split`, `string-count`
+  - Removed duplicate `==`/`!=` from `boot-chez.scm` (canonically provided by `abbrevs.scm`).
+  - Removed duplicate `check-arg-type`, `check-arg-number`, `check-arg-range` from `boot-chez.scm` (canonically provided by `debug.scm`).
+  - Eliminated over 150 lines of duplicate ad-hoc shims from `boot-chez.scm`.
+
+### [x] Clean Module Path Resolution & Development vs Standalone Execution (`boot-chez.scm`) [RESOLVED]
+- **Location**: [`TeXmacs/progs/kernel/boot/boot-chez.scm:863-915`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/kernel/boot/boot-chez.scm#L863-L915)
+- **Problem**:
+  `module-so-file` and `module-deps-file` contained hardcoded, machine-specific relative path candidates (such as `build-texmacos/boot/`, `../build-texmacos/boot/`, `../../build-texmacos/boot/`, and `texmacs/build-texmacos/boot/`).
+- **Solution**:
+  Cleaned up `candidates` to follow standard TeXmacs resolution without hardcoded directory names:
+  1. `(getenv "TEXMACS_BOOT_PATH")` (explicit boot path override)
+  2. `(string-append (getenv "TEXMACS_PATH") "/boot/...")` (installed/packaged bundle layout)
+  3. `"boot/..."` (working directory fallback)
+- **Usage Modes**:
+  1. **Running from build tree directly (uninstalled/unbundled)**:
+     Because the source tree (`TeXmacs/`) holds the Scheme source code while CMake places compiled `.so` modules and `module-deps.scm` in `build-texmacos/boot/`, supply `TEXMACS_BOOT_PATH`:
+     ```bash
+     SCHEMEHEAPDIRS="/opt/homebrew/opt/chezscheme/lib/csv10.4.1/tarm64osx" \
+     TEXMACS_PATH="$(pwd)/TeXmacs" \
+     TEXMACS_BOOT_PATH="$(pwd)/build-texmacos/boot" \
+     build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs
+     ```
+  2. **Running the packaged standalone bundle**:
+     The packaged bundle places both `progs/` and `boot/` together under `$APP/Contents/Resources/share/TeXmacs/`. TeXmacs automatically derives `TEXMACS_PATH` and finds `boot/` without requiring any environment variables:
+     ```bash
+     ./dist/TeXmacs-chez-2.1.5/TeXmacs-chez.app/Contents/MacOS/TeXmacs
+     ```
+
+### [x] Resilient Guard for Corrupted/Truncated `plugin_cache.scm` in `tm-plugins.scm` [RESOLVED]
+- **Location**: [`TeXmacs/progs/kernel/texmacs/tm-plugins.scm:388-396`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/kernel/texmacs/tm-plugins.scm#L388-L396)
+- **Problem**:
+  If `plugin_cache.scm` was truncated or corrupted (e.g. following an aborted process or uncompleted write), `load-object` caught the read error and returned `'()`. `(with (p t1 t2) cached ...)` expanded to `(apply (lambda (p t1 t2) ...) '())`, crashing with `Exception: incorrect number of arguments 0 to #<procedure>`.
+- **Solution**:
+  Added `(when (and (list? cached) (== (length cached) 3)) ...)` guard around cache unpack. Corrupted caches are safely ignored and freshly reconfigured.
+
 ### [ ] Separate Compilation Environment from Runtime Initialization
 - **Location**: [`src/Texmacs/Server/tm_server.cpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Texmacs/Server/tm_server.cpp), [`src/Scheme/Chez/chez_tm.cpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/chez_tm.cpp), [`TeXmacs/progs/init-texmacs-chez.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/init-texmacs-chez.scm), [`src/Scheme/Chez/compile_kernel.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/compile_kernel.scm)
 - **Problem**: Currently, both compilation (`-compile-modules`) and runtime startup load `init-texmacs-chez.scm`. `init-texmacs-chez.scm` relies on conditional runtime checks (`texmacs-chez-compiling?`) to decide whether to load `.so` files, redefine `define-public` / macros for runtime REPL evaluation, or skip them. This coupling introduces fragility, phase confusion, and order-of-initialization hazards between batch compiling and runtime execution.

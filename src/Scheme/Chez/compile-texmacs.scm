@@ -57,6 +57,7 @@
 
 (define *kernel-files*
   '(
+    "kernel/boot/chez-compat.scm"
     "kernel/boot/compat.scm"
     "kernel/boot/abbrevs.scm"
     "kernel/boot/debug.scm"
@@ -1219,16 +1220,13 @@
 
 (define compiled-modules '())
 (define compile-errors '())
-(define *all-module-deps* (make-ahash-table))
 
 (define (get-module-deps rel-path)
   (let* ((spec (rel-path->spec rel-path))
-         (cached (ahash-ref *all-module-deps* spec)))
-    (or cached
-        (let* ((info (compiler-db-ref *compiler-db* spec))
-               (deps (if info (module-info-deps info) '())))
-          (ahash-set! *all-module-deps* spec deps)
-          deps))))
+         (info (or (compiler-db-ref *compiler-db* spec)
+                   (error 'get-module-deps
+                          "no compiler-db record for module" rel-path spec))))
+    (module-info-deps info)))
 
 (define (transpile-module rel-path out-path)
   (guard (e (else
@@ -1257,7 +1255,6 @@
                            (error 'transpile-module
                                   "no compiler-db record for module" mod-spec)))
                  (deps (module-info-deps info)))
-            (ahash-set! *all-module-deps* mod-spec deps)
 
             ;; Track declared dependencies for overload resolution
             (set! current-used-symbols (map spec->symbol deps))
@@ -1396,8 +1393,10 @@
       (dynamic-wind
         (lambda () #f)
         (lambda ()
-          (write (map (lambda (pair) (list (car pair) (cdr pair)))
-                      (ahash-table->list *all-module-deps*))
+          (write (map (lambda (info)
+                        (list (module-info-name info)
+                              (module-info-deps info)))
+                      (compiler-db-modules *compiler-db*))
                  out-p)
           (newline out-p))
         (lambda () (close-port out-p))))))

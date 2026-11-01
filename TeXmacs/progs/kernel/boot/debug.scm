@@ -17,10 +17,6 @@
 ;; Output
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(define-public (display* . l)
-  "Display all objects in @l."
-  (for-each display l))
-
 (define-public (display-err x)
   "Display @x to the error port."
   (tm-errput (display-to-string x)))
@@ -31,10 +27,6 @@
 
 (define-public (tm-display-error . l)
   (apply display-err* `("TeXmacs] " ,@l "\n")))
-
-(define-public (write* . l)
-  "Write all objects in @l to standard output."
-  (for-each write l))
 
 (define-public (write-err x)
   "Write @x to the error port."

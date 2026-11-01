@@ -51,37 +51,9 @@
               (equal? (cdr a) (cdr b))))
         (else (chez:equal? a b))))
 
-(define (== a b) (equal? a b))
-(define (!= a b) (not (equal? a b)))
-
-(define (1+ x) (+ x 1))
-(define (1- x) (- x 1))
-
-(define (first l) (car l))
-(define (second l) (cadr l))
-(define (third l) (caddr l))
-(define (fourth l) (cadddr l))
-
-(define (delq! x l) (remq! x l))
-(define (delv! x l) (remv! x l))
-(define (delete! x l) (remove! x l))
-(define (delq x l) (remq x l))
-
-(define (acons k v l) (cons (cons k v) l))
-
-;; Guile-compatible sort: Guile uses (sort seq less?), Chez Scheme uses (sort less? seq)
-(define chez:sort (if (top-level-bound? 'chez:sort) chez:sort sort))
-(define (sort a b)
-  (let ((seq (if (procedure? a) b a))
-        (pred (if (procedure? a) a b)))
-    (if (vector? seq)
-        (vector-sort pred seq)
-        (chez:sort pred seq))))
-(define (sort! a b)
-  (sort a b))
-
 (define (procedure-name p) #f)
 (define (procedure-documentation p) #f)
+(define (make-soft-port . _) #f)
 
 (define (tm-equal-hash x)
   (cond ((and (box? x)
@@ -94,28 +66,6 @@
 
 (define (make-hash-table . _) (make-hashtable tm-equal-hash equal?))
 (define (make-ahash-table . _) (make-hashtable tm-equal-hash equal?))
-
-(define (hash-ref t k . default)
-  (if (hashtable-contains? t k)
-      (hashtable-ref t k #f)
-      (if (null? default) #f (car default))))
-(define (hash-set! t k v) (hashtable-set! t k v) v)
-(define (hash-remove! t k) (hashtable-delete! t k))
-(define (hash-get-handle t k)
-  (if (hashtable-contains? t k) (cons k (hashtable-ref t k #f)) #f))
-(define (hash-fold proc init t)
-  (let-values (((ks vs) (hashtable-entries t)))
-    (let loop ((i 0) (acc init))
-      (if (= i (vector-length ks)) acc
-          (loop (+ i 1) (proc (vector-ref ks i) (vector-ref vs i) acc))))))
-
-(define (ahash-ref t k . default) (apply hash-ref t k default))
-(define (ahash-set! t k v) (hash-set! t k v))
-(define (ahash-remove! t k) (hash-remove! t k))
-(define (ahash-get-handle t k) (hash-get-handle t k))
-(define (ahash-fold proc init t) (hash-fold proc init t))
-(define (ahash-table->list t)
-  (ahash-fold (lambda (k v acc) (cons (cons k v) acc)) '() t))
 
 (define (keyword? x)
   (and (symbol? x)
@@ -169,35 +119,6 @@
     :var-next :var-previous :vcnt :vernac :versions :visible :void :weight :wide :wildcard
     :winpath
     :< :> :/ :<lsub :<lsup :<lprime :<rsub :<rsup :<rprime :<not :<long-arrow :<Prefix :<Postfix :<left :<right :<mid :<big :<around :<around* :<row :<big-around :<frac :<sqrt :<wide :<table))
-
-(define (assoc-ref alist key) (cond ((assoc key alist) => cdr) (else #f)))
-(define (assoc-set! alist key val)
-  (let ((entry (assoc key alist)))
-    (if entry (begin (set-cdr! entry val) alist) (cons (cons key val) alist))))
-(define (assoc-remove! alist key)
-  (let loop ((l alist) (prev #f))
-    (cond ((null? l) alist)
-          ((equal? (caar l) key)
-           (if prev (begin (set-cdr! prev (cdr l)) alist) (cdr l)))
-          (else (loop (cdr l) l)))))
-
-(define (assq-ref alist key) (cond ((assq key alist) => cdr) (else #f)))
-(define (assq-set! alist key val)
-  (let ((entry (assq key alist)))
-    (if entry (begin (set-cdr! entry val) alist) (cons (cons key val) alist))))
-(define (assq-remove! alist key)
-  (let loop ((l alist) (prev #f))
-    (cond ((null? l) alist)
-          ((eq? (caar l) key)
-           (if prev (begin (set-cdr! prev (cdr l)) alist) (cdr l)))
-          (else (loop (cdr l) l)))))
-
-(define (copy-tree obj)
-  (cond ((pair? obj) (cons (copy-tree (car obj)) (copy-tree (cdr obj))))
-        ((vector? obj) (vector-map copy-tree obj))
-        (else obj)))
-
-(define (make-soft-port . _) #f)
 
 (define (tm-catch-runtime key handler thunk)
   (guard (e (else
@@ -309,38 +230,6 @@
     (proc p)
     (get-output-string p)))
 
-(define (getpid)
-  (cond ((top-level-bound? 'get-process-id) (get-process-id))
-        (else 1000)))
-
-(define (read-line . opt)
-  (get-line (if (null? opt) (current-input-port) (car opt))))
-
-(define (force-output . opt)
-  (flush-output-port (if (null? opt) (current-output-port) (car opt))))
-
-(define (char-in-set? c cs)
-  (cond ((char? cs) (char=? c cs))
-        ((procedure? cs) (cs c))
-        ((list? cs) (memv c cs))
-        (else #f)))
-
-(define (string-index s cs . opt)
-  (let* ((start (if (null? opt) 0 (car opt)))
-         (end (if (or (null? opt) (null? (cdr opt))) (string-length s) (cadr opt))))
-    (let loop ((i start))
-      (cond ((>= i end) #f)
-            ((char-in-set? (string-ref s i) cs) i)
-            (else (loop (+ i 1)))))))
-
-(define (string-rindex s cs . opt)
-  (let* ((start (if (null? opt) 0 (car opt)))
-         (end (if (or (null? opt) (null? (cdr opt))) (string-length s) (cadr opt))))
-    (let loop ((i (- end 1)))
-      (cond ((< i start) #f)
-            ((char-in-set? (string-ref s i) cs) i)
-            (else (loop (- i 1)))))))
-
 (define char-set:whitespace (string->list " \t\n\r\f\v"))
 (define char-set:digit (string->list "0123456789"))
 (define char-set:lower-case (string->list "abcdefghijklmnopqrstuvwxyz"))
@@ -408,24 +297,10 @@
       (server-started?)
       #f))
 
-(define (check-arg-type pred arg caller)
-  (if (pred arg) arg
-      (error caller "Wrong type argument: ~S" arg)))
-(define (check-arg-number pred num caller)
-  (if (pred num) num
-      (error caller "Wrong number of arguments: ~A" num)))
-(define (check-arg-range pred arg caller)
-  (if (pred arg) arg
-      (error caller "Argument out of range: ~S" arg)))
-
 (define (scm-error key subr message args rest)
   (if (and (string? message) (list? args))
       (apply error subr message args)
       (error subr (format "~a: ~a" key message))))
-
-(define chez:current-time (if (top-level-bound? 'chez:current-time) chez:current-time (top-level-value 'current-time (scheme-environment))))
-(define (current-time)
-  (time-second (chez:current-time)))
 
 (define (seed->random-state . s)
   (if (null? s) 1 (car s)))
@@ -519,6 +394,7 @@
   (if (and (pair? pred?) (eq? (car pred?) 'lambda))
       (caddr pred?)
       (list pred?)))
+(define chez:sort (if (top-level-bound? 'chez:sort) chez:sort sort))
 (define cur-conds '())
 (define cur-props '())
 (define (property-rewrite l)
@@ -650,7 +526,7 @@
               ,(cadar body)
               (proc))))
         (else (delayed-sub (cdr body)))))
-(define has-look-and-feel? (lambda (x) (== x "emacs")))
+(define has-look-and-feel? (lambda (x) (equal? x "emacs")))
 (define original-display (if (top-level-bound? 'original-display) original-display (top-level-value 'display (scheme-environment))))
 (define original-write (if (top-level-bound? 'original-write) original-write (top-level-value 'write (scheme-environment))))
 
@@ -837,16 +713,8 @@
          (candidates
            (append
              (if boot-env (list (string-append boot-env "/" so-name)) '())
-             (if tm-path
-                 (list (string-append tm-path "/../../build-texmacos/boot/" so-name)
-                       (string-append tm-path "/../build-texmacos/boot/" so-name)
-                       (string-append tm-path "/boot/" so-name))
-                 '())
-             (list (string-append "build-texmacos/boot/" so-name)
-                   (string-append "../build-texmacos/boot/" so-name)
-                   (string-append "../../build-texmacos/boot/" so-name)
-                   (string-append "texmacs/build-texmacos/boot/" so-name)
-                   (string-append "boot/" so-name)))))
+             (if tm-path (list (string-append tm-path "/boot/" so-name)) '())
+             (list (string-append "boot/" so-name)))))
     (let loop ((c candidates))
       (cond ((null? c) #f)
             ((file-exists? (car c)) (car c))
@@ -873,16 +741,8 @@
          (candidates
            (append
              (if boot-env (list (string-append boot-env "/module-deps.scm")) '())
-             (if tm-path
-                 (list (string-append tm-path "/../../build-texmacos/boot/module-deps.scm")
-                       (string-append tm-path "/../build-texmacos/boot/module-deps.scm")
-                       (string-append tm-path "/boot/module-deps.scm"))
-                 '())
-             (list "build-texmacos/boot/module-deps.scm"
-                   "../build-texmacos/boot/module-deps.scm"
-                   "../../build-texmacos/boot/module-deps.scm"
-                   "texmacs/build-texmacos/boot/module-deps.scm"
-                   "boot/module-deps.scm"))))
+             (if tm-path (list (string-append tm-path "/boot/module-deps.scm")) '())
+             (list "boot/module-deps.scm"))))
     (let loop ((c candidates))
       (cond ((null? c) #f)
             ((file-exists? (car c)) (car c))
