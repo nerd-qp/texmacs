@@ -324,16 +324,18 @@
     (ahash-set! lazy-define-table name new))
   (with name-star (string->symbol (string-append (symbol->string name) "*"))
     `(when (not (defined? ',name))
-       (tm-define (,name . args)
-         ,@opts
-         (let* ((old (and (defined? ',name) (top-level-value ',name (interaction-environment))))
-                (m (resolve-module ',module))
-                (r (and (defined? ',name) (top-level-value ',name (interaction-environment)))))
-           (if (or (not r) (eq? r old))
-               (texmacs-error "lazy-define"
-                              ,(string-append "Could not retrieve "
-                                              (symbol->string name))))
-           (apply r args))))))
+       (letrec ((stub #f))
+         (tm-define (,name . args)
+           ,@opts
+           (unless (module-loaded? ',module)
+             (resolve-module ',module))
+           (let ((r (and (defined? ',name) (top-level-value ',name (interaction-environment)))))
+             (if (or (not r) (eq? r stub))
+                 (texmacs-error "lazy-define"
+                                ,(string-append "Could not retrieve "
+                                                (symbol->string name))))
+             (apply r args)))
+         (set! stub (top-level-value ',name (interaction-environment)))))))
 
 (define-public-macro (lazy-define module . names)
   (receive (opts real-names) (list-break names not-define-option?)
