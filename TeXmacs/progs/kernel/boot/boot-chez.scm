@@ -661,7 +661,7 @@
                    ".scm")))
 
 (define (module-loaded? m)
-  (ahash-ref *texmacs-modules-loaded* m))
+  (hashtable-ref *texmacs-modules-loaded* m #f))
 
 (define (module-so-file which)
   (let* ((ps (map symbol->string which))
@@ -724,7 +724,7 @@
         (for-each
           (lambda (entry)
             (when (and (pair? entry) (pair? (cdr entry)))
-              (ahash-set! *module-deps-table* (car entry) (cadr entry))))
+              (hashtable-set! *module-deps-table* (car entry) (cadr entry))))
           entries)))))
 
 (define (parse-module-header-deps fname which)
@@ -755,12 +755,12 @@
 
 (define (module-dependencies which)
   (load-module-deps-table!)
-  (or (ahash-ref *module-deps-table* which)
+  (or (hashtable-ref *module-deps-table* which #f)
       (let* ((fname (module-file-name which))
              (deps (if (file-exists? fname)
                        (parse-module-header-deps fname which)
                        '())))
-        (ahash-set! *module-deps-table* which deps)
+        (hashtable-set! *module-deps-table* which deps)
         deps)))
 
 (define (load-module-file which)
@@ -777,11 +777,11 @@
 (define (module-load which)
   (when (and (list? which)
              (not (module-loaded? which))
-             (not (ahash-ref *module-loading-stack* which)))
-    (ahash-set! *module-loading-stack* which #t)
+             (not (hashtable-ref *module-loading-stack* which #f)))
+    (hashtable-set! *module-loading-stack* which #t)
     (for-each module-load (module-dependencies which))
-    (ahash-remove! *module-loading-stack* which)
-    (ahash-set! *texmacs-modules-loaded* which #t)
+    (hashtable-delete! *module-loading-stack* which)
+    (hashtable-set! *texmacs-modules-loaded* which #t)
     (load-module-file which)))
 
 (define (module-provide m)
@@ -835,7 +835,7 @@
      (tm-process-module 'name '(options ...)))))
 
 (define (tm-process-module name options)
-  (ahash-set! *texmacs-modules-loaded* name #t)
+  (hashtable-set! *texmacs-modules-loaded* name #t)
   (for-each
     (lambda (action)
       (if (pair? action)

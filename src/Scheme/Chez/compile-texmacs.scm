@@ -645,7 +645,7 @@
 
 (define (def-form? x)
   (and (pair? x)
-       (memq (car x) '(define define-syntax define-public define-public-macro define-public-macro-trace
+       (memq (car x) '(define define-syntax define-public define-public-macro
                        define-macro-trace
                        define-module-macro
                        define-state
@@ -658,7 +658,7 @@
                        bib-define-style
                        texmacs-modes
                        cas-define-test
-                       import export indirect-export eval-when meta))))
+                       import export indirect-export))))
 
 (define (has-def? x)
   (cond
@@ -708,6 +708,24 @@
 (define *compiler-db*
   (scan-source-files->db *progs-dir* *source-files*))
 
+;; The graph is built once and shared: the cycle report reads it, and so does
+;; every import decision inside transpile-module.
+(define *compile-graph* (make-compile-graph-from-db *compiler-db*))
+
+;; Module -> the SCC it belongs to, for cycle members only. Modules outside a
+;; cycle are absent, so a lookup returns '() and the test below stays a single
+;; list search with no #f sentinel to special-case.
+(define *cycle-mates*
+  (let ((t (make-hashtable equal-hash equal?)))
+    (for-each (lambda (c) (for-each (lambda (m) (hashtable-set! t m c)) c))
+              (compile-graph-cycles *compile-graph*))
+    t))
+
+;; `member`, not `memq`: mod-names are lists, and two equal mod-names are not
+;; the same object.
+(define (cycle-mate? m d)
+  (member d (hashtable-ref *cycle-mates* m '())))
+
 ;; ========================================================
 ;; Dependency graph report (TEXMACS_COMPILE_GRAPH=1)
 ;; ========================================================
@@ -726,7 +744,7 @@
     (for-each (lambda (c) (format #t "      cycle ~s~n" c)) cycles)))
 
 (define (report-compile-graph)
-  (let ((full (make-compile-graph-from-db *compiler-db*)))
+  (let ((full *compile-graph*))
     (format #t "~%Dependency graph~%")
     (format #t "========================================================~%")
     (report-tier full "kernel" *kernel-files*)
@@ -813,53 +831,6 @@
            (pair? (cddr e)) (string? (caddr e)) (pair? (cdddr e)))
       (cons (car e) (cons (cadr e) (cdddr e)))
       e))
-
-(define (expand-macro-def x)
-  (let* ((kind (car x))
-         (decl (cadr x))
-         (nm (if (pair? decl) (ca*r decl) decl))
-         (formals (if (pair? decl)
-                      (cdr decl)
-                      (if (and (pair? (caddr x)) (eq? (caaddr x) 'lambda))
-                          (cadr (caddr x))
-                          'args)))
-         (raw-body (if (pair? decl)
-                       (cddr x)
-                       (if (and (pair? (caddr x)) (eq? (caaddr x) 'lambda))
-                           (cddr (caddr x))
-                           (list (list (caddr x) 'args)))))
-         (body (let strip ((b raw-body))
-                 (if (and (pair? b) (pair? (car b)) (keyword? (caar b)))
-                     (strip (cdr b))
-                     b))))
-    (cond
-      ((eq? kind 'tm-define-macro)
-       (let* ((macro-head (if (pair? decl)
-                              (cons (string->symbol (string-append (symbol->string (ca*r decl)) "$impl"))
-                                    (cdr decl))
-                              (string->symbol (string-append (symbol->string decl) "$impl"))))
-              (impl (if (pair? macro-head) (car macro-head) macro-head)))
-         (values nm
-                 `(lambda ,formals ,@body)
-                 (list `(tm-define ,macro-head ,@raw-body)
-                       `(putprop ',nm 'macro-transformer (lambda ,formals ,@body))
-                       `(define-top-level-syntax ',nm
-                          (lambda (stx)
-                            (datum->syntax (car (syntax->list stx))
-                              (apply (lambda ,formals ,@body) (cdr (syntax->datum stx)))))
-                          (if (top-level-bound? 'compilation-environment)
-                              (compilation-environment)
-                              (interaction-environment)))))))
-      ((eq? kind 'define-public-macro-trace)
-       (values nm
-               `(lambda ,formals ,@body)
-               (list `(define-public-macro ,decl ,@body)
-                     `(putprop ',nm 'macro-transformer (lambda ,formals ,@body)))))
-      (else ;; define-macro-trace (private to module)
-       (values nm
-               `(lambda ,formals ,@body)
-               (list `(define-macro ,decl ,@body)
-                     `(putprop ',nm 'macro-transformer (lambda ,formals ,@body))))))))
 
 ;; Render any raised object as a printable string, without assuming it is a condition.
 (define (condition-text e)
@@ -1021,15 +992,7 @@
       ((eq? head 'putprop)
        (eval-twice x 'WARNING-PUTPROP-FAIL))
 
-      ;; `tm-property` installs NOTHING: no value, no syntax binding. Its whole effect is
-      ;; a side effect on `cur-props-table` via `property-set!`. Both `eval-and-auto-publish!`
-      ;; (publishes newly introduced names -- the diff is empty by construction) and
-      ;; `eval-twice` (installs twice at compile time) are the wrong shape, because they
-      ;; run the side effect at COMPILE time. Values referenced by properties such as
-      ;; (:check-mark *clipboard-test-import?) only exist at module LOAD time, so any
-      ;; compile-time evaluation reports `variable ... is not bound`.
-      ;;
-      ;; So we do not evaluate it here at all: the form stays in the module body, Chez
+      ;; We do not evaluate it here at all: the form stays in the module body, Chez
       ;; expands it at compile time, and the emitted `(property-set! ...)` runs at load
       ;; time inside the module's own environment.
       ;; `texmacs-modes` joins them: the predicates it generates (mode tests,
@@ -1279,49 +1242,50 @@
                      (seen-imported '())
                      (import-forms '())
                      (export-forms (if (pair? public-vars) (list `(export ,@public-vars)) '())))
+
+                ;; Import one dependency's exports, minus any name that would
+                ;; collide with a local definition or with an earlier import.
+                (define (import-module! s-sym)
+                  (let* ((exports (get-module-exports s-sym))
+                         (clash (filter (lambda (v)
+                                          (or (memq v all-local-defs)
+                                              (memq v seen-imported)))
+                                        exports)))
+                    (set! import-forms
+                          (cons (if (null? clash)
+                                    `(import (for ,s-sym run expand))
+                                    `(import (for (except ,s-sym ,@clash) run expand)))
+                                import-forms))
+                    (set! seen-imported
+                          (append (filter (lambda (v) (not (memq v clash))) exports)
+                                  seen-imported))))
+
+                ;; A dependency that is not compiled yet falls back to a runtime
+                ;; module-provide lookup. Say which kind it is: a real cycle, or
+                ;; merely a later position in the tier order.
+                (define (note-deferred! s s-sym)
+                  (log-note (format (if (cycle-mate? mod-name s)
+                                        "cycle back-edge: ~a -> ~a (runtime module-provide)"
+                                        "deferred forward import: ~a -> ~a (acyclic)")
+                                    mod-sym s-sym)))
+
                 (hashtable-set! module-exports-table mod-sym public-vars)
                 (for-each
                   (lambda (opt)
-                    (when (pair? opt)
-                      (let ((kind (car opt))
-                            (mod-names (cdr opt)))
-                        (cond
-                          ((eq? kind ':use)
-                           (for-each
-                             (lambda (s)
-                               (let ((s-sym (mod-name->symbol s)))
-                                 (if (memq s-sym compiled-modules)
-                                     (let* ((s-exports (get-module-exports s-sym))
-                                            (conflicts (filter (lambda (v)
-                                                                 (or (memq v all-local-defs)
-                                                                     (memq v seen-imported)))
-                                                               s-exports)))
-                                       (if (null? conflicts)
-                                           (begin
-                                             (set! import-forms
-                                               (cons `(import (for ,s-sym run expand)) import-forms))
-                                             (set! seen-imported (append s-exports seen-imported)))
-                                           (begin
-                                             (set! import-forms
-                                               (cons `(import (for (except ,s-sym ,@conflicts) run expand)) import-forms))
-                                             (set! seen-imported
-                                               (append (filter (lambda (v) (not (memq v conflicts))) s-exports)
-                                                       seen-imported)))))
-                                     (begin
-                                       (log-note (format "deferred circular import ~a -> ~a" mod-sym s-sym))))))
-                             mod-names))
-                          ((eq? kind ':inherit)
-                           (for-each
-                             (lambda (s)
-                               (let ((s-sym (mod-name->symbol s)))
-                                 (if (memq s-sym compiled-modules)
-                                     (set! import-forms
-                                       (cons `(import (for ,s-sym run expand)) import-forms))
-                                     (begin
-                                       (log-note (format "deferred circular import ~a -> ~a" mod-sym s-sym))))
-                                 (set! export-forms
-                                   (cons `(export (import ,s-sym)) export-forms))))
-                             mod-names))))))
+                    (when (and (pair? opt) (memq (car opt) '(:use :inherit)))
+                      (for-each
+                        (lambda (s)
+                          (let ((s-sym (mod-name->symbol s)))
+                            (if (memq s-sym compiled-modules)
+                                (if (eq? (car opt) ':use)
+                                    (import-module! s-sym)
+                                    (begin
+                                      (set! import-forms
+                                            (cons `(import (for ,s-sym run expand)) import-forms))
+                                      (set! export-forms
+                                            (cons `(export (import ,s-sym)) export-forms))))
+                                (note-deferred! s s-sym))))
+                        (cdr opt))))
                   options)
                 (set! import-forms (reverse import-forms))
                 (set! export-forms (reverse export-forms))

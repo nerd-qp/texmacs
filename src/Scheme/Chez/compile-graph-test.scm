@@ -50,10 +50,10 @@
 (define (check-true label actual)
   (check label #t (and actual #t)))
 
-(define (spec<? a b)
+(define (mod-name<? a b)
   (cond ((null? a) (pair? b))
         ((null? b) #f)
-        ((eq? (car a) (car b)) (spec<? (cdr a) (cdr b)))
+        ((eq? (car a) (car b)) (mod-name<? (cdr a) (cdr b)))
         (else (string<? (symbol->string (car a))
                         (symbol->string (car b))))))
 
@@ -115,7 +115,7 @@
                          (mk '(t c) '((t b)))))
 
 (check "two-cycle is one component" '((t a) (t b))
-       (sort spec<? (car (compile-graph-cycles two-cycle))))
+       (sort mod-name<? (car (compile-graph-cycles two-cycle))))
 (check "two-cycle waves" '(((t a) (t b)) ((t c))) (compile-graph-waves two-cycle))
 
 (define figure-eight (graph (mk '(t a) '((t b)))
@@ -136,7 +136,7 @@
 (check "subgraph drops the outside edge" '()
        (hashtable-ref (compile-graph-prereqs sub) '(t b) #f))
 (check "subgraph waves" '(((t b)) ((t c))) (compile-graph-waves sub))
-(check "subgraph ignores unknown specs" '((t b) (t c))
+(check "subgraph ignores unknown mod-names" '((t b) (t c))
        (compile-graph-nodes (compile-graph-subgraph linear '((t b) (t c) (nope nope)))))
 
 ;;; Macro safety -------------------------------------------------------------
@@ -184,23 +184,23 @@
   (define cycles (compile-graph-cycles g))
   (define prereqs (compile-graph-prereqs g))
 
-  (define (wave-of spec)
+  (define (wave-of mod-name)
     (let loop ((ws waves) (i 0))
       (cond ((null? ws) #f)
-            ((member spec (car ws)) i)
+            ((member mod-name (car ws)) i)
             (else (loop (cdr ws) (+ i 1))))))
 
   (define (same-cycle? a b)
     (and (exists (lambda (c) (and (member a c) (member b c))) cycles) #t))
 
-  (define (same-wave? . specs)
-    (let ((ws (map wave-of specs)))
+  (define (same-wave? . mod-names)
+    (let ((ws (map wave-of mod-names)))
       (and (car ws) (apply = ws) #t)))
 
   (check "one node per whitelisted file" (length files) (length nodes))
 
   (check "wave partition covers every node" nodes
-         (sort spec<? (apply append waves)))
+         (sort mod-name<? (apply append waves)))
 
   ;; A module may depend on its own wave (that is what an SCC is) but never on
   ;; a later one.
