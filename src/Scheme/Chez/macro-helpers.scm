@@ -85,7 +85,7 @@
   (define (walk-all xs b) (walk-each xs (lambda (x) (walk x b))))
   (define (walk x b)
     (cond
-      ((symbol? x) (unless (or (memq x b) (gensym? x)) (add x)))
+      ((symbol? x) (unless (or (memq x b) (gensym? x) (keyword? x)) (add x)))
       ((pair? x)
        (let ((h (car x)))
          (cond
@@ -141,6 +141,21 @@
 (load-shimmed (string-append root "/kernel/boot/boot-chez.scm"))
 (load-shimmed (string-append root "/kernel/texmacs/tm-define.scm"))
 
+;; The C++ side provides these registries and the ahash wrappers.  Without them
+;; tm-define-macro cannot be installed, and its ...$impl names never exist.
+(for-each (lambda (n) (unless (top-level-bound? n env)
+                        (define-top-level-value n (make-hashtable equal-hash equal?))))
+          '(tm-defined-table tm-defined-name tm-defined-module))
+(unless (top-level-bound? 'ahash-ref env)
+  (define-top-level-value 'ahash-ref
+    (lambda (h k . d) (hashtable-ref h k (if (null? d) #f (car d))))))
+(unless (top-level-bound? 'ahash-set! env)
+  (define-top-level-value 'ahash-set! (lambda (h k v) (hashtable-set! h k v))))
+(unless (top-level-bound? 'module-name env)
+  (define-top-level-value 'module-name (lambda (m) m)))
+(unless (top-level-bound? 'current-module env)
+  (define-top-level-value 'current-module (lambda () '(none))))
+
 ;;; --------------------------------------------------------------- files
 
 (define (scm-file? p)
@@ -194,6 +209,8 @@
 (define n-defs 0)
 (define n-expanded 0)
 (define n-expand-failed 0)
+(define n-installed 0)
+(define n-install-failed 0)
 (define n-body-expanded 0)
 (define n-body-failed 0)
 
@@ -207,8 +224,9 @@
 
 ;;; ----------------------------------------------------------------- main
 
-(define files (walk-files root))
 (define bootstrap-files '("kernel/boot/boot-chez.scm" "kernel/texmacs/tm-define.scm"))
+(define files
+  (chez-filter (lambda (p) (not (member p bootstrap-files))) (walk-files root)))
 
 ;; pass 0: index procedure names so helpers can be classified
 (for-each (lambda (rel)
@@ -244,8 +262,13 @@
                   (if (eq? tcore 'body-failed)
                       (set! n-body-failed (+ n-body-failed 1))
                       (harvest! (free-names tcore) cand)))))
-            ;; install the macro if the expansion revealed it
-            (when (and (symbol? cand) (not was) (macro? cand))
+            ;; INSTALL the definition.  For tm-define-macro this also creates
+            ;; the ...$impl procedure, so it becomes a real definition instead
+            ;; of an unexplained free name.
+            (guard (e (#t (set! n-install-failed (+ n-install-failed 1))))
+              (eval form env)
+              (set! n-installed (+ n-installed 1)))
+            (when (and (symbol? cand) (macro? cand))
               (hashtable-set! installed cand mod)))))))
 
 (define (process rel)

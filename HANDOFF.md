@@ -944,6 +944,241 @@ Caveat: the full wall time of that run was about 6 minutes, while measured trans
 - Reducing duplicate work between eager `eval` and `compile-file` is the highest-leverage optimization.
 - The benchmark instrumentation was temporary; `compile-texmacs.scm` was restored to the original `compile-file` call afterward.
 
+---
+
+## 14. Macro inventory and helper-dependency harvest
+
+Three throwaway tools were written to measure, not to fix: `macro-inventory.scm` (static scan), `macro-expand-inventory.scm` (expansion-driven discovery), `macro-helpers.scm` (helper harvest). All run standalone with `chez --script`; none touches `TeXmacs/progs`.
+
+### 14.1 Static scan
+
+`src/Scheme/Chez/macro-inventory.scm` reads every `.scm` under `TeXmacs/progs`, finds the `texmacs-module` header, and classifies definitions by their head symbol. It never descends into `quote`, `syntax-rules` templates, or quasiquote bodies, and it only considers heads of top-level forms.
+
+```text
+SCANNED   458 files, 458 module headers
+CONFIRMED 413 macro definitions, 392 distinct names
+
+  229  tm-define-macro
+   92  define-public-macro
+   56  define-macro
+   31  define-syntax
+    3  define-module-macro
+    2  define-export-macro
+```
+
+142 of them live in `(kernel gui gui-markup)` alone. An independent `grep -c tm-define-macro` returns 232 lines versus 229 parsed forms; the gap is comment and string mentions.
+
+The set is complete *for this tree at top level*: classifying every definer-shaped top-level head not in the set yields zero procedures and exactly one unresolved name, `define-record-type` (R6RS syntax, not a variable, so `top-level-bound?` is `#f`).
+
+Two pitfalls found while building it, both worth remembering:
+
+- A first version collected heads from the whole tree, so `let*` bindings and data literals were counted as if they were definers. `(pre-macro (latex-serialize-preamble Macro))` is a binding pair, but `(car x)` is `pre-macro`, indistinguishable from a call. Restricting to top-level heads dropped 31 phantom candidates to zero.
+- A name-shape heuristic (`define-` prefix, `-macro` suffix) is a false-positive generator. It is not a substitute for scope or for the expander.
+
+### 14.2 Expansion-driven discovery
+
+`src/Scheme/Chez/macro-expand-inventory.scm` bootstraps `kernel/boot/boot-chez.scm` and `kernel/texmacs/tm-define.scm`, then expands every top-level form whose head is a macro. Two discovery channels:
+
+- `define-syntax` family: expansion **installs** the new macro as a side effect and returns `(($primitive 2 void))`. The name appears in the environment; it is not in the output.
+- `tm-define-macro`: the expansion emits `(($primitive 2 define-top-level-syntax) 'name (lambda …))`, a *call*, so that subform is evaluated to install the syntax binding.
+
+Bootstrap requires two rewrites: `foreign-procedure` definitions in `boot-chez.scm` (`c-delete-blackbox`, `c-blackbox-equal?`, `c-blackbox-hash`) are replaced by `(lambda args #f)`, and `tm-blackbox-guardian` is bound to `(make-guardian)` because the C++ side normally installs it.
+
+```text
+FORMS     28372 top-level forms
+EXPANDED  17835, failed 9036
+INSTALLED 126 syntax bindings
+MACROS    258 unique names
+```
+
+Against the static scan: 258 found, **all 258 already in the 392**, **zero new**, 134 missed. Expansion is currently a strict subset of the scan.
+
+Cause: a `tm-define-macro` transformer calls kernel procedures while expanding. Only syntax bindings are installed (Blocker 1), so those transformers have nothing to call, fail, and never install — one failure cascades into every later file that uses that macro. 9,036 failures are the whole story.
+
+Also: testing `(macro? name)` *after* an expansion cannot distinguish "became a macro" from "was already a macro". That produced false positives (`and`, `or`, `import`) until a before/after comparison was added.
+
+### 14.3 Helper harvest
+
+`src/Scheme/Chez/macro-helpers.scm` logs both outcomes. For every macro definition it records either the installed name, or the free top-level names of the transformer body:
+
+- `define-macro` / `define-syntax` / `define-public-macro` expand to `(void)` and hide the body, so the transformer is rebuilt as `(lambda args body …)` from the source form and expanded separately.
+- `tm-define-macro` keeps its lambda inside the expansion, as `(define-top-level-syntax 'name <lambda>)`, and is read from there.
+
+Free names are recovered from the core AST as `(($primitive n $top-level-value) '#{name …})` — `(symbol->string …)` strips the gensym decoration and returns the plain name — plus any interned symbol not in a current binder. Demand is counted in distinct macros, not occurrences.
+
+```text
+MACRO DEFINITIONS expanded 14835 (failed 5527)
+TRANSFORMER BODIES expanded  9072 (failed  299)
+HELPER NAMES                  4873
+
+  procedure  3350   defined in Scheme somewhere in the tree
+  unknown    1260   not in Scheme, not in the bootstrap
+  bound       245   available in the loaded boot-chez environment
+  macro        18   an installed syntax binding
+```
+
+Most demanded, by number of distinct macros: `==` (526), `ahash-ref` (197), `tree-ref` (146), `!=` (135), `tree-in?` (131), `in?` (125), `ahash-set!` (117), `nnull?` (110).
+
+### 14.4 What the unknowns are
+
+Cross-checked against `tmscm_install_procedure ("…")` in `src/Scheme/Glue`:
+
+- **583 are C++ primitives** — `tree-label`, `tree-arity`, `buffer-tree`, `url?`. Legitimately external.
+- **127 are `…$impl` names** generated by `tm-define-macro` itself (`$animation$impl`, `$block$impl`). They exist only after expansion, so any analysis that does not model `tm-define-macro` will report them as unbound. This is a concrete false-positive source for the linter.
+- **11 are `:` keyword tokens** — `:use`, `:inherit`, `:export`. Not variables; artefacts of harvesting option lists.
+- The rest are TeXmacs `$markup` macros (`$block`, `$for`, `$when`, `$with`) that were never installed because their own definitions failed to expand.
+
+So the harvest is sound and the classifier needs three rules it does not yet have: the C++ primitive table, the `…$impl` pattern, and the `:` prefix.
+
+### 14.5 Reproduce
+
+```bash
+chez --script src/Scheme/Chez/macro-inventory.scm        # -> macro-inventory.tsv (413)
+chez --script src/Scheme/Chez/macro-expand-inventory.scm # -> macro-expand.tsv   (258)
+chez --script src/Scheme/Chez/macro-helpers.scm          # -> macro-helpers.tsv  (4873)
+```
+
+### 14.6 Next step
+
+Resolve the 4,873 helper names through `index-definitions` from `static-analysis.scm`, which already indexes manufactured definitions (`define-group`, `texmacs-modes`, `lazy-define`, `define-preference`, `tm-service`). That answers whether the helper set is already covered by the existing index, and how much of the 1,260 "unknown" bucket is really a definition the index knows about.
+
+### 14.7 Resolution through the existing index
+
+Done. `(static-analysis)` imports cleanly standalone with `(library-directories (cons "src/Scheme/Chez" (library-directories)))`. Indexing all 458 files / 453 modules and resolving each helper through `(make-lookup '(none) all-module-names)`:
+
+```text
+RESOLVED 3426 / 4873 helpers (70%)
+
+  procedure  3329 / 3350   (99.4%)
+  macro        18 /   18   (100%)
+  bound        35 /  245
+  unknown      44 / 1260
+```
+
+The procedure column is the important one: the existing Pass-1 index already finds essentially every ordinary helper, with 21 misses to chase. The 44 resolved "unknowns" are macro-defined macros that `macro-helpers.scm` could not classify because they were never installed — `with-innermost`, `with-database`, `tree-set!`, `with-time-stamp`, `with-remote-get-field`. That is exactly the manufactured-definition case the index was built for, and it works.
+
+The 1,447 unresolved helpers decompose as:
+
+- **583 C++ primitives** registered by `tmscm_install_procedure` (`tree-label`, `tree-arity`, `buffer-tree`, `url?`)
+- **210 bootstrap bindings** from `boot-chez.scm` / `tm-define.scm` (`noop`, `make-ahash-table`), which the file index does not cover because those two files are loaded, not indexed
+- **~633 others**: 127 `…$impl` names generated by `tm-define-macro`, 11 `:` keyword tokens, and the remaining `$markup` macros whose own definitions failed to expand
+
+Conclusion: the helper set is already ~70% covered by the index, and the uncovered part is dominated by things that are not definitions at all (C++ primitives, keywords, generated names). The index does not need a new mechanism for procedures; it needs three classification rules for the residue.
+
+### 14.8 Correction: two of those three "rules" were unnecessary
+
+Installing the macro form, rather than only expanding it, removes two of the three categories at the source.
+
+**`…$impl` needs no rule.** A `tm-define-macro` expansion contains, in this order:
+
+```scheme
+(define-top-level-value 'bar$impl (lambda (x) …) (interaction-environment))
+(ahash-set! tm-defined-table 'bar$impl …)
+(define-top-level-syntax 'bar (lambda (stx) … (apply bar$impl …)))
+```
+
+So `bar$impl` is an ordinary top-level definition created by the macro itself. Evaluating the form installs both:
+
+```text
+eval tm-define-macro -> ok
+bar macro?           -> #t
+bar$impl proc?       -> #t
+expand (bar 7)       -> (($primitive 2 list) 7)
+```
+
+This requires five stubs the C++ side normally provides: `tm-defined-table`, `tm-defined-name`, `tm-defined-module` (hash tables), plus `ahash-ref` / `ahash-set!` and `module-name` / `current-module`. With them, `macro-helpers.scm` now evaluates each macro form after expanding it.
+
+Note `kernel/boot/ahash-table.scm` cannot simply be loaded instead: its first definition sits inside a top-level `if`, which Chez rejects with `invalid context for definition` — the same conditional-unwrapping problem the transpiler already solves.
+
+**`:` keywords need no rule either.** `boot-chez.scm` pre-binds the common ones with `(define-top-level-value k k)` and exports `(keyword? x)`. The harvester was wrong to treat them as free names; skipping `(keyword? s)` in the walk removes them.
+
+After both fixes:
+
+```text
+MACROS INSTALLED 271          (was 131)
+HELPER NAMES     6429         (was 4873)
+  bound     3117
+  procedure 1854
+  unknown   1416
+```
+
+Within the unknown bucket: **0** `…$impl` (was 127), **0** `:` keywords (was 11), **627** C++ primitives. The remaining ~789 are operator and markup symbols — `->`, `<>`, `//`, `///`, `+&`, `!append`, `@textfloatsheight` — which is a different class and not yet explained.
+
+So the only rule that survives is the C++ primitive table, and that one is to be resolved by running inside the TeXmacs binary, where `tmscm_install_procedure` has already registered those names.
+
+### 14.9 Expansion attempt: what actually unblocked it
+
+A fourth tool, `src/Scheme/Chez/macro-lazy-install.scm`, expands macro definitions and installs each one as it is seen, using `expand-with-lazy-helpers` with a resolver over every indexed module. Four changes mattered, in order of effect.
+
+**1. Install the macro, do not just expand it.** The first version only expanded; nothing was kept, so every later file expanded against an empty environment. Adding `(eval form env)` after a successful expansion took installed macros from **150 to 341**.
+
+**2. Apply the transpiler's own rewrites in the loader.** Lifted from `compile-texmacs.scm`: `uncurry-def` (Guile-style `(define ((f a) b) …)` → nested lambda), `tm-strip-docstring`, and a `tm-unwrap-conditional` that evaluates a top-level `if` test and splices the live branch. With `ahash-ref` / `ahash-set!` stubbed **before** `tm-define.scm` rather than after, `tm-define.scm` loads with **0 failures** and `define-option-table` is populated.
+
+**3. `kernel/boot/debug.scm` and `kernel/boot/abbrevs.scm` in the bootstrap.** `texmacs-error` alone was 2,019 of 2,498 failures (81%). `for` is a `define-public-macro` in `abbrevs.scm`; without it `(for (which l) …)` at `tm-define.scm:167` stays a call and `which` reads as a variable — 1,044 failures.
+
+**4. Keywords were never the problem.** `boot-chez.scm` pre-binds `:mode`, `:require`, `:synopsis`, `:type`, `:check-mark` and they are all `top-level-bound?` immediately after it loads. They only appear unbound when `define-option-table` has not been populated, i.e. when `tm-define.scm` failed to load. The symptom pointed at the wrong layer.
+
+Failure profile after each fix:
+
+```text
+2,019  unbound: texmacs-error     -> 0    (debug.scm)
+~1,960 unbound: :require/:synopsis … -> 0  (tm-define.scm loads, option table filled)
+1,044  unbound: which             -> 0    (abbrevs.scm)
+  463  unbound: body              <- current top item
+```
+
+Net: **4,723 ok / 2,498 failed / 271 macros** → **6,336 ok / 1,453 failed / 341 macros**.
+
+Two things that do not work:
+
+- **Multiple install rounds make it worse.** Round 2 goes 1,453 → 3,377 failures and `body` becomes the top unbound name: re-evaluating the same definitions re-runs transformers against an environment that has since changed. One pass is correct.
+- **Re-walking `kernel/boot/` reloads `boot-chez.scm`** and upsets the keyword bindings, so those files must be excluded from the walk.
+
+### 14.10 Ordering: the graph and the tier list are both worse than kernel-first
+
+Three orders were measured on the same one-pass walk:
+
+| order | macros | forms ok | failed |
+|---|---|---|---|
+| kernel first, then alphabetical | **341** | **6336** | **1453** |
+| compiler-db topological sort | 248 | 5412 | 2400 |
+| `*source-files*` (kernel + tier2..tier7) | 246 | 5466 | 3154 |
+
+`compile-texmacs.scm:566` does **not** order by the graph; it uses explicit tier lists. But neither the graph nor the tier list helps here, because `:require` and `:synopsis` come back as unbound in both — the option machinery is being clobbered by evaluating later modules into the same live environment.
+
+The tier order is designed for compiling each module into its own `.so`, where each unit starts from a known state. This harvest evaluates everything into one environment, so ordering by dependency maximises how many modules run before the ones that reset shared state. Kernel-first wins because it front-loads the initialisation and everything after only adds.
+
+### 14.11 Two proposed directions
+
+**A. Keyword-driven discovery.** Use the hardcoded `:keyword` list as the seed: find the macros those keywords belong to, expand each found macro, record the keywords each expansion demands, and resolve those names through `index-module-definitions` into a table. This is close to what 14.9 does, and it stalls in the same place — the expansion still needs a populated environment, and the table can only supply Scheme definitions.
+
+**B. Outside the kernel only.** Load the already-compiled kernel modules (454 `.so` files exist under `build-texmacos/`) so the kernel environment is real, then build the dependency graph only for non-kernel modules. This sidesteps the whole bootstrapping problem: `debug.scm`, `abbrevs.scm`, `tm-define.scm` and `ahash-table.scm` no longer have to be re-evaluated by hand, and the analysis only has to cope with ~400 modules instead of 446.
+
+B is the more promising of the two, and it has one concrete prerequisite to check first: whether those `.so` files load in a standalone Chez with the foreign stubs in place.
+
+### 14.12 The `.so` route requires starting from TeXmacs
+
+The compiled modules cannot be loaded by a standalone `chez --script`. `build-texmacos/boot/texmacs-user.so` (210 KB) fails on the first binding it needs, and supplying that one only reveals the next:
+
+```text
+load texmacs-user.so -> Exception: variable primitive-load is not bound
+primitive-load supplied -> Exception: variable tm-load-file is not bound
+```
+
+Both are injected by the binary at startup — `init-texmacs-chez.scm:34` for `primitive-load`, `chez_tm.cpp:698` for `tm-load-file` — and neither exists in a plain script environment. There is no heap to start from either: no `.boot`, `.heap` or `.image` file exists under `build-texmacos/`, and `chez_tm.cpp` builds it with `Sbuild_heap` from the boot files at run time.
+
+Decision: stop reconstructing the environment from outside. Start TeXmacs itself and hand it the script.
+
+Concretely, add a command-line flag that takes a `.scm` path, loads it once the heap and kernel modules are up, and exits:
+
+```bash
+texmacs -scheme src/Scheme/Chez/macro-lazy-install.scm
+```
+
+That runs the analysis against the real kernel, the real primitives and a populated `define-option-table` — the environment every tool in this section has been trying to imitate. A generic "load this script" flag is smaller than a dedicated `-lint-modules` flag, is useful for every later experiment, and does not commit the binary to one particular analysis.
+
+What remains valid from 14.9–14.11: the index, the loader rewrites (`uncurry-def`, `tm-strip-docstring`, conditional unwrapping), the boot-file list, and the one-pass discipline. Only the construction of the environment changes.
+
 
 
 
