@@ -8,7 +8,12 @@
       (make-parameter (interaction-environment))))
 
 ;;; Foundational helpers & Guile compatibility primitives
-(define (noop . _) #f)
+;; Guile's `noop` is a pass-through: it returns its first argument when
+;; called with one, and #f when called with none.  The previous Chez version
+;; discarded all arguments, which broke callers that use `noop` as an
+;; identity decoder (for example `stm-table-decode-format` for `cell-halign`).
+(define (noop . args)
+  (if (null? args) #f (car args)))
 
 ;; Foreign procedure hooks for C++ blackbox objects (Box representation + Guardian)
 (define c-delete-blackbox
@@ -218,13 +223,6 @@
   (let ((p (open-output-string)))
     (proc p)
     (get-output-string p)))
-
-(define char-set:whitespace (string->list " \t\n\r\f\v"))
-(define char-set:digit (string->list "0123456789"))
-(define char-set:lower-case (string->list "abcdefghijklmnopqrstuvwxyz"))
-(define char-set:upper-case (string->list "ABCDEFGHIJKLMNOPQRSTUVWXYZ"))
-(define char-set:letter (append char-set:lower-case char-set:upper-case))
-(define char-set:letter+digit (append char-set:letter char-set:digit))
 
 (define (char-set? x) (or (list? x) (procedure? x) (char? x)))
 (define (string->char-set str)

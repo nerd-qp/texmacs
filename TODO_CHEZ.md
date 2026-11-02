@@ -817,6 +817,18 @@ This document tracks identified architectural improvements and performance bottl
   - In `init-texmacs-chez.scm`, extended `tm-quote-boxes` into `tm-quote-eval-literals` to wrap both `(box? x)` and `(procedure? x)` in `(list 'quote x)`.
   - Quoting the procedure literal transforms the form into `(lambda () ((quote #<procedure new-val>) (system->url "...")))`, allowing Chez Scheme's compiler to treat it as a literal datum yielding the procedure while properly evaluating its argument expressions.
 
+#### [ ] Item 33: Explicit Error Reporting in `wrap-catch` & Menu Exception Masking
+- **Location**: [`TeXmacs/progs/kernel/boot/debug.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/boot/debug.scm#L316-L332), [`TeXmacs/progs/kernel/gui/menu-widget.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/gui/menu-widget.scm#L1190-L1195), [`src/Texmacs/Window/tm_frame.cpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Texmacs/Window/tm_frame.cpp#L28-L38)
+- **Problem**:
+  - `(wrap-catch proc)` wraps menu-to-widget generation in [`make-menu-widget`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/gui/menu-widget.scm#L1194).
+  - When exceptions occur inside dynamic menu generation, submenus, or widget constructors, `as_widget` in C++ receives nil or an error pair, causing [`make_menu_widget`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Texmacs/Window/tm_frame.cpp#L28-L38) to silently fall back to an empty menu `horizontal_menu(0)`.
+  - Empty menu widgets have height 0, causing macOS Cocoa QPA to report:
+    `qt.qpa.window: Window position QRect(...) outside any known screen, using primary screen`.
+  - Because exceptions can be swallowed or discarded without clear diagnostics reaching the terminal, developers cannot easily see which Scheme procedure or menu item failed.
+- **Action Plan**:
+  - Make `wrap-catch` (and `tm-catch-runtime` in `boot-chez.scm`) output explicit error diagnostics (`display-condition`, stack context) when catching conditions during menu building.
+  - In `tm_frame.cpp:make_menu_widget`, log an explicit warning with the menu expression whenever `as_widget` returns nil instead of silently returning an empty 0-height menu.
+
 ---
 
 ## 5. Boot File Loading & Foreign Symbol Initialization (Design Note)

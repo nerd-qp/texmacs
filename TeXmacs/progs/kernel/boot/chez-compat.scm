@@ -11,6 +11,14 @@
 (define-public (1+ x) (+ x 1))
 (define-public (1- x) (- x 1))
 
+;;; Character sets
+(define-public char-set:whitespace (string->list " \t\n\r\f\v"))
+(define-public char-set:digit (string->list "0123456789"))
+(define-public char-set:lower-case (string->list "abcdefghijklmnopqrstuvwxyz"))
+(define-public char-set:upper-case (string->list "ABCDEFGHIJKLMNOPQRSTUVWXYZ"))
+(define-public char-set:letter (append char-set:lower-case char-set:upper-case))
+(define-public char-set:letter+digit (append char-set:letter char-set:digit))
+
 ;;; List mutators
 
 (define-public (delq! x l) (remq! x l))
