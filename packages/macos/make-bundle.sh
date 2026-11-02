@@ -249,24 +249,166 @@ else
 fi
 
 # ------------------------------------------------------------------ Qt libs
+#
+# macdeployqt resolves CFBundleExecutable from Info.plist. Ours is "TeXmacs",
+# which is a /bin/sh wrapper, not Mach-O -- so macdeployqt retries
+# install_name_tool on it dozens of times and floods stderr with
+# "is not a Mach-O file". Point CFBundleExecutable at the real binary for the
+# duration of the call, then restore it so Finder still launches the wrapper.
 if [ "$BUNDLE_QT" = 1 ]; then
   if command -v macdeployqt >/dev/null 2>&1; then
     say "bundling Qt frameworks (macdeployqt)"
-    macdeployqt "$APP" -executable="$APP/Contents/MacOS/texmacs.bin" -always-overwrite >/dev/null
+    ORIG_EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' \
+               "$APP/Contents/Info.plist")
+    /usr/libexec/PlistBuddy -c 'Set :CFBundleExecutable texmacs.bin' \
+      "$APP/Contents/Info.plist"
+    macdeployqt "$APP" -always-overwrite >/dev/null
+    /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable $ORIG_EXE" \
+      "$APP/Contents/Info.plist"
   else
     echo "warning: macdeployqt not found; the app will depend on the build machine's Qt" >&2
     echo "         install it with 'brew install qt' or drop --bundle-qt" >&2
   fi
 fi
 
+# ------------------------------------------- transitive dependency closure
+#
+# macdeployqt copies the libraries Qt itself pulls in, but not the libraries
+# *those* libraries pull in. In practice that leaves libbrotlicommon (needed by
+# libbrotlidec) and libsharpyuv (needed by libwebp*) missing, and the bundle
+# dies at launch with "Library not loaded: @rpath/libbrotlicommon.1.dylib".
+# Copy anything still unresolved from Homebrew and repoint the referrer.
+locate_lib () {
+  local base="$1" p
+  for p in /opt/homebrew/lib/"$base" /usr/local/lib/"$base"; do
+    [ -f "$p" ] && { printf '%s\n' "$p"; return 0; }
+  done
+  for p in /opt/homebrew/opt/*/lib/"$base" /usr/local/opt/*/lib/"$base"; do
+    [ -f "$p" ] && { printf '%s\n' "$p"; return 0; }
+  done
+  return 1
+}
+
+macho_files () {
+  printf '%s\n' "$APP/Contents/MacOS/texmacs.bin"
+  ls "$APP"/Contents/Frameworks/*.dylib 2>/dev/null || true
+  ls "$APP"/Contents/PlugIns/*/*.dylib 2>/dev/null || true
+}
+
+bundle_closure () {
+  local f dep base own src round=0 changed
+  while [ "$round" -lt 8 ]; do
+    round=$((round + 1)); changed=0
+    while IFS= read -r f; do
+      [ -f "$f" ] || continue
+      own=$(otool -D "$f" 2>/dev/null | tail -1)
+      while IFS= read -r dep; do
+        [ -n "$dep" ] || continue
+        [ "$dep" = "$own" ] && continue
+        case "$dep" in
+          /usr/lib/*|/System/*|@loader_path/*|@executable_path/*) continue ;;
+          *.framework/*) continue ;;              # handled by macdeployqt
+        esac
+        base=${dep##*/}
+        [ -f "$APP/Contents/Frameworks/$base" ] && continue
+        if src=$(locate_lib "$base"); then
+          cp -L "$src" "$APP/Contents/Frameworks/$base"
+          chmod u+w "$APP/Contents/Frameworks/$base"
+          install_name_tool -id "@executable_path/../Frameworks/$base" \
+            "$APP/Contents/Frameworks/$base"
+          echo "    + $base"
+          changed=1
+        else
+          echo "    ! unresolved: $dep" >&2
+        fi
+      done < <(otool -L "$f" 2>/dev/null | tail -n +2 | awk '{print $1}')
+    done < <(macho_files)
+    [ "$changed" = 0 ] && break
+  done
+
+  # Point every @rpath/ and absolute reference at the in-bundle copy.
+  while IFS= read -r f; do
+    [ -f "$f" ] || continue
+    while IFS= read -r dep; do
+      [ -n "$dep" ] || continue
+      case "$dep" in
+        /usr/lib/*|/System/*|@loader_path/*|@executable_path/*|*.framework/*) continue ;;
+      esac
+      base=${dep##*/}
+      [ -f "$APP/Contents/Frameworks/$base" ] || continue
+      install_name_tool -change "$dep" \
+        "@executable_path/../Frameworks/$base" "$f" 2>/dev/null || true
+    done < <(otool -L "$f" 2>/dev/null | tail -n +2 | awk '{print $1}')
+  done < <(macho_files)
+}
+
+if [ "$BUNDLE_QT" = 1 ]; then
+  say "resolving transitive dependencies"
+  bundle_closure
+fi
+
+# ----------------------------------------------- drop build-machine rpaths
+# A leftover /opt/homebrew/lib rpath lets the bundle silently load libraries
+# from the build machine instead of its own copy, which masks missing files
+# and breaks on any other Mac. Remove every absolute rpath.
+say "stripping absolute rpaths"
+while IFS= read -r f; do
+  [ -f "$f" ] || continue
+  for rp in $(otool -l "$f" 2>/dev/null | grep -A2 LC_RPATH \
+              | grep 'path ' | awk '{print $2}' | grep '^/' || true); do
+    install_name_tool -delete_rpath "$rp" "$f" 2>/dev/null || true
+  done
+done < <(macho_files)
+
+# Stale absolute LC_ID_DYLIB on the Qt plugins is harmless for loading but
+# makes the bundle look machine-bound; normalise it.
+for f in "$APP"/Contents/PlugIns/*/*.dylib; do
+  [ -f "$f" ] || continue
+  case "$(otool -D "$f" 2>/dev/null | tail -1)" in
+    /opt/homebrew/*|/usr/local/*) install_name_tool -id "@rpath/${f##*/}" "$f" ;;
+  esac
+done
+
 # ------------------------------------------------------------------- signing
+#
+# Sign inside-out: nested code first, bundle last. --deep is deliberately not
+# used because it is deprecated and re-signs everything on every run.
+# macOS ships bash 3.2, where "${arr[@]}" on an empty array trips `set -u`,
+# so branch on the identity instead of building an options array.
+sign_one () {
+  local f="$1" id="$2"
+  [ -e "$f" ] || return 0
+  if [ "$id" = "-" ]; then
+    codesign --force --sign - "$f" >/dev/null 2>&1 || true
+  else
+    codesign --force --options runtime --sign "$id" "$f" >/dev/null 2>&1 || true
+  fi
+}
+
+sign_nested () {
+  local id="$1" f
+  for f in "$APP"/Contents/Frameworks/*.framework; do
+    [ -d "$f" ] && sign_one "$f" "$id"
+  done
+  while IFS= read -r f; do
+    sign_one "$f" "$id"
+  done < <(macho_files)
+}
+
 if [ -n "$SIGN_ID" ]; then
   say "signing as: $SIGN_ID"
-  codesign --force --deep --options runtime --sign "$SIGN_ID" "$APP"
+  sign_nested "$SIGN_ID"
+  codesign --force --options runtime --sign "$SIGN_ID" "$APP"
 else
   # Ad-hoc signature keeps Gatekeeper from rejecting the bundle outright on
   # the local machine. It is NOT sufficient for distribution.
-  codesign --force --deep --sign - "$APP" >/dev/null 2>&1 || true
+  sign_nested -
+  codesign --force --sign - "$APP" >/dev/null 2>&1 || true
+fi
+
+# ------------------------------------------------------------------- verify
+if ! codesign --verify --strict "$APP" >/dev/null 2>&1; then
+  echo "warning: bundle signature does not verify; run 'codesign --verify --deep --strict' to inspect" >&2
 fi
 
 say "bundle ready: $APP"
@@ -300,6 +442,9 @@ Next:
        env -u TEXMACS_PATH -u TEXMACS_BOOT_PATH "$APP/Contents/MacOS/TeXmacs"
   2. For real distribution add: --bundle-qt --sign "Developer ID Application: ..."
      then notarize with:
-       xcrun notarytool submit "$DIST/TeXmacs-$VERSION.dmg" --wait \\
+       xcrun notarytool submit "$DIST/TeXmacs-chez-$VERSION.dmg" --wait \\
              --apple-id <id> --team-id <team> --password <app-specific-password>
+  3. Verify nothing still resolves outside the bundle:
+       otool -L "$APP/Contents/MacOS/texmacs.bin" | grep /opt/homebrew
+     (no output means the bundle is self-contained)
 EOF
