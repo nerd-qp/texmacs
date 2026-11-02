@@ -48,17 +48,20 @@
 (define tm-orig-eval (if (top-level-bound? 'tm-orig-eval) tm-orig-eval (top-level-value 'eval (scheme-environment))))
 (define primitive-eval tm-orig-eval)
 
-(define (tm-quote-boxes x)
-  (cond ((box? x) (list 'quote x))
+(define (tm-quote-eval-literals x)
+  (cond ((or (box? x) (procedure? x)) (list 'quote x))
         ((pair? x)
          (if (eq? (car x) 'quote)
              x
-             (cons (tm-quote-boxes (car x)) (tm-quote-boxes (cdr x)))))
+             (cons (tm-quote-eval-literals (car x)) (tm-quote-eval-literals (cdr x)))))
         (else x)))
+(define tm-quote-boxes tm-quote-eval-literals)
 
 (define eval
   (lambda (form . env)
-    (let ((form* (if (or (box? form) (pair? form)) (tm-quote-boxes form) form)))
+    (let ((form* (if (or (box? form) (procedure? form) (pair? form))
+                     (tm-quote-eval-literals form)
+                     form)))
       (if (null? env)
           (tm-orig-eval form* (if (top-level-bound? 'current-module-env)
                                   (current-module-env)

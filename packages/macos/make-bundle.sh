@@ -254,7 +254,7 @@ if [ "$MAKE_DMG" = 1 ]; then
   # to overwrite them on a second pass.
   ditto "$APP" "$DMG_STAGE/$(basename "$APP")"
   ln -sfn /Applications "$DMG_STAGE/Applications"
-  hdiutil create -volname "TeXmacs-chez $VERSION" -srcfolder "$DMG_STAGE" \
+  hdiutil create -volname "TeXmacs-chez-$VERSION" -srcfolder "$DMG_STAGE" \
                  -format UDZO "$DMG" >/dev/null
   say "dmg ready: $DMG"
   du -sh "$DMG" | awk '{print "    size: " $1}'

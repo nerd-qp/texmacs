@@ -35,6 +35,35 @@ This document details the architecture, methods, recipes, and current progress o
 9. **No Git Commit by AI Agent**:
    - The AI agent must never execute `git commit` or commit changes. All changes must remain in the working directory unstaged or uncommitted for user review.
 
+### 1.1 Running from the Build Tree (Required Environment Variables)
+
+Run from the workspace root:
+
+```bash
+cd /Users/king-kong/Documents/my-repo/docker-sandbox-opencode
+
+SCHEMEHEAPDIRS="$PWD/build-chez-macos/tarm64osx/boot/tarm64osx" \
+HOME="$PWD/fakehome" \
+TEXMACS_PATH="$PWD/texmacs/TeXmacs" \
+TEXMACS_BOOT_PATH="$PWD/build-texmacos/boot" \
+./build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs
+```
+
+Path meanings:
+
+- `SCHEMEHEAPDIRS`: Chez Scheme heap directory containing `petite.boot` and `scheme.boot`. Use `build-chez-macos/tarm64osx/boot/tarm64osx`.
+- `HOME`: fake home for TeXmacs configuration and state (`fakehome`), keeping the real home clean.
+- `TEXMACS_PATH`: TeXmacs source/data tree (`texmacs/TeXmacs`), which contains `progs/` and the Scheme sources.
+- `TEXMACS_BOOT_PATH`: compiled Chez module directory (`build-texmacos/boot`), where the `.so` modules and `module-deps.scm` live. This is how the runtime finds compiled modules when running from the build tree.
+
+Verified GUI launch with this exact command: the window stays up and the log contains no `ERROR`, `LOAD-ERROR`, or segmentation fault.
+
+Do **not** set `TEXMACS_BOOT_FILE` to `texmacs-user.so`; it is not a base Chez boot image and fails with:
+
+```text
+base boot file .../texmacs-user.so must come before other boot files
+```
+
 ---
 
 ## 2. Compilation & Verification Method (The Per-Module Recipe)

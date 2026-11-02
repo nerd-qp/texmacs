@@ -804,6 +804,19 @@ This document tracks identified architectural improvements and performance bottl
   - Export a hygienic `while` macro from `(kernel boot abbrevs)` so all modules importing `abbrevs` recognize `while` at compilation time.
   - Audit `compile-texmacs.scm` macro environment to ensure core control structures (`while`, `repeat`, etc.) are in the compilation expansion environment across all module tiers.
 
+#### [x] Item 32: Unquoted Procedure Literals in Expressions Passed to `eval` (`invalid syntax #<procedure ...>`)
+- **Location**: [`TeXmacs/progs/init-texmacs-chez.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/init-texmacs-chez.scm), [`src/Scheme/Scheme/object.cpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Scheme/object.cpp), [`src/Texmacs/Window/tm_dialogue.cpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Texmacs/Window/tm_dialogue.cpp)
+- **Error**: `Exception: invalid syntax #<procedure new-val>` in `(eval '((lambda () (#<procedure new-val> (system->url ...)))))`
+- **Symptom**: Triggered when opening an existing file on disk from the file chooser dialogue (`choose-file load-buffer "Load file" ""`).
+- **Diagnosis & Root Cause**:
+  - In `tm_dialogue.cpp`, `dialogue_command_rep::apply()` constructs an expression pair `(cons fun cmd)` where `fun` is the Scheme procedure closure (`load-buffer`, printed as `#<procedure new-val>` by `tm-define`), and `cmd` contains unevaluated argument forms `((system->url "..."))`.
+  - `scheme_cmd (object cmd)` wraps this into `(lambda () (#<procedure new-val> (system->url "...")))` and passes it to `eval`.
+  - In Guile 1.8, the interpreter accepted raw procedure objects in expression/operator positions as self-evaluating. In Chez Scheme, `eval` compiles forms via `sc-expand` / `chi-expr`; an unquoted procedure literal in expression position is rejected as invalid syntax.
+  - When `eval` failed, `tm-apply` trapped the condition and returned `(#t "invalid syntax")`, which was queued by `exec_delayed` and subsequently triggered `Exception: attempt to apply non-procedure (#t "invalid syntax")`.
+- **Resolution**:
+  - In `init-texmacs-chez.scm`, extended `tm-quote-boxes` into `tm-quote-eval-literals` to wrap both `(box? x)` and `(procedure? x)` in `(list 'quote x)`.
+  - Quoting the procedure literal transforms the form into `(lambda () ((quote #<procedure new-val>) (system->url "...")))`, allowing Chez Scheme's compiler to treat it as a literal datum yielding the procedure while properly evaluating its argument expressions.
+
 ---
 
 ## 5. Boot File Loading & Foreign Symbol Initialization (Design Note)
