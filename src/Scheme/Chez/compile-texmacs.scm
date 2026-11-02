@@ -1069,6 +1069,13 @@
                   (unless (memq nm module-public-vars)
                   (set! module-public-vars (cons nm module-public-vars))))
               (loop (cdr rest) (cons x acc))))
+            ((and (pair? x) (eq? (car x) 'export))
+             (for-each
+               (lambda (sym)
+                 (unless (memq sym module-public-vars)
+                   (set! module-public-vars (cons sym module-public-vars))))
+               (cdr x))
+             (loop (cdr rest) acc))
             ((and (pair? x) (eq? (car x) 'define-syntax))
               (let ((var (cadr x)))
                 (when (symbol? var)

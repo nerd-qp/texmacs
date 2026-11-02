@@ -192,6 +192,10 @@
                (loop (cdr rest)
                      (cons (scan-defined-name form arg) exports)
                      globals macros impls))
+              ((export)
+               (loop (cdr rest)
+                     (append (cdr form) exports)
+                     globals macros impls))
               ((tm-define)
                (loop (cdr rest)
                      exports

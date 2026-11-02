@@ -141,13 +141,16 @@
   `(let ((,(car fun) (lambda ,(cdr fun) ,fun-body)))
      ,@body))
 
-(define-public-macro (with-global var val . body)
-  (let ((old (gensym)) (new (gensym)))
-    `(let ((,old ,var))
-       (set! ,var ,val)
-       (let ((,new (begin ,@body)))
-         (set! ,var ,old)
-         ,new))))
+(export with-global)
+(define-syntax with-global
+  (syntax-rules ()
+    ((_ var val body ...)
+     (let ((old var)
+           (new val))
+       (dynamic-wind
+         (lambda () (set! var new))
+         (lambda () body ...)
+         (lambda () (set! var old)))))))
 
 (define-public-macro (and-with var val . body)
   `(with ,var ,val

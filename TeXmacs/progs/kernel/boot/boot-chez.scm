@@ -186,17 +186,6 @@
             (dummy (begin body ...)))
        return))))
 
-(define-syntax with-global
-  (lambda (x)
-    (syntax-case x ()
-      ((_ var val body ...)
-       (with-syntax ((old (generate-temporaries '(var)))
-                     (new (generate-temporaries '(var))))
-         #'(let ((old var))
-             (set! var val)
-             (let ((new (begin body ...)))
-               (set! var old)
-               new)))))))
 
 (define (filter pred? l)
   (apply append (map (lambda (x) (if (pred? x) (list x) (list))) l)))
