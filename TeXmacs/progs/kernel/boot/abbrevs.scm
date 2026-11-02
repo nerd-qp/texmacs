@@ -62,11 +62,16 @@
 
 (if (guile-c?)
     (define-public (save-object file value)
-      (pretty-print value (open-file (url-materialize file "") OPEN_WRITE))
-      (flush-all-ports))
+      ;; The port must be closed, not merely flushed: `flush-all-ports` is a
+      ;; no-op in this port (boot-chez.scm), so an unclosed port silently
+      ;; discards everything that was written.
+      (let ((out (open-file (url-materialize file "") OPEN_WRITE)))
+        (pretty-print value out)
+        (close-port out)))
     (define-public (save-object file value)
-      (write value (open-file (url-materialize file "") OPEN_WRITE))
-      (flush-all-ports)))
+      (let ((out (open-file (url-materialize file "") OPEN_WRITE)))
+        (write value out)
+        (close-port out))))
 
 (define-public (load-object file)
   (let ((r (catch #t

@@ -16,6 +16,8 @@
 #     Resources/share/TeXmacs/progs/       Scheme sources  -> $TEXMACS_PATH
 #     Resources/share/TeXmacs/boot/        compiled .so    -> $TEXMACS_PATH/boot
 #     Resources/share/TeXmacs/plugins/
+#     Resources/share/src/Scheme/Chez/     build & lint scripts
+#                                          -> $TEXMACS_PATH/../src/Scheme/Chez
 #
 # Why boot/ lives there: src/Texmacs/Texmacs/texmacs.cpp sets
 #   TEXMACS_PATH = <exe>/../Resources/share/TeXmacs
@@ -185,6 +187,37 @@ say "copying compiled modules"
 mkdir -p "$SHARE/boot"
 rsync -a --include '*/' --include '*.so' --include 'module-deps.scm' --exclude '*' \
       "$SRC_BOOT/" "$SHARE/boot/"
+
+# ------------------------------------------------- Chez build & lint scripts
+# `-compile-modules` looks for its driver at
+#     $TEXMACS_PATH/../src/Scheme/Chez/compile-texmacs.scm   (texmacs.cpp:591)
+# and TEXMACS_PATH is set to <app>/Contents/Resources/share/TeXmacs
+# (texmacs.cpp:191), so the scripts must live in Resources/share/src/Scheme/Chez.
+# Without them the packaged app runs but cannot rebuild its own modules.
+say "copying Chez build/analysis scripts"
+CHEZ_SRC="$ROOT/src/Scheme/Chez"
+CHEZ_DST="$RES/share/src/Scheme/Chez"
+if [ -d "$CHEZ_SRC" ]; then
+  mkdir -p "$CHEZ_DST"
+  for f in compile-texmacs.scm compiler-db.scm compiler-scan.scm \
+           compile-graph.scm compiler-progress.scm \
+           static-analysis.scm lint-modules.scm; do
+    [ -f "$CHEZ_SRC/$f" ] && cp "$CHEZ_SRC/$f" "$CHEZ_DST/"
+  done
+  # The test suites need no TeXmacs runtime, so they double as a smoke test of
+  # a packaged tree:  chez --script .../static-analysis-test.scm
+  for f in static-analysis-test.scm compile-graph-test.scm; do
+    [ -f "$CHEZ_SRC/$f" ] && cp "$CHEZ_SRC/$f" "$CHEZ_DST/"
+  done
+  echo "    $(ls -1 "$CHEZ_DST" | wc -l | tr -d ' ') scripts in $CHEZ_DST"
+  # The linter scans progs/*.scm, so it can only see what is shipped.
+  if [ "$FULL_PROGS" = 0 ]; then
+    echo "    note: linting inside the bundle needs --full-progs (only a subset"
+    echo "          of progs/ is shipped otherwise)"
+  fi
+else
+  echo "warning: $CHEZ_SRC missing; the packaged app cannot rebuild modules" >&2
+fi
 
 # Plugins ship as sources; the binary compiles nothing at runtime, but the
 # plugin loader still resolves $TEXMACS_PATH/plugins.

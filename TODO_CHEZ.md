@@ -909,3 +909,46 @@ This document tracks identified architectural improvements and performance bottl
 
 
 
+
+---
+
+## 6. Session Persistence & the `-x` Entry Point
+
+### [x] `save-object` wrote 0-byte files [RESOLVED 2026-11-02]
+- **Location**: [`TeXmacs/progs/kernel/boot/abbrevs.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/kernel/boot/abbrevs.scm) (`save-object`, ~line 63)
+- **Problem**: `save-object` opened a port and never closed it, and `flush-all-ports` is
+  `(define (flush-all-ports) (noop))` ([`boot-chez.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/kernel/boot/boot-chez.scm) line 213).
+  Every save therefore discarded its buffer: `~/.TeXmacs-chez/system/interactive.scm` was
+  created but always **0 bytes**, so session restore never worked.
+- **Fix**: both branches of `save-object` now bind the port and `close-port` it.
+- **Verified**: `(save-object "$TEXMACS_HOME_PATH/system/interactive.scm" '(1 2 3))`
+  writes 7 bytes containing `(1 2 3)`; before the fix the same call produced 0 bytes.
+- **Still open**: `flush-all-ports` remains a no-op, so any other caller that relies on it
+  is still silently dropping output. Either give it a real implementation with
+  `flush-output-port` or audit its callers.
+
+### [ ] `-x "(save-learned)"` aborts the process (exit 134)
+- **Location**: [`TeXmacs/progs/kernel/texmacs/tm-dialogue.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/kernel/texmacs/tm-dialogue.scm) (`save-learned`, line 317);
+  `-x` handling in `src/Texmacs/Texmacs/texmacs.cpp`.
+- **Repro**:
+  ```bash
+  TeXmacs -x '(begin (save-learned) (quit-TeXmacs))'
+  ```
+- **Symptom**: exit code **134**, `libc++abi: terminating due to uncaught exception of type
+  string`. The C++ backtrace ends at
+  `TeXmacs_main + 2564` → `start_scheme + 2388` → `texmacs_entrypoint + 2248`.
+- **Cause**: `save-learned` is a module-private `(define ...)` inside
+  `(kernel texmacs tm-dialogue)`, not `define-public`. Evaluating the bare symbol from `-x`
+  raises an unbound-variable error, and that Scheme condition is converted into a C++
+  `string` exception which nothing on the `-x` path catches, so the process aborts instead
+  of printing an error.
+- **Consequence**: the quit-time save cannot be exercised from a script. The
+  `interactive.scm` "file exists" failure seen at shutdown has therefore **no scripted
+  repro** — only an interactive session with real command history reaches
+  `quit-TeXmacs-scheme` → `save-learned`.
+- **Workaround**: call `save-object` directly (it is public and reproduces the save), or
+  test through the GUI.
+- **Candidate fixes**:
+  1. Promote `save-learned` to `define-public` so `-x` can reach it.
+  2. Guard the `-x` evaluation so a Scheme error is reported as a message rather than
+     terminating the process — the same defect will affect any unbound name passed to `-x`.

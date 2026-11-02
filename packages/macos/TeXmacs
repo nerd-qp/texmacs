@@ -1,7 +1,13 @@
 #!/bin/sh
 
-LAUNCH_SCRIPT="$PWD/$0"
-LAUNCH_DIR=`dirname $LAUNCH_SCRIPT`
+# $0 is absolute when the bundle is launched by Finder or by full path, and
+# relative only when invoked by hand. Prepending $PWD unconditionally produced
+# "<cwd>//abs/path/texmacs.bin", which fails from any cwd but "/".
+case "$0" in
+  /*) LAUNCH_SCRIPT="$0" ;;
+  *)  LAUNCH_SCRIPT="$PWD/$0" ;;
+esac
+LAUNCH_DIR=`dirname "$LAUNCH_SCRIPT"`
 export LAUNCH_SCRIPT LAUNCH_DIR
 
 RESOURCES_DIR="$LAUNCH_DIR/../Resources"
@@ -18,4 +24,4 @@ export TEXMACS_PATH PATH DYLD_LIBRARY_PATH
 #GS_LIB=".:$RESOURCES_DIR/ghostscript/8.61/lib:$RESOURCES_DIR/ghostscript/8.61/Resource:$RESOURCES_DIR/ghostscript/fonts:$RESOURCES_DIR/fonts/default/ghostscript:$RESOURCES_DIR/fonts/default/Type1:$RESOURCES_DIR/fonts/default/TrueType:/usr/lib/DPS/outline/base:/usr/openwin/lib/X11/fonts/Type1:/usr/openwin/lib/X11/fonts/TrueType:/usr/share/cups/fonts"
 #export GS_LIB
 
-exec $LAUNCH_DIR/texmacs.bin "$@" < /dev/null
+exec "$LAUNCH_DIR/texmacs.bin" "$@" < /dev/null
