@@ -361,6 +361,49 @@ This document tracks identified architectural improvements and performance bottl
 - **Solution**:
   Added `(when (and (list? cached) (== (length cached) 3)) ...)` guard around cache unpack. Corrupted caches are safely ignored and freshly reconfigured.
 
+### [x] Missing Guile String Predicate `string-null?` in Chez Compatibility Layer [RESOLVED]
+- **Location**: [`TeXmacs/progs/kernel/boot/chez-compat.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/kernel/boot/chez-compat.scm#L162), [`TeXmacs/progs/convert/tools/tmlength.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/convert/tools/tmlength.scm#L101-L103)
+- **Problem**:
+  During LaTeX table export (invoking `old-tmtable.scm` -> `tmlength.scm`), evaluating `(string-null? unit-str)` failed with:
+  ```scheme
+  (TM-APPLY-ERROR variable string-null? is not bound FUN: #<procedure new-val> ARGS: ...)
+  Exception: variable string-null? is not bound
+  ```
+  GNU Guile 1.8 provides `string-null?` as a primitive builtin. Standard Chez Scheme does not provide `string-null?` out of the box.
+- **Solution**:
+  Exported `(define-public (string-null? s) (string=? s ""))` from `(kernel boot chez-compat)`.
+
+### [x] Reader Symbol Escape Incompatibility for Vertical Bar `|` in `tmtex.scm` (`latex-special-symbols%`) [RESOLVED]
+- **Location**: [`TeXmacs/progs/convert/latex/tmtex.scm:448`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/convert/latex/tmtex.scm#L448)
+- **Problem**:
+  In `tmtex.scm`, line 448 contained:
+  ```scheme
+  (logic-table latex-special-symbols%
+    ...
+    ("||"          ((string->symbol "|")))
+    ...)
+  ```
+  Because `logic-table` expands to `(logic-rules ,@(logic-table-rules name l))` using quasiquote, without an unquote `,`, `(string->symbol "|")` was not evaluated; Chez Scheme's module transpiler emitted literal `("||" ((unquote (string->symbol "|"))))`.
+  At export time, when mathematical formulas containing `<||>` (such as `KL(q||p)`) were exported to LaTeX, `texout.scm` called `(symbol->string what)` on this nested list, throwing:
+  ```scheme
+  (TM-APPLY-ERROR (string->symbol "|") is not a symbol FUN: #<procedure new-val> ...)
+  Exception in symbol->string: (string->symbol "|") is not a symbol
+  ```
+- **Solution**:
+  Replaced with the standard R6RS hex-escaped symbol literal `\x7c;`:
+  ```scheme
+  ("||"            (\x7c;)) ;; \x7c; is | in hex code
+  ```
+  Chez Scheme's reader natively parses `\x7c;` as the single-character symbol `'|` at read time, completely eliminating macro-expansion/unquote ambiguity. Recompiled modules (`tmtex.so`) and verified LaTeX export of mathematical expressions with `\|` succeed.
+
+### [ ] Missing Conversion Route for `(convert doc "texmacs-tree" "latex-document")` in `tm-convert.scm`
+- **Location**: [`TeXmacs/progs/kernel/texmacs/tm-convert.scm:272-274`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/kernel/texmacs/tm-convert.scm#L272-L274), [`TeXmacs/progs/convert/latex/init-latex.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/convert/latex/init-latex.scm)
+- **Problem**:
+  Direct serialization via `(serialize-latex (texmacs->latex doc '()))` works cleanly. However, high-level export via `(texmacs->generic doc "latex-document")` or `buffer-export` returns `"Error: bad format or data"`.
+  This indicates that the dynamic converter table in `tm-convert.scm` does not have `latex-document` registered as a target format from `texmacs-tree` until `(convert latex init-latex)` or similar converter declarations are executed.
+- **Action**:
+  Investigate lazy registration / dynamic loading of `init-latex.scm` converters when `texmacs->generic` or `buffer-export` is invoked.
+
 ### [ ] Separate Compilation Environment from Runtime Initialization
 - **Location**: [`src/Texmacs/Server/tm_server.cpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Texmacs/Server/tm_server.cpp), [`src/Scheme/Chez/chez_tm.cpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/chez_tm.cpp), [`TeXmacs/progs/init-texmacs-chez.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/init-texmacs-chez.scm), [`src/Scheme/Chez/compile_kernel.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/compile_kernel.scm)
 - **Problem**: Currently, both compilation (`-compile-modules`) and runtime startup load `init-texmacs-chez.scm`. `init-texmacs-chez.scm` relies on conditional runtime checks (`texmacs-chez-compiling?`) to decide whether to load `.so` files, redefine `define-public` / macros for runtime REPL evaluation, or skip them. This coupling introduces fragility, phase confusion, and order-of-initialization hazards between batch compiling and runtime execution.

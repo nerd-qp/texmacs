@@ -445,7 +445,7 @@
   ("gtr"           #\>)
   ("box"           (Box))
   ("over"          #\:)
-  ("||"            ((string->symbol "|"))) ;; |
+  ("||"            (\x7c;)) ;; \x7c; is | in hex code
   ("precdot"       (tmprecdot)))
 
 (logic-table latex-text-symbols%

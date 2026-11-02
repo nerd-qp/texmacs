@@ -167,6 +167,9 @@
             (else
              (loop (+ i 1) cnt))))))
 
+(define-public (string-null? s)
+  (string=? s ""))
+
 ;;; Hash tables (Guile compatibility)
 (define-public (hash-ref t k . default)
   (if (hashtable-contains? t k)
