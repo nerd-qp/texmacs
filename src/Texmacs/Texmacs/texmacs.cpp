@@ -72,6 +72,8 @@ bool tls_no_verify= false;
 string extra_init_cmd;
 bool compile_modules_mode= false;
 string compile_modules_script= "";
+bool lint_mode= false;
+string lint_script= "";
 bool exec_exit= true;
 void server_start ();
 
@@ -344,6 +346,11 @@ set_global_options  (int argc, char** argv)  {
         i++;
         if (i<argc) tm_init_file= url_system (argv[i]);
       }
+      else if ((s == "-lint") || (s == "-L")) {
+        /* Consumed by immediate_options(); skip it and its optional argument
+           here so that it is not reported as an unknown option. */
+        if (((i+1)<argc) && (argv[i+1][0] != '-')) i++;
+      }
       else if ((s == "-v") || (s == "-version")) {
         cout << "\n";
         cout << "TeXmacs version " << TEXMACS_VERSION << "\n";
@@ -482,6 +489,7 @@ set_global_options  (int argc, char** argv)  {
         cout << "  -h         Display this help message\n";
         cout << "  -H         Run TeXmacs in headless mode\n";
         cout << "  -i [file]  Specify scheme initialization file\n";
+        cout << "  -lint [f]  Boot the Scheme kernel only and run the macro linter\n";
         cout << "  -p         Get the TeXmacs path\n";
         cout << "  -q         Shortcut for -x \"(quit-TeXmacs)\"\n";
         cout << "  -r         Reverse video mode\n";
@@ -802,6 +810,16 @@ immediate_options (int argc, char** argv) {
       setenv ("TEXMACS_RECOMPILE_ALL", "1", 1);
       if (i + 1 < argc && argv[i + 1][0] != '-') {
         compile_modules_script = argv[++i];
+      }
+    }
+    else if (s == "-lint" || s == "-L") {
+      /* Static analysis: boot the Scheme kernel only (init-linter.scm) and run
+         the macro linter.  No editor initialization, no window, no Qt app. */
+      headless_mode= true;
+      lint_mode= true;
+      if (i + 1 < argc && argv[i + 1][0] != '-') {
+        lint_script = argv[++i];
+        setenv ("TEXMACS_LINT_SCRIPT", argv[i], 1);
       }
     }
     else if (s == "-log-file" && i + 1 < argc) {

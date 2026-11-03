@@ -18,6 +18,10 @@ extern int  install_status;
 extern bool use_which;
 extern bool use_locate;
 extern bool headless_mode;
+/* Static-analysis mode: boot only the Scheme kernel and run the macro linter
+   (init-linter.scm) instead of the full editor initialization. */
+extern bool lint_mode;
+extern string lint_script; // optional linter script overriding the default
 extern bool open_mode; // handle url opening via a single texmacs instance
 extern string open_mode_url; // url to be opened by the single instance
 

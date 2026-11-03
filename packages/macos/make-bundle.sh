@@ -28,9 +28,7 @@
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
-BUILD="$ROOT/build-texmacos"
-SRC_APP="$BUILD/TeXmacs.app"
-SRC_BOOT="$BUILD/boot"
+BUILD_DIR="${BUILD_DIR:-}"
 DIST="$ROOT/dist"
 
 MAKE_DMG=0
@@ -46,11 +44,16 @@ while [ $# -gt 0 ]; do
     --full-progs) FULL_PROGS=1 ;;
     --sign)       shift; SIGN_ID="${1:-}" ;;
     --version)    shift; VERSION="${1:-}" ;;
+    --build-dir)  shift; BUILD_DIR="${1:-}" ;;
     -h|--help)    sed -n '2,30p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
   shift
 done
+
+BUILD="${BUILD_DIR:-$ROOT/build-texmacos}"
+SRC_APP="$BUILD/TeXmacs.app"
+SRC_BOOT="$BUILD/boot"
 
 say () { printf '\033[1m==>\033[0m %s\n' "$*"; }
 
@@ -129,6 +132,42 @@ fi
   cp "$ROOT/packages/macos/TeXmacs-document.icns" "$RES/TeXmacs-document.icns"
 [ -f "$ROOT/packages/macos/PkgInfo" ] && \
   cp "$ROOT/packages/macos/PkgInfo" "$APP/Contents/PkgInfo"
+
+# ------------------------------------------------------------------ Qt libs
+# Bundled BEFORE copying Scheme sources/modules so macdeployqt does not spend
+# 15 minutes scanning 454 Chez Scheme .so compiled modules with install_name_tool.
+if [ "$BUNDLE_QT" = 1 ]; then
+  MACDEPLOYQT=""
+  if otool -L "$APP/Contents/MacOS/texmacs.bin" | grep -q -E "qtbase|QtCore5Compat|Versions/A"; then
+    if [ -x "/opt/homebrew/bin/macdeployqt" ]; then
+      MACDEPLOYQT="/opt/homebrew/bin/macdeployqt"
+    elif command -v macdeployqt >/dev/null 2>&1; then
+      MACDEPLOYQT="$(command -v macdeployqt)"
+    fi
+  else
+    if [ -x "/opt/homebrew/opt/qt@5/bin/macdeployqt" ]; then
+      MACDEPLOYQT="/opt/homebrew/opt/qt@5/bin/macdeployqt"
+    elif [ -x "/usr/local/opt/qt@5/bin/macdeployqt" ]; then
+      MACDEPLOYQT="/usr/local/opt/qt@5/bin/macdeployqt"
+    elif command -v macdeployqt >/dev/null 2>&1; then
+      MACDEPLOYQT="$(command -v macdeployqt)"
+    fi
+  fi
+
+  if [ -n "$MACDEPLOYQT" ]; then
+    say "bundling Qt frameworks ($MACDEPLOYQT)"
+    ORIG_EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' \
+               "$APP/Contents/Info.plist")
+    /usr/libexec/PlistBuddy -c 'Set :CFBundleExecutable texmacs.bin' \
+      "$APP/Contents/Info.plist"
+    "$MACDEPLOYQT" "$APP" -always-overwrite >/dev/null
+    /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable $ORIG_EXE" \
+      "$APP/Contents/Info.plist"
+  else
+    echo "warning: macdeployqt not found; the app will depend on the build machine's Qt" >&2
+    echo "         install it with 'brew install qt' or drop --bundle-qt" >&2
+  fi
+fi
 
 # ------------------------------------------------------------ scheme sources
 # Almost everything is already compiled into boot/*.so. Only these paths are
@@ -233,7 +272,9 @@ fi
 # fails and init_texmacs() falls back to Guile -> "guile could not be found".
 CHEZ_HEAP="${CHEZ_HEAP_DIR:-}"
 if [ -z "$CHEZ_HEAP" ]; then
-  for d in /opt/homebrew/opt/chezscheme/lib/csv*/tarm64osx \
+  for d in "$ROOT/../chez-macos/tarm64osx" \
+           "$ROOT/chez-macos/tarm64osx" \
+           /opt/homebrew/opt/chezscheme/lib/csv*/tarm64osx \
            /opt/homebrew/opt/chezscheme/lib/csv*/tarm64le \
            /usr/lib/csv*/tarm64le /usr/lib/csv*/ta6le; do
     [ -f "$d/scheme.boot" ] && CHEZ_HEAP="$d" && break
@@ -246,29 +287,6 @@ if [ -n "$CHEZ_HEAP" ] && [ -f "$CHEZ_HEAP/scheme.boot" ]; then
 else
   echo "warning: could not find petite.boot/scheme.boot; the bundle will not start" >&2
   echo "         set CHEZ_HEAP_DIR to the directory containing them" >&2
-fi
-
-# ------------------------------------------------------------------ Qt libs
-#
-# macdeployqt resolves CFBundleExecutable from Info.plist. Ours is "TeXmacs",
-# which is a /bin/sh wrapper, not Mach-O -- so macdeployqt retries
-# install_name_tool on it dozens of times and floods stderr with
-# "is not a Mach-O file". Point CFBundleExecutable at the real binary for the
-# duration of the call, then restore it so Finder still launches the wrapper.
-if [ "$BUNDLE_QT" = 1 ]; then
-  if command -v macdeployqt >/dev/null 2>&1; then
-    say "bundling Qt frameworks (macdeployqt)"
-    ORIG_EXE=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' \
-               "$APP/Contents/Info.plist")
-    /usr/libexec/PlistBuddy -c 'Set :CFBundleExecutable texmacs.bin' \
-      "$APP/Contents/Info.plist"
-    macdeployqt "$APP" -always-overwrite >/dev/null
-    /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable $ORIG_EXE" \
-      "$APP/Contents/Info.plist"
-  else
-    echo "warning: macdeployqt not found; the app will depend on the build machine's Qt" >&2
-    echo "         install it with 'brew install qt' or drop --bundle-qt" >&2
-  fi
 fi
 
 # ------------------------------------------- transitive dependency closure

@@ -141,8 +141,11 @@ tm_server_rep::tm_server_rep ()
 #ifdef TEXMACS_ENGINE_CHEZ
     /* Chez lacks Guile's built-in module system, so a dialect-specific
        bootstrap provides the missing builtins before the standard
-       initialization runs (mirrors the s7 branch's init-texmacs-s7.scm). */
-    tm_init_file= "$TEXMACS_PATH/progs/init-texmacs-chez.scm";
+       initialization runs (mirrors the s7 branch's init-texmacs-s7.scm).
+       In lint mode we use a trimmed bootstrap that loads the kernel only and
+       then runs the macro linter, instead of the whole editor program. */
+    if (lint_mode) tm_init_file= "$TEXMACS_PATH/progs/init-linter.scm";
+    else tm_init_file= "$TEXMACS_PATH/progs/init-texmacs-chez.scm";
 #else
     tm_init_file= "$TEXMACS_PATH/progs/init-texmacs.scm";
 #endif
