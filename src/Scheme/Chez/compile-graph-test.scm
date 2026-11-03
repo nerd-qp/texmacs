@@ -31,6 +31,8 @@
 (import (compiler-scan))
 (load (string-append compiler-dir "/compile-graph.scm"))
 (import (compile-graph))
+(load (string-append compiler-dir "/compile-inventory.scm"))
+(import (compile-inventory))
 
 (define checks 0)
 (define failures 0)
@@ -153,29 +155,10 @@
 
 ;;; Live TeXmacs tree ---------------------------------------------------------
 
-(define (live-tests progs driver)
-  ;; Pull *source-files* out of the driver without running it.
-  (define (ends-with-files*? s)
-    (let ((n (string-length s)))
-      (and (> n 7) (string=? (substring s (- n 7) n) "-files*"))))
-
-  (define (tier-define? x)
-    (and (pair? x) (eq? (car x) 'define) (pair? (cdr x)) (symbol? (cadr x))
-         (let ((s (symbol->string (cadr x))))
-           (or (string=? s "*source-files*") (ends-with-files*? s)))))
-
-  (define forms
-    (call-with-input-file driver
-      (lambda (p)
-        (let loop ((acc '()))
-          (let ((x (read p)))
-            (if (eof-object? x) (reverse acc) (loop (cons x acc))))))))
-
-  ;; Evaluate only the tier definitions, then read the combined whitelist.
-  (define files
-    (begin
-      (for-each eval (filter tier-define? forms))
-      (eval '*source-files*)))
+(define (live-tests progs)
+  ;; The whitelist is a library now, so it is imported rather than reconstructed
+  ;; by reading the driver's `define` forms. Same list, one source.
+  (define files *source-files*)
 
   (define db (scan-source-files->db progs files))
   (define g (make-compile-graph-from-db db))
@@ -261,10 +244,8 @@
                                   "../../../TeXmacs/progs"))))
     (and p (file-exists? p) p)))
 
-(define driver (first-existing (list (string-append compiler-dir "/compile-texmacs.scm"))))
-
-(if (and progs driver)
-    (live-tests progs driver)
+(if progs
+    (live-tests progs)
     (begin
       (display "SKIP live tree checks: set TEXMACS_PATH or run from the repository root")
       (newline)))

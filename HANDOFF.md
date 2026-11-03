@@ -58,6 +58,26 @@ Path meanings:
 
 Verified GUI launch with this exact command: the window stays up and the log contains no `ERROR`, `LOAD-ERROR`, or segmentation fault.
 
+### 1.2 Packaging Relocatable `.app` and `.dmg` (Qt 6 + Chez Scheme)
+
+To assemble a self-contained application bundle and disk image with all dependencies:
+
+```bash
+# Prerequisites
+brew install cmake pkg-config qt qt5compat qtsvg freetype jpeg libpng gnutls gmp chezscheme
+
+# Build binary with Qt 6
+./build-texmacos.sh
+
+# Package standalone .app and .dmg
+./texmacs/packages/macos/make-bundle.sh --bundle-qt --dmg
+```
+
+This outputs:
+- `texmacs/dist/TeXmacs-chez-2.1.5/TeXmacs-chez.app` (standalone bundle, 0 external Homebrew references)
+- `texmacs/dist/TeXmacs-chez-2.1.5.dmg` (compressed disk image)
+
+
 Do **not** set `TEXMACS_BOOT_FILE` to `texmacs-user.so`; it is not a base Chez boot image and fails with:
 
 ```text
