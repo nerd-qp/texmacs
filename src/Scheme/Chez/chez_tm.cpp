@@ -17,7 +17,8 @@
 #include <map>
 #include <mutex>
 #include <string.h>
-#include <cstdio>  /* CHEZDBG temporary boot instrumentation */
+#include <cstdio>
+#include <cstdlib>  /* getenv, _fullpath/_MAX_PATH on Windows */  /* CHEZDBG temporary boot instrumentation */
 
 extern bool compile_modules_mode;
 
@@ -490,10 +491,19 @@ start_scheme (int argc, char** argv, void (*call_back) (int, char**)) {
     }
 
     if (N (texmacs_boot) > 0) {
+#if defined(_WIN32)
+      /* MinGW provides no realpath(); _fullpath() is the CRT equivalent and
+         _MAX_PATH is the buffer size it expects. */
+      char resolved[_MAX_PATH];
+      if (_fullpath (resolved, c_string (texmacs_boot), _MAX_PATH) != NULL) {
+        texmacs_boot = string (resolved);
+      }
+#else
       char resolved[PATH_MAX];
       if (realpath (c_string (texmacs_boot), resolved) != NULL) {
         texmacs_boot = string (resolved);
       }
+#endif
       Sregister_boot_file (c_string (texmacs_boot));
       s_has_texmacs_boot = true;
       fprintf (stderr, "Chez Scheme: booting from AOT image %s\n", (char*) c_string (texmacs_boot));

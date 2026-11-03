@@ -405,6 +405,35 @@ set (GS_LIB ../share/ghostscript/9.06/lib:)
 set (GUILE_NUM 1)
 set (PDF_RENDERER 1)
 set (ALTERNATIVE_VERSION "6363198c5")
+
+# Keep TeXmacs/SVNREV in sync with ALTERNATIVE_VERSION.
+#
+# test_texmacs_path() (src/System/Boot/init_texmacs.cpp:551) accepts a data
+# tree only if it contains SVNREV *and* its contents equal the
+# ALTERNATIVE_VERSION compiled into the binary. Makefile.in only generates
+# that file at install time, so running from the build tree on a fresh clone
+# aborts at startup with "does not contain a valid TeXmacs installation".
+#
+# SVNREV is generated and untracked (.gitignore), so writing it here keeps
+# upstream sources pristine. Only written when missing or stale, so repeated
+# configure runs do not touch the file.
+set (TEXMACS_SVNREV_FILE "${TEXMACS_SOURCE_DIR}/TeXmacs/SVNREV")
+if (NOT EXISTS "${TEXMACS_SVNREV_FILE}")
+  set (TEXMACS_SVNREV_STALE TRUE)
+else ()
+  file (READ "${TEXMACS_SVNREV_FILE}" TEXMACS_SVNREV_CURRENT)
+  string (STRIP "${TEXMACS_SVNREV_CURRENT}" TEXMACS_SVNREV_CURRENT)
+  if (TEXMACS_SVNREV_CURRENT STREQUAL "${ALTERNATIVE_VERSION}")
+    set (TEXMACS_SVNREV_STALE FALSE)
+  else ()
+    set (TEXMACS_SVNREV_STALE TRUE)
+  endif ()
+endif ()
+if (TEXMACS_SVNREV_STALE)
+  file (WRITE "${TEXMACS_SVNREV_FILE}" "${ALTERNATIVE_VERSION}")
+  message (STATUS "Wrote TeXmacs/SVNREV: ${ALTERNATIVE_VERSION}")
+endif ()
+
 set (SIZEOF_VOID_P 8)
 if (WIN32)
   # LLP64 data model: long is 32 bit
@@ -812,6 +841,17 @@ endif (APPLE AND USE_SPARKLE)
 
 if (WIN32)
   file (GLOB_RECURSE TeXmacs_System_SRCS "${TEXMACS_SOURCE_DIR}/src/Plugins/Windows/*.cpp")
+  # Windows/ is the 32-bit backend, and two pieces of it do not build for
+  # x86_64. Use the Windows64 equivalents instead of switching the whole
+  # backend (the two directories otherwise define parallel, conflicting sets):
+  #   - edit_process.cpp calls texmacs_utf8_to_wide() on the OS_MINGW path
+  #     (CompareStringEx collation); only Windows64 defines it.
+  #   - windows32_stacktrace.cpp casts void* to DWORD, which loses precision
+  #     on 64-bit; windows64_stacktrace.cpp uses the *64 DbgHelp entry points.
+  list (FILTER TeXmacs_System_SRCS EXCLUDE REGEX "windows32_stacktrace\\.cpp$")
+  list (APPEND TeXmacs_System_SRCS
+    "${TEXMACS_SOURCE_DIR}/src/Plugins/Windows64/windows64_encoding.cpp"
+    "${TEXMACS_SOURCE_DIR}/src/Plugins/Windows64/windows64_stacktrace.cpp")
 else (WIN32)
   file (GLOB_RECURSE TeXmacs_System_SRCS "${TEXMACS_SOURCE_DIR}/src/Plugins/Unix/*.cpp")
 endif (WIN32)
@@ -877,6 +917,14 @@ if (TEXMACS_ENGINE_CHEZ)
     set (TeXmacs_Libraries ${TeXmacs_Libraries}
       ${CHEZ_KERNEL_LIB} ${CHEZ_DIR}/liblz4.a ${CHEZ_DIR}/libz.a
       pthread ncurses m iconv)
+  elseif (WIN32)
+    # Chez builds and ships its own libz.a/liblz4.a, but on Windows those
+    # collide with the MSYS2 import libraries ("multiple definition of
+    # inflate/deflate/..."), so link the system copies instead. dbghelp
+    # supplies the DbgHelp entry points used by get_stacktrace(), and rpcrt4
+    # supplies UuidCreate, called from Chez's stats.o.
+    set (TeXmacs_Libraries ${TeXmacs_Libraries}
+      ${CHEZ_KERNEL_LIB} z lz4 pthread dl ncurses m dbghelp rpcrt4)
   else ()
     set (TeXmacs_Libraries ${TeXmacs_Libraries}
       ${CHEZ_KERNEL_LIB} ${CHEZ_DIR}/liblz4.a ${CHEZ_DIR}/libz.a

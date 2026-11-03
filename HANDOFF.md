@@ -35,54 +35,220 @@ This document details the architecture, methods, recipes, and current progress o
 9. **No Git Commit by AI Agent**:
    - The AI agent must never execute `git commit` or commit changes. All changes must remain in the working directory unstaged or uncommitted for user review.
 
-### 1.1 Running from the Build Tree (Required Environment Variables)
+### 1.1 Toolchain, Configure and Build (current machine)
 
-Run from the workspace root:
+**Chez Scheme is installed from Homebrew; there is no source build and no `build-chez-macos` tree.** Earlier revisions of this document described compiling Chez from source into `build-chez-macos/tarm64osx/boot/tarm64osx`; that layout belonged to the retired `docker-sandbox-opencode` workspace and must not be recreated. Any surviving `build-chez-macos` references below are historical notes, not instructions.
+
+| Component | Source | Path on this machine |
+|---|---|---|
+| Chez Scheme 10.4.1 | `brew install chezscheme` | `/opt/homebrew/Cellar/chezscheme/10.4.1/lib/csv10.4.1/tarm64osx` |
+| Qt 6.12.0 | `brew install qt` (umbrella) | `/opt/homebrew/opt/qtbase`, `/opt/homebrew/opt/qtsvg`, `/opt/homebrew/opt/qt5compat` |
+
+The Homebrew Chez keg already ships everything `CMakeLists.txt` requires: `libkernel.a`, `scheme.h`, `petite.boot`, `scheme.boot`, `liblz4.a`, `libz.a`. The Chez "machine" directory is `tarm64osx` (not `tarm64le`).
+
+Configure and build from the repository root, where `TeXmacs/` is the data/source tree and `build-texmacos/` is the in-repo build tree:
 
 ```bash
-cd /Users/king-kong/Documents/my-repo/docker-sandbox-opencode
+cd ~/texmacs
 
-SCHEMEHEAPDIRS="$PWD/build-chez-macos/tarm64osx/boot/tarm64osx" \
+cmake -S . -B build-texmacos -G Ninja \
+  -DTEXMACS_GUI=Qt6 \
+  -DSCHEME_IMPL=chez \
+  -DCHEZ_ROOT=/opt/homebrew/Cellar/chezscheme/10.4.1/lib/csv10.4.1 \
+  -DCHEZ_MACHINE=tarm64osx \
+  -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH="/opt/homebrew/opt/qtbase;/opt/homebrew/opt/qt5compat;/opt/homebrew/opt/qtsvg" \
+  -DQT_ADDITIONAL_PACKAGES_PREFIX_PATH="/opt/homebrew/opt/qtbase;/opt/homebrew/opt/qt5compat;/opt/homebrew/opt/qtsvg"
+
+cmake --build build-texmacos -j 10
+```
+
+Two configure pitfalls, both fatal:
+
+1. **Chez defaults are wrong for this machine.** `CMakeLists.txt` defaults to `CHEZ_ROOT=/usr/lib/csv10.5.0-pre-release.1` and `CHEZ_MACHINE=tarm64le`, which aborts with `Chez Scheme kernel library not found`. Override both as above.
+2. **Qt 6 components live in separate Homebrew kegs.** `Qt6Config.cmake` is in `qtbase`, while Svg and Core5Compat are in `qtsvg` and `qt5compat`. `CMAKE_PREFIX_PATH` alone fails with `Failed to find required Qt component "Svg"`; `QT_ADDITIONAL_PACKAGES_PREFIX_PATH` must list all three prefixes.
+
+After the C++ binary links, transpile and compile the Scheme kernel (see §2 for the recipe and §2 Step F for incremental behaviour):
+
+```bash
 HOME="$PWD/fakehome" \
-TEXMACS_PATH="$PWD/texmacs/TeXmacs" \
+SCHEMEHEAPDIRS="/opt/homebrew/Cellar/chezscheme/10.4.1/lib/csv10.4.1/tarm64osx" \
+TEXMACS_PATH="$PWD/TeXmacs" \
+build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -compile-modules
+```
+
+Measured on this machine from a cold build tree: 604/604 C++ targets in ~9 min, 453/453 modules transpiled and compiled with 0 failures in ~10 min.
+
+### 1.2 Running from the Build Tree (Required Environment Variables)
+
+Run from the repository root:
+
+```bash
+cd ~/texmacs
+
+SCHEMEHEAPDIRS="/opt/homebrew/Cellar/chezscheme/10.4.1/lib/csv10.4.1/tarm64osx" \
+HOME="$PWD/fakehome" \
+TEXMACS_PATH="$PWD/TeXmacs" \
 TEXMACS_BOOT_PATH="$PWD/build-texmacos/boot" \
 ./build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs
 ```
 
 Path meanings:
 
-- `SCHEMEHEAPDIRS`: Chez Scheme heap directory containing `petite.boot` and `scheme.boot`. Use `build-chez-macos/tarm64osx/boot/tarm64osx`.
+- `SCHEMEHEAPDIRS`: Chez Scheme heap directory containing `petite.boot` and `scheme.boot`. Use the Homebrew keg path `/opt/homebrew/Cellar/chezscheme/10.4.1/lib/csv10.4.1/tarm64osx`. It falls back to the `CHEZ_BOOT_DIR` baked in at compile time, but set it explicitly so a Chez upgrade cannot silently mismatch the linked `libkernel.a`.
 - `HOME`: fake home for TeXmacs configuration and state (`fakehome`), keeping the real home clean.
-- `TEXMACS_PATH`: TeXmacs source/data tree (`texmacs/TeXmacs`), which contains `progs/` and the Scheme sources.
+- `TEXMACS_PATH`: TeXmacs source/data tree (`TeXmacs/`), which contains `progs/` and the Scheme sources.
 - `TEXMACS_BOOT_PATH`: compiled Chez module directory (`build-texmacos/boot`), where the `.so` modules and `module-deps.scm` live. This is how the runtime finds compiled modules when running from the build tree.
 
-Verified GUI launch with this exact command: the window stays up and the log contains no `ERROR`, `LOAD-ERROR`, or segmentation fault.
+**`TEXMACS_BOOT_PATH` is not optional.** Without it, `boot-chez.scm` falls back to loading raw `.scm` sources instead of the compiled `.so` modules, which produces a cascade of `Exception: invalid context for definition` errors from `boot-chez.scm` and finally `LOAD-ERROR .../init-buffer.scm variable current-buffer is not bound`. The GUI may still open, so this failure is easy to miss — check the log for `LOAD-ERROR`.
 
-### 1.2 Packaging Relocatable `.app` and `.dmg` (Qt 6 + Chez Scheme)
+Verified GUI launch with this exact command: `texmacs-version` returns `2.1.5`, `(top-level-bound? 'current-buffer)` is `#t`, the window is mapped onscreen at 800×628, and the log contains no `ERROR`, `LOAD-ERROR`, or segmentation fault.
+
+Note that `screencapture` on current macOS returns desktop wallpaper only for processes without Screen Recording permission, so window contents cannot be verified from a shell; use `CGWindowListCopyWindowInfo` (window number, bounds, alpha, onscreen) plus the absence of log errors instead.
+
+### 1.3 Packaging Relocatable `.app` and `.dmg` (Qt 6 + Chez Scheme)
 
 To assemble a self-contained application bundle and disk image with all dependencies:
 
 ```bash
-# Prerequisites
-brew install cmake pkg-config qt qt5compat qtsvg freetype jpeg libpng gnutls gmp chezscheme
+cd ~/texmacs
 
-# Build binary with Qt 6
-./build-texmacos.sh
+# Prerequisites (Homebrew Chez and Qt 6, no source builds)
+brew install cmake pkg-config qt chezscheme freetype jpeg libpng gnutls gmp
+
+# Build binary with Qt 6 (see §1.1 for the full configure line)
+cmake -S . -B build-texmacos -G Ninja \
+  -DTEXMACS_GUI=Qt6 -DSCHEME_IMPL=chez \
+  -DCHEZ_ROOT=/opt/homebrew/Cellar/chezscheme/10.4.1/lib/csv10.4.1 \
+  -DCHEZ_MACHINE=tarm64osx -DCMAKE_BUILD_TYPE=Release \
+  -DCMAKE_PREFIX_PATH="/opt/homebrew/opt/qtbase;/opt/homebrew/opt/qt5compat;/opt/homebrew/opt/qtsvg" \
+  -DQT_ADDITIONAL_PACKAGES_PREFIX_PATH="/opt/homebrew/opt/qtbase;/opt/homebrew/opt/qt5compat;/opt/homebrew/opt/qtsvg"
+cmake --build build-texmacos -j 10
+
+# Compile the Scheme kernel
+HOME="$PWD/fakehome" \
+SCHEMEHEAPDIRS="/opt/homebrew/Cellar/chezscheme/10.4.1/lib/csv10.4.1/tarm64osx" \
+TEXMACS_PATH="$PWD/TeXmacs" \
+build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -compile-modules
 
 # Package standalone .app and .dmg
-./texmacs/packages/macos/make-bundle.sh --bundle-qt --dmg
+./packages/macos/make-bundle.sh --bundle-qt --dmg
 ```
 
 This outputs:
-- `texmacs/dist/TeXmacs-chez-2.1.5/TeXmacs-chez.app` (standalone bundle, 0 external Homebrew references)
-- `texmacs/dist/TeXmacs-chez-2.1.5.dmg` (compressed disk image)
+- `dist/TeXmacs-chez-2.1.5/TeXmacs-chez.app` (standalone bundle, 0 external Homebrew references)
+- `dist/TeXmacs-chez-2.1.5.dmg` (compressed disk image)
 
+There is no `build-texmacos.sh` in this repository; the CMake invocation above replaces it. `make-bundle.sh` resolves its own root from its own location and defaults to `$ROOT/build-texmacos` for the binary tree (override with `--build-dir <path>`) and `$ROOT/dist` for output, so the commands work unchanged from a fresh checkout. The packaged bundle carries both `progs/` and `boot/` under `Contents/Resources/share/TeXmacs/`, so it needs none of the environment variables from §1.2.
 
 Do **not** set `TEXMACS_BOOT_FILE` to `texmacs-user.so`; it is not a base Chez boot image and fails with:
 
 ```text
 base boot file .../texmacs-user.so must come before other boot files
 ```
+
+### 1.4 Linux (Ubuntu) Build — Verified
+
+Verified end to end on **Ubuntu 26.04.1 LTS (Resolute Raccoon), arm64, Qt 6.10.2, Chez Scheme 10.4.1 built from source**: binary links, all 453 modules compile, application launches. Note that Qt 6.10.2 is what the distro provides; the macOS build uses 6.12.0, and nothing in `src/Plugins/Qt/` depends on a version between them.
+
+#### Chez must be built from source on Linux
+
+No Ubuntu package supplies the four artifacts `CMakeLists.txt` wants in a single directory:
+
+- `chezscheme` ships boot files only.
+- `chezscheme-dev` ships `kernel.o` + `main.o` on 24.04 (Chez 9.5.8), and `libkernel.a` only from 26.04 (Chez 10.0.0) onward.
+- **Neither release ships `liblz4.a` or `libz.a`**, which `CMakeLists.txt:882` hardcodes, because Debian builds from the `+dfsg` tarball with the bundled lz4/zlib stripped.
+
+A source build yields `libkernel.a`, `scheme.h`, `petite.boot`, `scheme.boot`, `liblz4.a` and `libz.a` from one configuration, so nothing can drift:
+
+```bash
+sudo apt update
+sudo apt install -y build-essential cmake ninja-build pkg-config git curl \
+  qt6-base-dev qt6-base-dev-tools libqt6svg6-dev qt6-5compat-dev \
+  libfreetype-dev libjpeg-dev libpng-dev libgmp-dev libgnutls28-dev \
+  libsqlite3-dev zlib1g-dev liblz4-dev libncurses-dev
+
+curl -LO https://github.com/cisco/ChezScheme/releases/download/v10.4.1/csv10.4.1.tar.gz
+tar xf csv10.4.1.tar.gz && cd csv10.4.1
+./configure --installprefix="$HOME/chez" --threads --installschemename=chez
+make -j"$(nproc)" && make install
+```
+
+`--threads` matches the Homebrew build this port was validated against on macOS. **`libncurses-dev` is required**: `CMakeLists.txt:883` links `ncurses` on every non-Apple target (it comes from Chez's `expeditor.o`), and the linker needs the unversioned `libncurses.so` that only the dev package provides — `libncurses6` alone gives you `libncurses.so.6`, which `-lncurses` will not accept.
+
+#### Configure and build
+
+```bash
+cd ~/texmacs
+MACH=$( [ "$(uname -m)" = "aarch64" ] && echo tarm64le || echo ta6le )
+cmake -S . -B build-texmacos -G Ninja \
+  -DTEXMACS_GUI=Qt6 -DSCHEME_IMPL=chez \
+  -DCHEZ_ROOT="$HOME/chez/lib/csv10.4.1" -DCHEZ_MACHINE="$MACH" \
+  -DCMAKE_BUILD_TYPE=Release
+cmake --build build-texmacos -j"$(nproc)"
+```
+
+Machine type is `tarm64le` on arm64 Linux and `ta6le` on x86_64 — both differ from the `tarm64osx` used on macOS. Unlike macOS, `CMAKE_PREFIX_PATH` and `QT_ADDITIONAL_PACKAGES_PREFIX_PATH` are unnecessary here: the distro installs every Qt 6 module into one prefix, so `find_package (Qt6 ...)` resolves Svg and Core5Compat without help. Confirm which Qt was actually linked with:
+
+```bash
+grep Qt6Core_DIR build-texmacos/CMakeCache.txt
+# e.g. /usr/lib/aarch64-linux-gnu/cmake/Qt6Core
+```
+
+#### The binary is not a bundle on Linux
+
+`src/CMakeLists.txt:5-11` names the executable `TeXmacs` on macOS, `texmacs` on Windows, and **`texmacs.bin`** everywhere else. On Linux it therefore lands at:
+
+```text
+build-texmacos/src/texmacs.bin
+```
+
+There is no `TeXmacs.app` wrapper and no `build-texmacos/TeXmacs`; commands written for macOS must be adjusted.
+
+#### `TeXmacs/SVNREV` is generated at configure time
+
+`test_texmacs_path` (`src/System/Boot/init_texmacs.cpp:551-568`) accepts a data tree only if it contains `doc/`, `fonts/`, `progs/`, `styles/` **and** a `SVNREV` file whose contents equal the `ALTERNATIVE_VERSION` constant at `CMakeLists.txt:407`. `SVNREV` is generated by `Makefile.in:108` at install time and is **not tracked by git** (`.gitignore:26`), so on a fresh clone running from the build tree startup aborted with:
+
+```text
+The environment variable TEXMACS_PATH is set to: .../TeXmacs
+but it does not contain a valid TeXmacs installation.
+```
+
+Note there is no "incompatible version" line in that output — that message only appears on a *mismatch*, so its absence means the file is missing rather than wrong.
+
+**This is now handled automatically.** `CMakeLists.txt` writes `TeXmacs/SVNREV` from `ALTERNATIVE_VERSION` during configuration whenever the file is missing or stale, and leaves it untouched otherwise. Configuring prints `-- Wrote TeXmacs/SVNREV: <version>` in the former case and nothing in the latter. No manual step is required.
+
+If you are on a tree without that change, generate it by hand from the same constant the binary was compiled with:
+
+```bash
+grep -o 'ALTERNATIVE_VERSION "[^"]*"' CMakeLists.txt | cut -d'"' -f2 > TeXmacs/SVNREV
+```
+
+#### Compile the kernel and run
+
+```bash
+cd ~/texmacs
+MACH=$( [ "$(uname -m)" = "aarch64" ] && echo tarm64le || echo ta6le )
+
+SCHEMEHEAPDIRS="$HOME/chez/lib/csv10.4.1/$MACH" \
+HOME="$PWD/fakehome" \
+TEXMACS_PATH="$PWD/TeXmacs" \
+./build-texmacos/src/texmacs.bin -compile-modules
+
+SCHEMEHEAPDIRS="$HOME/chez/lib/csv10.4.1/$MACH" \
+HOME="$PWD/fakehome" \
+TEXMACS_PATH="$PWD/TeXmacs" \
+TEXMACS_BOOT_PATH="$PWD/build-texmacos/boot" \
+./build-texmacos/src/texmacs.bin
+```
+
+**Assignment order matters.** `SCHEMEHEAPDIRS` must be written *before* `HOME`, because the shell expands `$HOME` using the value in effect before any of these assignments apply. Reversing them yields `SCHEMEHEAPDIRS=<repo>/fakehome/chez/lib/...` and:
+
+```text
+cannot open boot file .../fakehome/chez/lib/csv10.4.1/tarm64le/petite.boot
+```
+
+`TEXMACS_BOOT_PATH` is mandatory for the same reason as on macOS (§1.2): without it the runtime loads raw `.scm` sources instead of the compiled `.so` modules.
 
 ---
 
@@ -149,9 +315,10 @@ cat << 'EOF' > verify_module.scm
 (quit-TeXmacs)
 EOF
 
-SCHEMEHEAPDIRS="../build-chez-macos/tarm64osx/boot/tarm64osx" \
-TEXMACS_PATH="$(pwd)/TeXmacs" \
-../build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -H -x '(load "verify_module.scm")'
+SCHEMEHEAPDIRS="/opt/homebrew/Cellar/chezscheme/10.4.1/lib/csv10.4.1/tarm64osx" \
+TEXMACS_PATH="$PWD/TeXmacs" \
+TEXMACS_BOOT_PATH="$PWD/build-texmacos/boot" \
+build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -H -x '(load "verify_module.scm")'
 ```
 
 ### Step F: Ahead-of-Time (AOT) Batch Compilation Commands & Incremental Workflow
@@ -163,14 +330,14 @@ When invoking `-compile-modules`, the transpiler checks file modification timest
 
 ```bash
 HOME="$PWD/fakehome" \
-SCHEMEHEAPDIRS="$PWD/build-chez-macos/tarm64osx/boot/tarm64osx" \
-TEXMACS_PATH="$PWD/texmacs/TeXmacs" \
+SCHEMEHEAPDIRS="/opt/homebrew/Cellar/chezscheme/10.4.1/lib/csv10.4.1/tarm64osx" \
+TEXMACS_PATH="$PWD/TeXmacs" \
 build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -compile-modules
 ```
-- **Execution Time**: **~9.18 seconds** (181 modules cached & loaded directly, 0-1 recompiled).
+- **Execution Time**: a few seconds when nothing changed (all modules cached and loaded directly, 0-1 recompiled).
 
 #### 2. Recompile From Scratch Fallback (`-recompile-modules`)
-To force a complete rebuild of all 5 tiers from scratch regardless of timestamps:
+To force a complete rebuild of all tiers from scratch regardless of timestamps:
 
 ```bash
 # Via dedicated CLI option:
@@ -179,13 +346,15 @@ build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -recompile-modules
 # Or via environment variable:
 TEXMACS_RECOMPILE_ALL=1 build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -compile-modules
 ```
-- **Execution Time**: **~56.56 seconds** (all 186 `.so` files re-transpiled and recompiled).
+- **Execution Time**: **~10 minutes** on this machine for all 453 modules from a cold build tree (measured 2026-11-03, Qt 6.12.0 + Homebrew Chez 10.4.1).
 
 #### Benchmark Comparison:
 | Mode | Command Flag / Env | Modules Recompiled | Cached (.so loaded) | Total Wall Time |
 |---|---|:---:|:---:|:---:|
-| **Incremental (Default)** | `-compile-modules` | 0–1 | 181 | **9.18 s** |
-| **Full Clean Rebuild** | `-recompile-modules` | 181 | 0 | **56.56 s** |
+| **Incremental (Default)** | `-compile-modules` | 0–1 | all up-to-date | a few seconds |
+| **Full Clean Rebuild** | `-recompile-modules` | 453 | 0 | **~10 min** |
+
+The pre-Qt-6 figures in older revisions (181 modules, 9.18 s / 56.56 s) were measured against a partially compiled tree of 186 modules on the retired workspace and are not comparable; the current tree compiles 453 modules.
 
 ---
 
@@ -429,17 +598,17 @@ We test-compiled the 20 core interactive editing modules spanning `table/`, `tex
 ### 3. Tier 3 Findings & Root Cause Solutions
 
 #### Finding 1: Local Dynamic Import in Procedure Body (`math/math-edit.scm`) [RESOLVED]
-- **Issue**: [`math/math-edit.scm:733`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/math/math-edit.scm#L733) places `(import-from (version version-compare))` inside a local procedure body (`when`).
+- **Issue**: [`math/math-edit.scm:733`](TeXmacs/progs/math/math-edit.scm#L733) places `(import-from (version version-compare))` inside a local procedure body (`when`).
 - **Root Cause**: `import-from` expanded to `use-modules` which emitted `(import ...)`. In Chez Scheme R6RS, `import` is valid strictly at the library/module top-level; emitting `import` inside an expression throws `Exception: invalid context for definition (import ...)`.
-- **Solution Applied**: In [`boot-chez.scm:388-393`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/boot/boot-chez.scm#L388-L393), redefined `import-from` to expand strictly to runtime `(module-load 'mod)`. Free variable calls inside the procedure body dereference the top-level symbol cell lazily at runtime. `math-edit.scm` compiles cleanly to native `math-edit.so` (76 KB).
+- **Solution Applied**: In [`boot-chez.scm:388-393`](TeXmacs/progs/kernel/boot/boot-chez.scm#L388-L393), redefined `import-from` to expand strictly to runtime `(module-load 'mod)`. Free variable calls inside the procedure body dereference the top-level symbol cell lazily at runtime. `math-edit.scm` compiles cleanly to native `math-edit.so` (76 KB).
 
 #### Finding 2: Domain-Specific `tm-define` Option Dependencies (`graphics/graphics-group.scm`) [RESOLVED]
-- **Issue**: [`graphics/graphics-group.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/graphics/graphics-group.scm) threw `Exception in tm-define-sub: unknown option :state`.
-- **Root Cause**: Both `:state` and `:state-slots` are dynamically registered into `define-option-table` by [`graphics/graphics-env.scm:380,386`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/graphics/graphics-env.scm#L380). In our AOT compiler, `(ahash-set! define-option-table ...)` was not evaluated in `compilation-environment` during transpilation.
-- **Solution Applied**: Added an evaluator hook in `prepare-forms` in [`compile_kernel.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/compile_kernel.scm) that evaluates `define-option-table` registrations during the AST preparation pass. Both `graphics-env.scm` and `graphics-group.scm` now expand and compile with full recognition of `:state` and `:state-slots`.
+- **Issue**: [`graphics/graphics-group.scm`](TeXmacs/progs/graphics/graphics-group.scm) threw `Exception in tm-define-sub: unknown option :state`.
+- **Root Cause**: Both `:state` and `:state-slots` are dynamically registered into `define-option-table` by [`graphics/graphics-env.scm:380,386`](TeXmacs/progs/graphics/graphics-env.scm#L380). In our AOT compiler, `(ahash-set! define-option-table ...)` was not evaluated in `compilation-environment` during transpilation.
+- **Solution Applied**: Added an evaluator hook in `prepare-forms` in [`compile_kernel.scm`](src/Scheme/Chez/compile_kernel.scm) that evaluates `define-option-table` registrations during the AST preparation pass. Both `graphics-env.scm` and `graphics-group.scm` now expand and compile with full recognition of `:state` and `:state-slots`.
 
 #### Finding 3: Local Helper Macro `define-export-macro` in `graphics/graphics-utils.scm` [RESOLVED]
-- **Issue**: [`graphics/graphics-utils.scm:104`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/graphics/graphics-utils.scm#L104) invoked `(define-export-macro (remove-eq? x l) ...)`. Threw `Exception: invalid context for definition (define-syntax remove-eq? ...)`.
+- **Issue**: [`graphics/graphics-utils.scm:104`](TeXmacs/progs/graphics/graphics-utils.scm#L104) invoked `(define-export-macro (remove-eq? x l) ...)`. Threw `Exception: invalid context for definition (define-syntax remove-eq? ...)`.
 - **Root Cause**: `define-export-macro` was defined as a local macro helper in `graphics-utils.scm` to work around historical Guile 1.8 macro caching bugs. The transpiler did not recognize it as a definer, placing it into `exprs`. At compile time, expanding a macro into a definition inside an expression context violates R6RS module grammar.
 - **Solution Applied**: In `prepare-forms`, recognized `define-export-macro` and transformed it directly into `(define-public-macro ...)` in the definitions block.
 
@@ -450,14 +619,14 @@ We test-compiled the 20 core interactive editing modules spanning `table/`, `tex
   2. During top-level eager evaluation in `(compilation-environment)`, `define-state` expanded into `define-public`, which attempted `(export graphics-action)`. In Chez Scheme, `(export ...)` is only legal inside a `(module ...)` or `(library ...)`.
 - **Solution Applied**:
   1. Added `define-state` to `def-form?` in `compile_kernel.scm` so it stays ahead of dependent definitions.
-  2. Implemented `compile-export-mode?` parameter and `with-export-if-active` macro in [`boot-chez.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/boot/boot-chez.scm). Parameterized `(compile-export-mode? #f)` strictly during top-level eager evaluation, while keeping it active (`#t`) inside module definitions. `graphics-env.so` compiles and loads cleanly `(OK)`.
+  2. Implemented `compile-export-mode?` parameter and `with-export-if-active` macro in [`boot-chez.scm`](TeXmacs/progs/kernel/boot/boot-chez.scm). Parameterized `(compile-export-mode? #f)` strictly during top-level eager evaluation, while keeping it active (`#t`) inside module definitions. `graphics-env.so` compiles and loads cleanly `(OK)`.
 
 #### Finding 5: `define-group` Macro Expansion at Ahead-Of-Time Compile Time (`utils/edit/variants.scm`) [RESOLVED]
 - **Issue**: Downstream modules `text-edit.scm`, `graphics-drd.scm`, and `graphics-object.scm` failed at load time with unbound variables (`doc-title-inactive-tag-list`, `graphical-tag-list`, `graphics-all-attributes`).
 - **Root Cause**:
   `define-group` in `utils/edit/variants.scm` was inspecting `group-table` and mutating `group-resolve-table` at macro-expand time. When `compile_kernel.scm` eagerly evaluated `(define-group ...)` in Pass 1, it inserted the group name into `group-table`. During Pass 2 (`compile-file`), `define-group` ran at macro-expand time, checked `(ahash-ref group-table group)`, found it already present (`old != #f`), and took the `if old` branch—emitting **only** `(ahash-set! ...)` and omitting `(tm-define (group-list) ...)` from the emitted `.so`.
 - **Solution Applied**:
-  In [`TeXmacs/progs/utils/edit/variants.scm:34-47`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/utils/edit/variants.scm#L34-L47), moved the `(set! group-resolve-table (make-ahash-table))` and `(if old ...)` branch into the generated runtime code:
+  In [`TeXmacs/progs/utils/edit/variants.scm:34-47`](TeXmacs/progs/utils/edit/variants.scm#L34-L47), moved the `(set! group-resolve-table (make-ahash-table))` and `(if old ...)` branch into the generated runtime code:
   ```scheme
   (tm-define-macro (define-group group . l)
     `(begin
@@ -543,7 +712,7 @@ We test-compiled the 20 core interactive editing modules spanning `table/`, `tex
 
 ### 4. Scheme Files Progressive Compilation Census (457 Total)
 - **Compiled `.so` Files**: **184** (in `build-texmacos/boot/`, including all 39 kernel modules, 48 Tier 2 modules, and compiled editing/converters across Tiers 3–5).
-- **Uncompiled `.scm` Files**: **273** across 27 top-level directories (see breakdown in [`TODO_CHEZ.md`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TODO_CHEZ.md)).
+- **Uncompiled `.scm` Files**: **273** across 27 top-level directories (see breakdown in [`TODO_CHEZ.md`](TODO_CHEZ.md)).
 
 ### 5. Architectural Decision: Explicit Imports vs. Global `tm-define` Accessibility
 
@@ -565,7 +734,7 @@ We test-compiled the 20 core interactive editing modules spanning `table/`, `tex
 ## 9. Recent Diagnostics, Transpiler Fixes & Runtime Loader Hardening
 
 ### 1. Root Cause & Fix of the `tm-var-overload?` Logic Inversion
-- **Location**: [`src/Scheme/Chez/compile_kernel.scm:598-620`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/compile_kernel.scm#L598-L620)
+- **Location**: [`src/Scheme/Chez/compile_kernel.scm:598-620`](src/Scheme/Chez/compile_kernel.scm#L598-L620)
 - **The Bug**:
   In `compile_kernel.scm`, the helper `tm-var-overload?` checks whether a symbol has previously been defined in a module:
   ```scheme
@@ -579,19 +748,19 @@ We test-compiled the 20 core interactive editing modules spanning `table/`, `tex
   Corrected the condition to `(and (pair? mod-list) ...)`. Now, primary declarations cleanly emit `(define-public ...)`, and only genuine subsequent overloads emit the `(set! ...)` wrapper.
 
 ### 2. Removal of Ad-hoc AST Handlers for `tm-menu` and `menu-bind`
-- **Location**: [`src/Scheme/Chez/compile_kernel.scm:780-805`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/compile_kernel.scm#L780-L805)
+- **Location**: [`src/Scheme/Chez/compile_kernel.scm:780-805`](src/Scheme/Chez/compile_kernel.scm#L780-L805)
 - **Action**:
   Removed all custom AST matchers for `tm-menu`, `menu-bind`, `tm-widget`, `menu-extend`, and `split-define-options` from `compile_kernel.scm`.
 - **Mechanism**:
   `menu-bind` and `tm-menu` now expand through their authentic macro transformers registered via `putprop 'macro-transformer` from `kernel/gui/menu-define.scm`.
 - **Upstream Integrity**:
-  Reverted all temporary exports in [`TeXmacs/progs/kernel/texmacs/tm-define.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/texmacs/tm-define.scm#L60-L66) (`ca*r` and `ca*adr` returned to private `(define ...)`), keeping upstream files 100% pristine.
+  Reverted all temporary exports in [`TeXmacs/progs/kernel/texmacs/tm-define.scm`](TeXmacs/progs/kernel/texmacs/tm-define.scm#L60-L66) (`ca*r` and `ca*adr` returned to private `(define ...)`), keeping upstream files 100% pristine.
 
 ### 3. C++ Runtime Loader vs. Batch Compiler Error Handling Architecture
 - **Runtime Loader (`chez_tm.cpp`)**:
-  In [`src/Scheme/Chez/chez_tm.cpp:751-756`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/chez_tm.cpp#L751-L756), `tm-load-file` guards native `.so` loading. If any `.so` fails to load during normal TeXmacs execution (GUI or headless runtime), it immediately logs `FATAL: failed to load <so>: <err>` and aborts the entire process via `(exit 1)`.
+  In [`src/Scheme/Chez/chez_tm.cpp:751-756`](src/Scheme/Chez/chez_tm.cpp#L751-L756), `tm-load-file` guards native `.so` loading. If any `.so` fails to load during normal TeXmacs execution (GUI or headless runtime), it immediately logs `FATAL: failed to load <so>: <err>` and aborts the entire process via `(exit 1)`.
 - **Batch AOT Compiler (`compile_kernel.scm`)**:
-  In [`src/Scheme/Chez/compile_kernel.scm:1254-1256`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/compile_kernel.scm#L1254-L1256), the `-compile-modules` script catches test-load exceptions to report `NATIVE-LOAD-FAIL` and continues through subsequent tiers, allowing developers to see an aggregate compilation status report across all 240+ modules.
+  In [`src/Scheme/Chez/compile_kernel.scm:1254-1256`](src/Scheme/Chez/compile_kernel.scm#L1254-L1256), the `-compile-modules` script catches test-load exceptions to report `NATIVE-LOAD-FAIL` and continues through subsequent tiers, allowing developers to see an aggregate compilation status report across all 240+ modules.
 
 ### 4. Full Clean Recompilation & Runtime Verification
 - **Full Rebuild**:
@@ -613,7 +782,7 @@ We test-compiled the 20 core interactive editing modules spanning `table/`, `tex
 ### 1. Scratch Compilation of All 39 Kernel Modules (Complete Success)
 - **Problem**: When compiling from scratch, `menu-define.scm` previously threw `Exception: variable gui-make is not bound`.
 - **Root Cause**: In Chez Scheme, `(define-top-level-value 'var val)` without an explicit environment argument installs directly into `(interaction-environment)`. However, macro transformers execute in `(compilation-environment)`. During `prepare-forms`, evaluating `(tm-define (gui-make ...) ...)` placed `gui-make` into `(interaction-environment)` while leaving `(compilation-environment)` unbound. Subsequent macro expansions of `menu-dynamic` during `compile-file` evaluated in `(compilation-environment)` and failed.
-- **Fix**: Updated [`tm-define-overloaded`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/texmacs/tm-define.scm#L246-L253) to bind into `c-env` (`(compilation-environment)`).
+- **Fix**: Updated [`tm-define-overloaded`](TeXmacs/progs/kernel/texmacs/tm-define.scm#L246-L253) to bind into `c-env` (`(compilation-environment)`).
 - **Result**: All 39 kernel modules and `texmacs-user.so` compile cleanly from scratch with 0 errors.
 
 ### 2. Resolution of the Historical `:synopsis` Option Failures
@@ -636,15 +805,15 @@ We test-compiled the 20 core interactive editing modules spanning `table/`, `tex
 ### 1. Cycle-Detecting DFS `module-load`
 - **Architecture**:
   - In Chez Scheme, loading a compiled `.so` requires that all prerequisite modules already exist in memory before `(import ...)` or module body expressions evaluate.
-  - Implemented depth-first search (DFS) traversal in [`boot-chez.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/boot/boot-chez.scm#L880-L910) using `*module-loading-stack*` to track active loads and avoid infinite recursion on circular dependencies.
-  - Commented out the duplicate definition in [`prologue.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/boot/prologue.scm#L35-L53), keeping `module-load` centralized in `boot-chez.scm` so it is globally available in `(interaction-environment)` from the earliest bootstrap phase.
+  - Implemented depth-first search (DFS) traversal in [`boot-chez.scm`](TeXmacs/progs/kernel/boot/boot-chez.scm#L880-L910) using `*module-loading-stack*` to track active loads and avoid infinite recursion on circular dependencies.
+  - Commented out the duplicate definition in [`prologue.scm`](TeXmacs/progs/kernel/boot/prologue.scm#L35-L53), keeping `module-load` centralized in `boot-chez.scm` so it is globally available in `(interaction-environment)` from the earliest bootstrap phase.
 - **Fail-Fast Error Reporting**:
-  - Replaced silent fallback catches with explicit reporting: [`read-file-safely`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/boot/boot-chez.scm#L839-L845) reports `ERROR: file not found: <path>` when a file cannot be found rather than silently continuing.
+  - Replaced silent fallback catches with explicit reporting: [`read-file-safely`](TeXmacs/progs/kernel/boot/boot-chez.scm#L839-L845) reports `ERROR: file not found: <path>` when a file cannot be found rather than silently continuing.
   - Flattened nested logic in `load-module-deps-table!`, `parse-module-header-deps`, and `load-module-file`.
 
 ### 2. Unified Dependency Extraction & `module-deps.scm` Manifest
 - **Manifest Generation**:
-  - `compile_kernel.scm` extracts declared `:use` and `:inherit` dependencies into a unified `*all-module-deps*` table using [`read-module-header`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/compile_kernel.scm#L1300-L1312) and [`header->deps`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/compile_kernel.scm#L1314-L1326).
+  - `compile_kernel.scm` extracts declared `:use` and `:inherit` dependencies into a unified `*all-module-deps*` table using [`read-module-header`](src/Scheme/Chez/compile_kernel.scm#L1300-L1312) and [`header->deps`](src/Scheme/Chez/compile_kernel.scm#L1314-L1326).
   - Serializes all 116 module dependency pairs to `build-texmacos/boot/module-deps.scm` at the end of compilation via `save-module-deps-manifest!`.
   - At runtime, `boot-chez.scm` loads `module-deps.scm` once into `*module-deps-table*`, providing instant $O(1)$ dependency lookups for DFS module loading.
 - **Compiler Simplification**:
@@ -665,8 +834,8 @@ We test-compiled the 20 core interactive editing modules spanning `table/`, `tex
 ### 5. Non-Hygienic `when` / `unless` Shadowing (2026-10-29) [RESOLVED]
 - **Symptom**: opening Preferences died with `TM-APPLY-ERROR variable opts is not bound` inside `decode-options` (`kernel/gui/menu-widget.scm`), `ARGS: ()`.
 - **Root cause**: `when` and `unless` existed **twice**.
-  - [`boot-chez.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/kernel/boot/boot-chez.scm) defined them as hygienic `syntax-rules`.
-  - [`abbrevs.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/kernel/boot/abbrevs.scm) defined them with `define-public-macro`, which is **non-hygienic** and shadowed the boot versions.
+  - [`boot-chez.scm`](TeXmacs/progs/kernel/boot/boot-chez.scm) defined them as hygienic `syntax-rules`.
+  - [`abbrevs.scm`](TeXmacs/progs/kernel/boot/abbrevs.scm) defined them with `define-public-macro`, which is **non-hygienic** and shadowed the boot versions.
   - The `define-public-macro` transformer receives raw datums and splices `,cond?` / `,@body` back without lexical context. `while`'s template was `(let loop () (when test body ... (loop)))`, so the loop body's identifiers were emitted as bare symbols resolving at top level instead of references to the enclosing lambda parameters.
 - **Fix**: both definitions deleted. `when` / `unless` now come from Chez's library, hygienic by construction. `while` is back to its upstream form with the nested `when`.
 - **Caveat**: Chez's `when` requires at least one body form, so `(when c)` alone is now invalid — write `(when c (void))`.
@@ -775,7 +944,7 @@ The same trick reproduces GUI-triggered bugs without a mouse by appending `(dela
   In `init-texmacs-chez.scm:30-32`, `primitive-load` was bound to `(top-level-value 'load (scheme-environment))`.
   Because Chez's 1-argument `primitive-load` evaluates files inside `(scheme-environment)`, the `.so` test-loads occurred in an environment completely isolated from `(interaction-environment)`. Consequently, even though `(kernel boot ahash-table)` had been compiled and imported into `(interaction-environment)` at line 1536, subsequent test-loads of `.so` files could not see `make-ahash-table` during single-pass clean builds.
 - **The Fix**:
-  Redefined `native-load` in [`src/Scheme/Chez/compile_kernel.scm:13-15`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/compile_kernel.scm#L13-L15) to evaluate within `(interaction-environment)`:
+  Redefined `native-load` in [`src/Scheme/Chez/compile_kernel.scm:13-15`](src/Scheme/Chez/compile_kernel.scm#L13-L15) to evaluate within `(interaction-environment)`:
   ```scheme
   (define native-load
     (lambda (path)
@@ -807,7 +976,7 @@ The same trick reproduces GUI-triggered bugs without a mouse by appending `(dela
 
 ### 4. Transpiler Function Generalization
 - **Renaming**:
-  - Renamed `transpile-kernel-module` to [`transpile-module`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/compile_kernel.scm#L1351) at its definition and call site (`transpile-and-compile-module`).
+  - Renamed `transpile-kernel-module` to [`transpile-module`](src/Scheme/Chez/compile_kernel.scm#L1351) at its definition and call site (`transpile-and-compile-module`).
   - The function is the universal transpiler across all 452 modules in the repository, making the "kernel" moniker misleading.
 
 ### 5. Architectural Roadmaps & Future Guidelines

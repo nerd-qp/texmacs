@@ -180,7 +180,9 @@ bool texmacs_getenv(string variable_name, string &variable_value) {
 bool texmacs_setenv(string variable_name, string new_value) {
     c_string _variable_name = variable_name;
     c_string _new_value = new_value;
-    return setenv(_variable_name, _new_value, 1) == 0;
+    /* MinGW has no POSIX setenv(); _putenv_s() is the CRT counterpart and is
+       symmetric with the getenv() used by texmacs_getenv() above. */
+    return _putenv_s(_variable_name, _new_value) == 0;
 }
 
 bool IsWindowsDarkMode() {

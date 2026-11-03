@@ -6,34 +6,8 @@ This document tracks identified architectural improvements and performance bottl
 
 ## 1. High Priority (Performance & Startup)
 
-### [x] Up-front Static Pre-declaration / Indirect Export of State Slots in `define-state` & `graphics-env.scm` [RESOLVED]
-- **Location**: [`TeXmacs/progs/kernel/texmacs/tm-states.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/texmacs/tm-states.scm), [`TeXmacs/progs/graphics/graphics-env.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/graphics/graphics-env.scm), [`TeXmacs/progs/kernel/boot/boot-chez.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/boot/boot-chez.scm)
-- **Status & Priority**: Complete & Verified (Exit code 0, 116 modules compiled with 0 failures).
-- **Resolution**:
-  - `state-slots` remains module-private in `graphics-env.scm` to prevent clobbering `(define (state-slots sr) ...)` in `tm-states.scm`.
-  - `state-slot-ref` and `state-len` are defined using `(define-module-macro (<name> ...) (state-slots) ...)` emitting `state-slots` without unquoting.
-  - `define-module-macro` uses `with-module-export-if-active` to automatically emit `(indirect-export <macro> state-slots)` inside the module while allowing clean top-level evaluation during AST preparation.
-  - Dependent modules (such as `graphics-group.scm`) compile and expand `state-ref` / `state-slot-ref` without `state-slots` being unbound.
-- **Context & Motivation**:
-  - Currently, `define-state` only constructs the state structure `(state-create ...)` without declaring its slot and prop variables (`graphics-action`, `choosing`, `sticky-point`, `current-x`, etc.) into the environment.
-  - In upstream GNU Guile 1.8, slot and prop variables were lazily allocated via `(if (not (defined? ...)) (define-public ...))` only when `state-load` was invoked at runtime.
-  - In reality, the list of slots and properties is **100% static** once declared in `define-state`—no slots or props are ever dynamically added or removed at runtime; only their stored values mutate during `state-save` / `state-write`.
-- **Target Solution**:
-  - Modify `define-state` macro to pre-declare and initialize all slot and prop variables directly at declaration time into `(interaction-environment)` (using `define-top-level-value`).
-  - Pre-binding these variables up-front eliminates the need for lazy binding checks (`unless (top-level-bound? ...)`) in `proplist-load` and `slotlist-load`.
-  - Ensures that when compiling modules such as `graphics-env.scm` (and downstream editing modules), all state variables are fully known and bound at compile time, eliminating undefined variable warnings and compile-time evaluation failures.
-- **Testing & Verification Scope**:
-  - Full audit of all state variables across `graphics-env.scm` and dependent modules (`graphics-drd.scm`, `graphics-object.scm`, `graphics-edit.scm`, `graphics-single.scm`).
-  - Verify that initial values and thunks are not prematurely invoked before dependent subsystems (e.g. GUI/C++ glue for `get-graphical-x`) are initialized.
-
-### [x] Stateful Macro Expansion Fix in `define-group` (`variants.scm`) [RESOLVED]
-- **Location**: [`TeXmacs/progs/utils/edit/variants.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/utils/edit/variants.scm)
-- **Status**: Complete & Verified (Exit code 0, 18/18 harness checks pass).
-- **Problem**: `define-group` checked `(ahash-ref group-table group)` at macro expansion time. Eager evaluation in Pass 1 populated `group-table`, causing Pass 2 (`compile-file`) to omit `(tm-define (group-list) ...)` in compiled `.so` files, breaking `text-edit.so`, `graphics-drd.so`, and `graphics-object.so`.
-- **Solution**: Moved `(set! group-resolve-table ...)` and `(if old ...)` directly into the generated runtime code (`begin ...`). When modules load at runtime, they check `group-table` and properly define `*-list`, `*?`, and `inside-*?` via `tm-define` / `define-top-level-value` into `(interaction-environment)`. All dependent modules compile cleanly with `(OK)`.
-
 ### [!] Warning: Eager Evaluation Side Effects & Stateful Macro Branching (`if`/`else` at Expand Time)
-- **Location**: [`src/Scheme/Chez/compile_kernel.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/compile_kernel.scm), macro definers across `TeXmacs/progs/`
+- **Location**: [`src/Scheme/Chez/compile_kernel.scm`](src/Scheme/Chez/compile_kernel.scm), macro definers across `TeXmacs/progs/`
 - **Problem**:
   Macros that inspect global tables or mutable variables to conditionally emit different code branches (e.g. `(if (ahash-ref table key) ...)` or `(if (top-level-bound? ...) ...)`) might not compile correctly under our ahead-of-time pipeline.
   Because `compile_kernel.scm` eagerly evaluates forms into `(compilation-environment)` during Pass 1 (`eval-eager-form!`), mutable tables in compiler memory are modified before Pass 2 (`compile-file`) runs macro expansion. As a result, the expander sees the post-eager-eval state (taking the `else` or "already initialized" branch) rather than the clean initial state that should exist when the compiled `.so` loads at runtime.
@@ -78,7 +52,7 @@ This document tracks identified architectural improvements and performance bottl
   - `notification/`: 1 file
 
 ### [ ] Switch from `(module ...)` to R6RS `(library ...)` Syntax
-- **Location**: [`src/Scheme/Chez/compile_kernel.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/compile_kernel.scm), [`TeXmacs/progs/kernel/boot/boot-chez.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/boot/boot-chez.scm)
+- **Location**: [`src/Scheme/Chez/compile_kernel.scm`](src/Scheme/Chez/compile_kernel.scm), [`TeXmacs/progs/kernel/boot/boot-chez.scm`](TeXmacs/progs/kernel/boot/boot-chez.scm)
 - **Motivation & Benefits**:
   - Chez Scheme's internal `(module name ...)` form uses flat symbol identifiers (e.g. `kernel:boot:srfi`).
   - Standard R6RS `(library (dir-A dir-B module-name) (export ...) (import ...) body...)` natively supports structured hierarchical path identifiers: `(kernel boot srfi)`.
@@ -130,21 +104,21 @@ This document tracks identified architectural improvements and performance bottl
       - Enables Chez Scheme's compiler to perform direct inter-module beta reduction, dead-code elimination, and procedure inlining across call sites, eliminating function call overhead for small helpers, predicates, and accessors.
 
 ### [ ] Native Chez Primitive Deduplication Guideline
-- **Location**: Module transpilers and compatibility headers ([`TeXmacs/progs/kernel/boot/srfi.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/boot/srfi.scm), [`init-texmacs-chez.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/init-texmacs-chez.scm))
+- **Location**: Module transpilers and compatibility headers ([`TeXmacs/progs/kernel/boot/srfi.scm`](TeXmacs/progs/kernel/boot/srfi.scm), [`init-texmacs-chez.scm`](TeXmacs/progs/init-texmacs-chez.scm))
 - **Rule**: Whenever porting/compiling Scheme files that define polyfill macros or compatibility emulators (e.g. SRFI-16 `case-lambda`, SRFI-9 `define-record-type`, SRFI-11 `let-values`, SRFI-39 `make-parameter`), always check whether Chez Scheme natively implements the primitive.
 - **Action**: Comment out or bypass macro emulators in favor of Chez's native optimizing compiler primitives. Native compiler forms benefit from direct code generation, fast jump-tables, and zero runtime expansion overhead.
 
 ---
 
 ### [ ] Automated Topological Boot Manifest Generation
-- **Location**: [`src/Scheme/Chez/boot_files.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/boot_files.scm), [`src/Scheme/Chez/build-boot.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/build-boot.scm)
+- **Location**: [`src/Scheme/Chez/boot_files.scm`](src/Scheme/Chez/boot_files.scm), [`src/Scheme/Chez/build-boot.scm`](src/Scheme/Chez/build-boot.scm)
 - **Problem**: When capturing boot file order by logging file load starts (`LOAD-START`), it produces DFS pre-order where orchestrators (e.g. `init-texmacs.scm`) precede the modules they depend on. Sequential compilation and boot-file evaluation require DFS post-order (dependencies evaluated before callers). Currently, `boot_files.scm` has manually adjusted ordering.
 - **Goal / Solution**: Automate manifest extraction in the build system:
   - Option A: Trace `LOAD-FINISH` hooks during a verified headless boot session so files are recorded upon return (natural post-order).
   - Option B: Static dependency analysis of `(texmacs-module ... (:use ...))` declarations and `(load ...)` calls to construct a dependency DAG and compute topological sort (`tsort`).
 
 ### [ ] Zuo-Driven Build System for Scheme AOT Compilation & Parallel Dependency DAG (`build.zuo`)
-- **Location**: [`ChezScheme/zuo`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/ChezScheme/zuo), `src/Scheme/Chez/build.zuo`, `CMakeLists.txt`, `build-texmacos.sh`
+- **Location**: `ChezScheme/zuo` (Chez source tree, outside this repository), `src/Scheme/Chez/build.zuo`, `CMakeLists.txt`, `build-texmacos.sh`
 - **Context & Motivation**:
   - Chez Scheme 9.9+ and 10.x bundle and bootstrap using `zuo` (`ChezScheme/zuo`), a tiny (~10k LOC C99 single-file executable), zero-dependency Scheme/Racket build tool designed by Matthew Flatt specifically for building Chez Scheme and Racket.
   - Currently, TeXmacs compiles Scheme libraries by launching the full C++ engine (`TeXmacs -compile-modules`) and running a single-threaded sequential interpreter loop in `compile_kernel.scm`.
@@ -157,7 +131,7 @@ This document tracks identified architectural improvements and performance bottl
   5. **Clean Build System Decoupling**: Easily hooked into CMake (`add_custom_target(scheme_boot ALL COMMAND ${CHEZ_DIR}/bin/zuo build.zuo)`), separating Scheme module compilation from C++ builds and fitting naturally into existing package manager workflows.
 
 ### [ ] Transitive Predecessor Invalidation in Incremental Compilation (`compile-texmacs.scm`)
-- **Location**: [`src/Scheme/Chez/compile-texmacs.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/src/Scheme/Chez/compile-texmacs.scm)
+- **Location**: [`src/Scheme/Chez/compile-texmacs.scm`](src/Scheme/Chez/compile-texmacs.scm)
 - **Problem & Context**:
   - The current incremental compilation check (`compile-texmacs.scm`) determines whether a module is `UP-TO-DATE` purely by comparing the timestamp of the module's target `.so` against its own upstream `.scm` source file.
   - If a predecessor module $A$ is modified (e.g. exporting fewer functions, altering macro definitions, or changing public signatures), downstream module $B$ that depends on $A$ is not automatically invalidated or recompiled if $B$'s own source timestamp has not changed.
@@ -170,7 +144,7 @@ This document tracks identified architectural improvements and performance bottl
 ## 2. Medium Priority (GUI & Responsiveness)
 
 ### [ ] Defer Secondary Tool Initialization (92 Delayed Tasks)
-- **Location**: [`TeXmacs/progs/texmacs/menus/`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/texmacs/menus/), [`src/Edit/Interface/edit_interface.cpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Edit/Interface/edit_interface.cpp)
+- **Location**: [`TeXmacs/progs/texmacs/menus/`](TeXmacs/progs/texmacs/menus/), [`src/Edit/Interface/edit_interface.cpp`](src/Edit/Interface/edit_interface.cpp)
 - **Problem**: In GUI mode, 92 delayed actions eagerly initialize sub-menus and tools (LaTeX export, BibTeX manager, Collaboration chat, Poster designer, etc.) during startup before the user even clicks them, triggering synchronous loads of 30+ large Scheme files.
 - **Solution**: Convert secondary toolbars and menus to lazy callbacks evaluated only on first display or submenu popup.
 
@@ -179,7 +153,7 @@ This document tracks identified architectural improvements and performance bottl
 ## 3. Low Priority / Maintenance
 
 ### [ ] Fast C++ Scheme Glue Dispatch: `foreign-procedure` / `tm_call_by_id`
-- **Location**: [`src/Scheme/Chez/chez_tm.cpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/chez_tm.cpp#L194-L261), [`src/Scheme/Scheme/glue.cpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Scheme/glue.cpp)
+- **Location**: [`src/Scheme/Chez/chez_tm.cpp`](src/Scheme/Chez/chez_tm.cpp#L194-L261), [`src/Scheme/Scheme/glue.cpp`](src/Scheme/Scheme/glue.cpp)
 - **Problem**: `tm-call-by-name` does string-to-symbol, argument list consing, and `std::map<string, tm_proc_entry>` red-black tree lookup on every Scheme -> C++ invocation (~1,150 glue procedures).
 - **Solution (Direct Chez `foreign-procedure`)**:
   - Register C++ glue functions with Chez Scheme via `Sforeign_symbol("tmg_proc_name", (void*) fn)`.
@@ -191,98 +165,22 @@ This document tracks identified architectural improvements and performance bottl
   - *Alternative*: Array-indexed dispatch `(tm-call-by-id <id> ...)` with an $O(1)$ C++ pointer table. *(Low priority for now)*
 
 ### [ ] Boot Image Developer Workflow: Dynamic Override & Cache Rebuilding
-- **Location**: [`TeXmacs/progs/kernel/boot/boot-chez.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/boot/boot-chez.scm), CLI / UI menus
+- **Location**: [`TeXmacs/progs/kernel/boot/boot-chez.scm`](TeXmacs/progs/kernel/boot/boot-chez.scm), CLI / UI menus
 - **Concept & Developer Loop**:
   - **Dynamic Runtime Override**: In development mode (`--dev` or `TEXMACS_DEV_MODE=1`), compare `.scm` file modification timestamps against `*texmacs-boot-timestamp*`. If a source file on disk is newer than the pre-compiled boot image, `module-provide` dynamically re-loads that single file via `tm-load-file`, hot-updating procedures in RAM without requiring a full rebuild of `texmacs.boot`.
   - **Rebuild Cache Utility**: Use the dedicated `--build-chez-boot` command-line flag to rebuild and dump `texmacs.boot` on disk.
   - **Bundled Location Reminder**: When creating production release bundles (e.g. `.app` or Linux packages), ensure `build-boot.scm` and `boot_files.scm` are bundled into `$TEXMACS_PATH` (or `$TEXMACS_PATH/src/Scheme/Chez/`) so `--build-chez-boot` works out-of-the-box without requiring a full source git checkout.
 
-
 ---
 
 ## 4. Bug Fixes & Stability
 
-### [x] Bracket Syntax Incompatibility in `latex-command-drd.scm` (`[ ]` parsed as `()` in Chez Scheme) [RESOLVED]
-- **Location**: [`TeXmacs/progs/convert/latex/latex-command-drd.scm:31`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/convert/latex/latex-command-drd.scm#L31)
-- **Problem**:
-  In upstream GNU Guile 1.8, square brackets `[` and `]` were treated as individual symbol tokens in standard syntax. In Chez Scheme (and standard R6RS/R7RS), `[` and `]` are reader syntax equivalent to parentheses `(` and `)`.
-  As a result, Chez Scheme's reader parsed `[ ]` in `(logic-group latex-command-0% ... [ ] ...)` as `()` (the empty list). This added `()` as a member of `latex-command-0%`, satisfying `(latex-tag% ())`.
-  When `tmtex.scm` executed `(map as-string (logic-apply-list '(latex-tag%)))`, it evaluated `(as-string '())` -> `(symbol->string '())`, throwing:
-  ```scheme
-  (TM-APPLY-ERROR () is not a symbol FUN: #<procedure new-val> ARGS: (#&5521720120 (table-vmode itemize-3* ...)))
-  Exception in symbol->string: () is not a symbol
-  ```
-  Furthermore, the LaTeX display math brackets `[` and `]` were missing from `latex-command-0%`.
-- **Solution**:
-  In `TeXmacs/progs/convert/latex/latex-command-drd.scm`, replaced `[ ]` with `,(string->symbol "[") ,(string->symbol "]")`, matching how other special single-character symbols (`" "`, `";"`, `","`, `":"`, `"|"`) are already written.
-
-### [x] `lazy-define` Stub Dispatch Failure When Target Module Was Pre-loaded (`Could not retrieve serialize-latex` / `texmacs->latex`) [RESOLVED]
-- **Location**: [`TeXmacs/progs/kernel/texmacs/tm-define.scm:321-340`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/kernel/texmacs/tm-define.scm#L321-L340)
-- **Problem**:
-  `lazy-define-one` generates dynamic lazy stubs for procedures defined across modules.
-  When a subsystem (such as `converter-function` in `tm-convert.scm` or an event hook) captures a procedure reference at declaration time (e.g. `(converter latex-stree latex-snippet (:function serialize-latex))` in `init-latex.scm`), the captured reference is the lazy stub procedure object.
-  If the target module (`(convert latex texout)`) is loaded before this captured stub is invoked (for example, when `texmacs->latex` in `tmtex.scm` loads `texout` during Step 2 of conversion), `(tm-define (serialize-latex x) ...)` updates `serialize-latex` in `(interaction-environment)` with the real procedure.
-  When the captured stub was later invoked in Step 3, `lazy-define-one` evaluated:
-  ```scheme
-  (let* ((old (and (defined? ',name) (top-level-value ',name (interaction-environment))))
-         (m (resolve-module ',module))
-         (r (and (defined? ',name) (top-level-value ',name (interaction-environment)))))
-    (if (or (not r) (eq? r old))
-        (texmacs-error "lazy-define" (string-append "Could not retrieve " (symbol->string name))))
-    (apply r args))
-  ```
-  Because `texout` was already loaded, `old` was ALREADY the real procedure before `resolve-module`. `resolve-module` was a no-op, so `r` was also the real procedure, making `(eq? r old)` `#t` and erroneously raising:
-  `Exception in lazy-define: Could not retrieve serialize-latex`.
-- **Solution**:
-  Updated `lazy-define-one` so the stub procedure closure captures its own identity `stub` at definition time:
-  ```scheme
-  (define-public (lazy-define-one module opts name)
-    (let* ((old (ahash-ref lazy-define-table name))
-           (new (if old (cons module old) (list module))))
-      (ahash-set! lazy-define-table name new))
-    (with name-star (string->symbol (string-append (symbol->string name) "*"))
-      `(when (not (defined? ',name))
-         (letrec ((stub #f))
-           (tm-define (,name . args)
-             ,@opts
-             (unless (module-loaded? ',module)
-               (resolve-module ',module))
-             (let ((r (and (defined? ',name) (top-level-value ',name (interaction-environment)))))
-               (if (or (not r) (eq? r stub))
-                   (texmacs-error "lazy-define"
-                                  ,(string-append "Could not retrieve "
-                                                  (symbol->string name))))
-               (apply r args)))
-           (set! stub (top-level-value ',name (interaction-environment)))))))
-  ```
-  Now:
-  1. If `module` is already loaded or is loaded by `resolve-module`, and `(top-level-value ',name)` has been updated to the real procedure, `(eq? r stub)` evaluates to `#f` and the real procedure is dispatched directly.
-  2. If `module` failed to define `name`, `r` remains `stub` (`(eq? r stub)` is `#t`), cleanly triggering `Could not retrieve` without recursion.
-  3. Recompiled all 452 modules from scratch with `-recompile-modules`. End-to-end tests for `(texmacs->generic doc "latex-snippet")` and `(convert doc "texmacs-tree" "latex-snippet")` pass with exit code 0.
-
-### [x] Missing Guile String & POSIX Procedures in Chez Scheme (`string-split`, `string-count`, `getpwnam`) [RESOLVED]
-- **Locations**: [`TeXmacs/progs/kernel/boot/boot-chez.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/kernel/boot/boot-chez.scm), [`TeXmacs/progs/server/server-authentication.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/server/server-authentication.scm), [`TeXmacs/progs/database/db-users.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/database/db-users.scm), [`plugins/jupyter/progs/init-jupyter.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/plugins/jupyter/progs/init-jupyter.scm)
-- **Problem**:
-  1. Guile/SRFI-13 builtins `string-split` and `string-count` do not exist in Chez Scheme. When `server-authentication.scm` tested crypt hashes (`password-parse-crypt-style`), `gpg-widgets.scm` counted passphrase character classes, or `jupyter` found kernels (`jupyter-find-kernels`), runtime exceptions occurred (`variable string-count is not bound`, `variable string-split is not bound`).
-  2. Guile builtin POSIX user database procedure `getpwnam` does not exist in Chez Scheme. Calling `safe-getpwnam` in `db-users.scm` logged `Error in getpwnam: (#t #f variable ~:s is not bound (getpwnam) ())`.
-- **Solution**:
-  1. Added implementations of `string-split` (supporting char, predicate, and char-set delimiters) and `string-count` (supporting char, predicate, and char-set counters with optional bounds) to `boot-chez.scm`.
-  2. Added POSIX user database compatibility procedures (`getpwnam`, `getpwuid`, `passwd:name`, `passwd:gecos`, `gecos:name`) backed by `USER`/`HOME` environment variables to `boot-chez.scm`.
-
-### [x] Reader Hex Escape Syntax Incompatibility in `plugins/cocoa5/progs/init-cocoa5.scm` [RESOLVED]
-- **Location**: [`plugins/cocoa5/progs/init-cocoa5.scm:14-18`](file:///Users/king-kong/Documents/GitHub/texmacs/plugins/cocoa5/progs/init-cocoa5.scm#L14-L18)
-- **Problem**:
-  In `init-cocoa5.scm`, line 16 contained `"cocoa5 --prompt '\x05\x02verbatim:'"`. In Chez Scheme (R6RS), `\x` hex string escapes require a terminating semicolon `\x<hex-scalar>;`. The unterminated sequence `\x05\x02` caused Chez Scheme's reader to fail during plugin initialization with:
-  `Exception in read: invalid character \ in string hex escape at line 16, char 25`.
-- **Solution**:
-  Constructed the prompt string via portable character codes `(string (integer->char 5) (integer->char 2))` and `string-append`, which eliminates non-standard reader escape dependencies across Guile 1.8, 2.0, 3.0, and Chez Scheme.
-
 ### [ ] Top-Level Definitions Inside Conditional Expressions in Plugin Inits (`invalid context for definition`)
 - **Locations**:
-  - [`plugins/coq/progs/init-coq.scm:24-26`](file:///Users/king-kong/Documents/GitHub/texmacs/plugins/coq/progs/init-coq.scm#L24-L26)
-  - [`plugins/giac/progs/init-giac.scm:30-36`](file:///Users/king-kong/Documents/GitHub/texmacs/plugins/giac/progs/init-giac.scm#L30-L36)
-  - [`plugins/mupad/progs/init-mupad.scm:28-30`](file:///Users/king-kong/Documents/GitHub/texmacs/plugins/mupad/progs/init-mupad.scm#L28-L30)
-  - [`plugins/reduce/progs/init-reduce.scm:29`](file:///Users/king-kong/Documents/GitHub/texmacs/plugins/reduce/progs/init-reduce.scm#L29)
+  - [`plugins/coq/progs/init-coq.scm:24-26`](plugins/coq/progs/init-coq.scm#L24-L26)
+  - [`plugins/giac/progs/init-giac.scm:30-36`](plugins/giac/progs/init-giac.scm#L30-L36)
+  - [`plugins/mupad/progs/init-mupad.scm:28-30`](plugins/mupad/progs/init-mupad.scm#L28-L30)
+  - [`plugins/reduce/progs/init-reduce.scm:29`](plugins/reduce/progs/init-reduce.scm#L29)
 - **Problem**:
   In GNU Guile 1.8, top-level code was evaluated dynamically by an interpreter. When evaluating `(when (supports-<plugin>?) ...)`, if the plugin CLI tool was not installed on the host system, the test returned `#f` and Guile skipped the body without evaluating or inspecting internal definitions.
   In Chez Scheme, `(load "file.scm")` is not an interpreter; it compiles each top-level form to native machine code ahead of time via `compile` / `sc-expand`. `when` expands into `(if test (begin ...))`. In standard R6RS and Chez Scheme, `if` is an expression form, and definitions (`define`, `texmacs-modes`) are strictly forbidden inside an expression context. Consequently, even when the plugin is not installed and the condition would evaluate to `#f`, Chez Scheme's compiler fails during the compilation/expansion phase with:
@@ -300,104 +198,8 @@ This document tracks identified architectural improvements and performance bottl
   1. Hoist declarative definitions (`define`, `texmacs-modes`) outside `(when ...)` to top level in the plugin files, or
   2. Provide a top-level unrolling loader or dynamic macro for uncompiled `.scm` plugin files.
 
-### [x] App Bundle Wrapper & Binary Layout for `process_running(pid)` (`packages/macos/`) [RESOLVED]
-- **Locations**: [`packages/macos/make-bundle.sh:99-103`](file:///Users/king-kong/Documents/GitHub/texmacs/packages/macos/make-bundle.sh#L99-L103), [`packages/macos/TeXmacs`](file:///Users/king-kong/Documents/GitHub/texmacs/packages/macos/TeXmacs)
-- **Problem**:
-  In `clean_temp_dirs()` ([`init_texmacs.cpp`](file:///Users/king-kong/Documents/GitHub/texmacs/src/System/Boot/init_texmacs.cpp#L148-L156)), stale temporary directories are detected using `process_running(pid)`, which checks `occurs("texmacs", ret)`.
-  When `make-bundle.sh` copied the compiled binary directly as `Contents/MacOS/TeXmacs`, `ps -p <pid>` output only capitalized `.../TeXmacs`, causing `occurs("texmacs", ret)` to return `#f` and prematurely delete active temporary directories.
-- **Solution**:
-  `init_texmacs.cpp` remains **100% original and untouched**.
-  Restored the official macOS bundle packaging layout in `make-bundle.sh`:
-  1. The compiled executable is packaged as `Contents/MacOS/texmacs.bin`.
-  2. The bundle entry point `Contents/MacOS/TeXmacs` is the official wrapper script (`packages/macos/TeXmacs`), which sets environment paths and calls `exec "$LAUNCH_DIR/texmacs.bin" "$@"`.
-  Running under `texmacs.bin` satisfies `occurs("texmacs", ret)` natively.
-
-### [x] Consolidation of Guile Compatibility Primitives into `chez-compat.scm` [RESOLVED]
-- **Locations**:
-  - New module: [`TeXmacs/progs/kernel/boot/chez-compat.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/kernel/boot/chez-compat.scm) (with alias [`TeXmacs/progs/kernel/chez-compat.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/kernel/chez-compat.scm))
-  - Cleaned boot file: [`TeXmacs/progs/kernel/boot/boot-chez.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/kernel/boot/boot-chez.scm)
-  - Cleaned debug module: [`TeXmacs/progs/kernel/boot/debug.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/kernel/boot/debug.scm)
-- **Problem**:
-  Dozens of Guile compatibility procedures (numeric, list, alist, I/O, POSIX, and string operations) were arbitrarily dumped into `boot-chez.scm`, duplicated across `debug.scm` and `boot-chez.scm`, or referenced across modules without clean encapsulation.
-- **Solution**:
-  Extracted all self-contained Guile compatibility primitives into the dedicated kernel module `(kernel boot chez-compat)`:
-  - **Numeric & List**: `1+`, `1-`, `first`, `second`, `third`, `fourth`, `delq!`, `delv!`, `delete!`, `delq`, `acons`, `copy-tree`, `sort`, `sort!`
-  - **Association Lists**: `assoc-ref`, `assoc-set!`, `assoc-remove!`, `assq-ref`, `assq-set!`, `assq-remove!`
-  - **I/O & Introspection**: `display*`, `write*`, `read-line`, `force-output`, `make-soft-port`, `procedure-name`, `procedure-documentation`
-  - **POSIX Compatibility**: `getpid`, `current-time`, `getpwnam`, `getpwuid`, `passwd:name`, `passwd:gecos`, `gecos:name`, `select`
-  - **Strings & Character Sets**: `char-in-set?`, `string-index`, `string-rindex`, `string-split`, `string-count`
-  - Removed duplicate `==`/`!=` from `boot-chez.scm` (canonically provided by `abbrevs.scm`).
-  - Removed duplicate `check-arg-type`, `check-arg-number`, `check-arg-range` from `boot-chez.scm` (canonically provided by `debug.scm`).
-  - Eliminated over 150 lines of duplicate ad-hoc shims from `boot-chez.scm`.
-
-### [x] Clean Module Path Resolution & Development vs Standalone Execution (`boot-chez.scm`) [RESOLVED]
-- **Location**: [`TeXmacs/progs/kernel/boot/boot-chez.scm:863-915`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/kernel/boot/boot-chez.scm#L863-L915)
-- **Problem**:
-  `module-so-file` and `module-deps-file` contained hardcoded, machine-specific relative path candidates (such as `build-texmacos/boot/`, `../build-texmacos/boot/`, `../../build-texmacos/boot/`, and `texmacs/build-texmacos/boot/`).
-- **Solution**:
-  Cleaned up `candidates` to follow standard TeXmacs resolution without hardcoded directory names:
-  1. `(getenv "TEXMACS_BOOT_PATH")` (explicit boot path override)
-  2. `(string-append (getenv "TEXMACS_PATH") "/boot/...")` (installed/packaged bundle layout)
-  3. `"boot/..."` (working directory fallback)
-- **Usage Modes**:
-  1. **Running from build tree directly (uninstalled/unbundled)**:
-     Because the source tree (`TeXmacs/`) holds the Scheme source code while CMake places compiled `.so` modules and `module-deps.scm` in `build-texmacos/boot/`, supply `TEXMACS_BOOT_PATH`:
-     ```bash
-     SCHEMEHEAPDIRS="/opt/homebrew/opt/chezscheme/lib/csv10.4.1/tarm64osx" \
-     TEXMACS_PATH="$(pwd)/TeXmacs" \
-     TEXMACS_BOOT_PATH="$(pwd)/build-texmacos/boot" \
-     build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs
-     ```
-  2. **Running the packaged standalone bundle**:
-     The packaged bundle places both `progs/` and `boot/` together under `$APP/Contents/Resources/share/TeXmacs/`. TeXmacs automatically derives `TEXMACS_PATH` and finds `boot/` without requiring any environment variables:
-     ```bash
-     ./dist/TeXmacs-chez-2.1.5/TeXmacs-chez.app/Contents/MacOS/TeXmacs
-     ```
-
-### [x] Resilient Guard for Corrupted/Truncated `plugin_cache.scm` in `tm-plugins.scm` [RESOLVED]
-- **Location**: [`TeXmacs/progs/kernel/texmacs/tm-plugins.scm:388-396`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/kernel/texmacs/tm-plugins.scm#L388-L396)
-- **Problem**:
-  If `plugin_cache.scm` was truncated or corrupted (e.g. following an aborted process or uncompleted write), `load-object` caught the read error and returned `'()`. `(with (p t1 t2) cached ...)` expanded to `(apply (lambda (p t1 t2) ...) '())`, crashing with `Exception: incorrect number of arguments 0 to #<procedure>`.
-- **Solution**:
-  Added `(when (and (list? cached) (== (length cached) 3)) ...)` guard around cache unpack. Corrupted caches are safely ignored and freshly reconfigured.
-
-### [x] Missing Guile String Predicate `string-null?` in Chez Compatibility Layer [RESOLVED]
-- **Location**: [`TeXmacs/progs/kernel/boot/chez-compat.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/kernel/boot/chez-compat.scm#L162), [`TeXmacs/progs/convert/tools/tmlength.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/convert/tools/tmlength.scm#L101-L103)
-- **Problem**:
-  During LaTeX table export (invoking `old-tmtable.scm` -> `tmlength.scm`), evaluating `(string-null? unit-str)` failed with:
-  ```scheme
-  (TM-APPLY-ERROR variable string-null? is not bound FUN: #<procedure new-val> ARGS: ...)
-  Exception: variable string-null? is not bound
-  ```
-  GNU Guile 1.8 provides `string-null?` as a primitive builtin. Standard Chez Scheme does not provide `string-null?` out of the box.
-- **Solution**:
-  Exported `(define-public (string-null? s) (string=? s ""))` from `(kernel boot chez-compat)`.
-
-### [x] Reader Symbol Escape Incompatibility for Vertical Bar `|` in `tmtex.scm` (`latex-special-symbols%`) [RESOLVED]
-- **Location**: [`TeXmacs/progs/convert/latex/tmtex.scm:448`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/convert/latex/tmtex.scm#L448)
-- **Problem**:
-  In `tmtex.scm`, line 448 contained:
-  ```scheme
-  (logic-table latex-special-symbols%
-    ...
-    ("||"          ((string->symbol "|")))
-    ...)
-  ```
-  Because `logic-table` expands to `(logic-rules ,@(logic-table-rules name l))` using quasiquote, without an unquote `,`, `(string->symbol "|")` was not evaluated; Chez Scheme's module transpiler emitted literal `("||" ((unquote (string->symbol "|"))))`.
-  At export time, when mathematical formulas containing `<||>` (such as `KL(q||p)`) were exported to LaTeX, `texout.scm` called `(symbol->string what)` on this nested list, throwing:
-  ```scheme
-  (TM-APPLY-ERROR (string->symbol "|") is not a symbol FUN: #<procedure new-val> ...)
-  Exception in symbol->string: (string->symbol "|") is not a symbol
-  ```
-- **Solution**:
-  Replaced with the standard R6RS hex-escaped symbol literal `\x7c;`:
-  ```scheme
-  ("||"            (\x7c;)) ;; \x7c; is | in hex code
-  ```
-  Chez Scheme's reader natively parses `\x7c;` as the single-character symbol `'|` at read time, completely eliminating macro-expansion/unquote ambiguity. Recompiled modules (`tmtex.so`) and verified LaTeX export of mathematical expressions with `\|` succeed.
-
 ### [ ] Missing Conversion Route for `(convert doc "texmacs-tree" "latex-document")` in `tm-convert.scm`
-- **Location**: [`TeXmacs/progs/kernel/texmacs/tm-convert.scm:272-274`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/kernel/texmacs/tm-convert.scm#L272-L274), [`TeXmacs/progs/convert/latex/init-latex.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/convert/latex/init-latex.scm)
+- **Location**: [`TeXmacs/progs/kernel/texmacs/tm-convert.scm:272-274`](TeXmacs/progs/kernel/texmacs/tm-convert.scm#L272-L274), [`TeXmacs/progs/convert/latex/init-latex.scm`](TeXmacs/progs/convert/latex/init-latex.scm)
 - **Problem**:
   Direct serialization via `(serialize-latex (texmacs->latex doc '()))` works cleanly. However, high-level export via `(texmacs->generic doc "latex-document")` or `buffer-export` returns `"Error: bad format or data"`.
   This indicates that the dynamic converter table in `tm-convert.scm` does not have `latex-document` registered as a target format from `texmacs-tree` until `(convert latex init-latex)` or similar converter declarations are executed.
@@ -405,7 +207,7 @@ This document tracks identified architectural improvements and performance bottl
   Investigate lazy registration / dynamic loading of `init-latex.scm` converters when `texmacs->generic` or `buffer-export` is invoked.
 
 ### [ ] Separate Compilation Environment from Runtime Initialization
-- **Location**: [`src/Texmacs/Server/tm_server.cpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Texmacs/Server/tm_server.cpp), [`src/Scheme/Chez/chez_tm.cpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/chez_tm.cpp), [`TeXmacs/progs/init-texmacs-chez.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/init-texmacs-chez.scm), [`src/Scheme/Chez/compile_kernel.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/compile_kernel.scm)
+- **Location**: [`src/Texmacs/Server/tm_server.cpp`](src/Texmacs/Server/tm_server.cpp), [`src/Scheme/Chez/chez_tm.cpp`](src/Scheme/Chez/chez_tm.cpp), [`TeXmacs/progs/init-texmacs-chez.scm`](TeXmacs/progs/init-texmacs-chez.scm), [`src/Scheme/Chez/compile_kernel.scm`](src/Scheme/Chez/compile_kernel.scm)
 - **Problem**: Currently, both compilation (`-compile-modules`) and runtime startup load `init-texmacs-chez.scm`. `init-texmacs-chez.scm` relies on conditional runtime checks (`texmacs-chez-compiling?`) to decide whether to load `.so` files, redefine `define-public` / macros for runtime REPL evaluation, or skip them. This coupling introduces fragility, phase confusion, and order-of-initialization hazards between batch compiling and runtime execution.
 - **Solution**: Decouple the two workflows cleanly into dedicated entry points:
   - **`init-texmacs-compile.scm`**: A dedicated entry point for `-compile-modules` and batch AOT compilation. Configures `compilation-environment`, keyword tokens, module transpilation rules, and macro-expansion helpers without any runtime `.so` loading or dynamic REPL shims.
@@ -413,28 +215,28 @@ This document tracks identified architectural improvements and performance bottl
   - In C++ (`tm_server.cpp` / `chez_tm.cpp`), select the appropriate init script based on `compile_modules_mode` before initializing Scheme.
 
 ### [ ] Migrate Macro Expand-Time Helpers from `(eval ... (compilation-environment))` to Phased `meta define` Modules (UNREALISTIC / DEFERRED)
-- **Location**: [`TeXmacs/progs/kernel/boot/boot-chez.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/boot/boot-chez.scm), [`TeXmacs/progs/kernel/texmacs/tm-convert.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/texmacs/tm-convert.scm), macro definers throughout `TeXmacs/progs/`
+- **Location**: [`TeXmacs/progs/kernel/boot/boot-chez.scm`](TeXmacs/progs/kernel/boot/boot-chez.scm), [`TeXmacs/progs/kernel/texmacs/tm-convert.scm`](TeXmacs/progs/kernel/texmacs/tm-convert.scm), macro definers throughout `TeXmacs/progs/`
 - **Status & Note**: Marked as unrealistic / too much work. Migrating hundreds of dynamic legacy Guile macro helpers across the codebase to strictly phased `meta define` libraries would require sweeping structural rewrites of upstream TeXmacs code with high regression risk. The existing dynamic compilation-environment evaluation bridge works robustly and will be retained.
 - **Problem**: Currently, macro definers (`define-public-macro` and `define-module-macro`) use `(eval `(apply ...) (compilation-environment))` as a bridge to evaluate legacy Guile macros and their helper procedures (e.g. `converter-sub`) without triggering Chez Scheme's static Phase 0 / Phase 1 lexical cross-phase checks.
 - **Solution**: Refactor expand-time macro helpers out of runtime modules into dedicated macro-helper modules, or use `meta define` / `(meta import ...)` so Chez Scheme can compile macro transformers statically as native Phase 1 syntax transformers without relying on dynamic `eval` against `(compilation-environment)`.
 
 ### [ ] Exit Issue After Editing Initial Buffer
-- **Location**: Buffer exit handler, `quit-TeXmacs`, modified buffer prompt ([`TeXmacs/progs/texmacs/texmacs/tm-files.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/texmacs/texmacs/tm-files.scm), [`src/Texmacs/Texmacs/texmacs.cpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Texmacs/Texmacs/texmacs.cpp))
+- **Location**: Buffer exit handler, `quit-TeXmacs`, modified buffer prompt ([`TeXmacs/progs/texmacs/texmacs/tm-files.scm`](TeXmacs/progs/texmacs/texmacs/tm-files.scm), [`src/Texmacs/Texmacs/texmacs.cpp`](src/Texmacs/Texmacs/texmacs.cpp))
 - **Problem**: TeXmacs is having issues exiting cleanly after editing the initial buffer (e.g. unsaved changes dialog or exit hook hanging).
 - **Solution**: Inspect the buffer discard / save verification workflow during exit on the Chez backend.
 
 ### [ ] Dynamic Menu Evaluation: Guard `#f` in `make-menu-items` (`(TM-APPLY-ERROR #f is not a pair)`)
-- **Location**: [`TeXmacs/progs/kernel/gui/menu-widget.scm:811-825`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/gui/menu-widget.scm#L811-L825), [`src/Scheme/Chez/chez_tm.cpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/chez_tm.cpp)
+- **Location**: [`TeXmacs/progs/kernel/gui/menu-widget.scm:811-825`](TeXmacs/progs/kernel/gui/menu-widget.scm#L811-L825), [`src/Scheme/Chez/chez_tm.cpp`](src/Scheme/Chez/chez_tm.cpp)
 - **Problem**: When a dynamic menu thunk returns `#f` (e.g. inactive mode or delayed plugin menu not yet initialized), `make-menu-items` falls through `(if (pair? p) ...)` to `(make-menu-bad-format p style)`. Calling `car`/`cdr` on `#f` triggers Chez Scheme's `~s is not a pair (#f)` which is trapped in `tm-apply` as `(TM-APPLY-ERROR (#t #f "~s is not a pair" (#f) ()))`.
 - **Solution**: Guard against non-pair/`#f` values in `make-menu-items` to treat them as an empty item list `'()` rather than logging `menu has bad format (make-menu)` or throwing in Scheme.
 
 ### [ ] Refactor `define-table` and `define-collection` (Post Pure-Expression `tm-define` Simplification)
-- **Location**: [`src/Scheme/Chez/compile_kernel.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/compile_kernel.scm), [`TeXmacs/progs/kernel/boot/ahash-table.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/boot/ahash-table.scm)
+- **Location**: [`src/Scheme/Chez/compile_kernel.scm`](src/Scheme/Chez/compile_kernel.scm), [`TeXmacs/progs/kernel/boot/ahash-table.scm`](TeXmacs/progs/kernel/boot/ahash-table.scm)
 - **Status & Note**: Currently, `define-table` and `define-collection` are desugared directly in `prepare-forms` to avoid Chez Scheme multiple-definition errors during forward declarations (`(define-table style-synopsis)`) and ensure tables are exported to `texmacs-user-kernel`.
 - **Target Solution**: With `tm-define` now refactored to be purely an expression installing top-level values directly without internal local definitions, complex definition-hoisting via `define-public-macro-trace` is no longer required. Migrate `define-table` and `define-collection` to standard macro definitions emitting top-level table registrations or definitions and remove ad-hoc compiler desugaring.
 
 ### [ ] Quick Hack: Implicit Cross-Module Macro Propagation via `(interaction-environment)` for `tm-define-macro`
-- **Location**: [`TeXmacs/progs/kernel/texmacs/tm-define.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/texmacs/tm-define.scm#L284-L295), [`src/Scheme/Chez/compile_kernel.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/compile_kernel.scm#L933-L945)
+- **Location**: [`TeXmacs/progs/kernel/texmacs/tm-define.scm`](TeXmacs/progs/kernel/texmacs/tm-define.scm#L284-L295), [`src/Scheme/Chez/compile_kernel.scm`](src/Scheme/Chez/compile_kernel.scm#L933-L945)
 - **Problem**: In upstream GNU Guile TeXmacs, every module implicitly inherited `texmacs-user` via `(module-use! (current-module) texmacs-user)`. Macros defined via `tm-define-macro` anywhere in the codebase (e.g. `smart-table` in `utils/library/smart-table.scm`) were automatically available as global syntax in downstream modules without explicit `(:use ...)` declarations (such as `convert/latex/latex-define.scm`). Under Chez Scheme's hermetic R6RS AOT module model, modules only import explicit syntax dependencies declared in `:use` / `:inherit`.
 - **Current Quick Hack**:
   - `tm-define-macro` emits `(define-top-level-syntax ',var ... c-env)`.
@@ -450,7 +252,7 @@ This document tracks identified architectural improvements and performance bottl
   - Or formalizing an aggregated syntax library (e.g. `(texmacs macros)`) that encapsulates all public `tm-define-macro` syntax transformers without mutating `(interaction-environment)`.
 
 ### [ ] First-Class Generic Procedure Architecture for `tm-define` & Expansion Isolation
-- **Location**: [`TeXmacs/progs/kernel/texmacs/tm-define.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/texmacs/tm-define.scm), [`TeXmacs/progs/kernel/boot/boot-chez.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/boot/boot-chez.scm)
+- **Location**: [`TeXmacs/progs/kernel/texmacs/tm-define.scm`](TeXmacs/progs/kernel/texmacs/tm-define.scm), [`TeXmacs/progs/kernel/boot/boot-chez.scm`](TeXmacs/progs/kernel/boot/boot-chez.scm)
 - **Concept & Future Architecture**:
   - **Implicit Generic Object Registration**: Rather than relying on a mutable compile-time table (`tm-defined-table`) to decide between `(define-public ...)` and `(set! ...)`, `tm-define` should treat overloaded routines as first-class generic procedure objects:
     1. The first `tm-define` for a symbol implicitly initializes, registers, and binds an overloaded dispatcher object.
@@ -499,7 +301,7 @@ This document tracks identified architectural improvements and performance bottl
 
 ---
 
-## 2. Compilation Pipeline Expansion & Residual Failure Tracking
+## 5. Compilation Pipeline Expansion & Residual Failure Tracking
 
 ### Current Census (Updated 2026-10-20)
 - **Total Scheme Files in TeXmacs**: 457
@@ -544,10 +346,9 @@ This document tracks identified architectural improvements and performance bottl
 - **Permanent Fix**: See Item 4.
 
 #### [ ] Item 4: Proper Lexical Closure Capture for `define-public-macro`
-- **Location**: [`TeXmacs/progs/kernel/boot/boot-chez.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/boot/boot-chez.scm#L595)
+- **Location**: [`TeXmacs/progs/kernel/boot/boot-chez.scm`](TeXmacs/progs/kernel/boot/boot-chez.scm#L595)
 - **Problem**: `define-public-macro` currently expands defmacro transformers by calling `(eval `(apply (lambda ,formals ,@body) ...) (compilation-environment))`. This executes the macro body in the *calling module's* compilation environment rather than the *definition module's* lexical environment. Any standard Scheme primitive called inside a macro body (e.g. `pair?`, `list?`, `symbol?`, `string?`) can be inadvertently shadowed or mutated if the downstream module defines a helper with the same name (as demonstrated by `(define (pair? t) ...)` in `scmcoqml.scm`).
 - **Goal**: Implement a proper closure-capturing or syntax-case compiler for `define-public-macro` that evaluates macro procedures in their definition-site environment or binds primitives hygienically.
-
 
 #### [ ] Item 5: Missing Guile Primitives in XML/Converter Subsystems
 - **Affected Modules (3)**:
@@ -559,7 +360,7 @@ This document tracks identified architectural improvements and performance bottl
 - **Ready Fix**: Define `delq!`, `delv!`, and `delete!` as aliases to Chez Scheme's `remq!` / `remove!` in `init-texmacs-chez.scm` and `boot-chez.scm`.
 
 #### [ ] Item 6: Module Namespace Pollution & Missing Compile-Time Isolation
-- **Location**: [`src/Scheme/Chez/compile_kernel.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/compile_kernel.scm), [`TeXmacs/progs/kernel/boot/boot-chez.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/boot/boot-chez.scm)
+- **Location**: [`src/Scheme/Chez/compile_kernel.scm`](src/Scheme/Chez/compile_kernel.scm), [`TeXmacs/progs/kernel/boot/boot-chez.scm`](TeXmacs/progs/kernel/boot/boot-chez.scm)
 - **Problem**: In Chez Scheme, every transpiled module file currently emits a trailing `(import mod-sym)` into `(interaction-environment)`. Consequently, all functions (not just `tm-define` extension points, but also internal `define-public` helpers) leak into the global environment.
 - **Consequences**:
   1. *Hidden undeclared dependencies*: If Module C uses helper `h` from Module B without declaring `(:use (path B))`, and B was compiled earlier, C compiles and runs successfully by accident. If C is ever compiled in isolation or loaded in a different order, it crashes at runtime.
@@ -588,7 +389,7 @@ This document tracks identified architectural improvements and performance bottl
 - **Solution**: Chez Scheme requires imported shadowed identifiers to be excluded via `(import (for (except <module> <sym> ...) run expand))`. Tracking all local definitions (both public and private) ensures `compile_kernel.scm` automatically emits `except` clauses for any locally shadowed symbols.
 
 #### [ ] Item 10: Unify Macro Evaluation Environments (`interaction-environment` vs `compilation-environment`)
-- **Location**: [`TeXmacs/progs/kernel/boot/boot-chez.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/boot/boot-chez.scm#L322-L344), [`TeXmacs/progs/kernel/texmacs/tm-define.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/texmacs/tm-define.scm#L246-L253), [`src/Scheme/Chez/compile_kernel.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/compile_kernel.scm)
+- **Location**: [`TeXmacs/progs/kernel/boot/boot-chez.scm`](TeXmacs/progs/kernel/boot/boot-chez.scm#L322-L344), [`TeXmacs/progs/kernel/texmacs/tm-define.scm`](TeXmacs/progs/kernel/texmacs/tm-define.scm#L246-L253), [`src/Scheme/Chez/compile_kernel.scm`](src/Scheme/Chez/compile_kernel.scm)
 - **Background & Issue**:
   - In Chez Scheme, `define-top-level-value` without an explicit environment argument defaults to `(interaction-environment)`, completely bypassing `(compilation-environment)`.
   - Conversely, macro transformers defined via `define-macro`, `define-public-macro`, and `define-macro-trace` execute their expansion logic inside `(compilation-environment)` via `(eval \`(apply (lambda formals body ...) ...) (compilation-environment))`.
@@ -601,7 +402,7 @@ This document tracks identified architectural improvements and performance bottl
     - Confirm all stateful macro operations (`define-top-level-value`, `top-level-bound?`, `top-level-value`) naturally align with the active parameterized `(interaction-environment)` without requiring explicit environment arguments.
 
 #### [ ] Item 11: Phasing Out Traced Macro Expansion (`define-macro-trace` / `public-trace`)
-- **Location**: [`src/Scheme/Chez/compile_kernel.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/compile_kernel.scm), [`TeXmacs/progs/kernel/boot/ahash-table.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/boot/ahash-table.scm), [`TeXmacs/progs/kernel/boot/boot-chez.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/boot/boot-chez.scm)
+- **Location**: [`src/Scheme/Chez/compile_kernel.scm`](src/Scheme/Chez/compile_kernel.scm), [`TeXmacs/progs/kernel/boot/ahash-table.scm`](TeXmacs/progs/kernel/boot/ahash-table.scm), [`TeXmacs/progs/kernel/boot/boot-chez.scm`](TeXmacs/progs/kernel/boot/boot-chez.scm)
 - **Status & Shift in Direction**:
   - Previously, `define-macro-trace`, `define-public-macro-trace`, and `public-trace` were introduced because `tm-define` expansions interleaved definitions (`define-public`) with runtime expressions (`ahash-set!`), requiring iterative AST macro tracing to peel them apart for R6RS `(module Name () defs ... exprs ...)`.
   - Since `tm-define` has now been refactored into a **pure expression** using `define-top-level-value` directly without any internal definitions, forms producing `tm-define` calls no longer contaminate definition contexts.
@@ -612,7 +413,7 @@ This document tracks identified architectural improvements and performance bottl
     3. Remove `define-macro-trace` and `define-public-macro-trace` apparatus once verified, simplifying the compilation pipeline.
 
 #### [ ] Item 12: Idle TeXmacs High CPU Consumption & Runtime GUI Callback Environment Alignment
-- **Location**: [`src/Plugins/Qt/qt_gui.cpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Plugins/Qt/qt_gui.cpp#L989-L1015), [`src/Texmacs/Server/tm_server.cpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Texmacs/Server/tm_server.cpp#L220-L245), [`TeXmacs/progs/init-texmacs-chez.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/init-texmacs-chez.scm)
+- **Location**: [`src/Plugins/Qt/qt_gui.cpp`](src/Plugins/Qt/qt_gui.cpp#L989-L1015), [`src/Texmacs/Server/tm_server.cpp`](src/Texmacs/Server/tm_server.cpp#L220-L245), [`TeXmacs/progs/init-texmacs-chez.scm`](TeXmacs/progs/init-texmacs-chez.scm)
 - **Problem**: When idle, the TeXmacs GUI consumes high CPU resources (~100% core utilization).
 - **Root Causes**:
   1. **Exception Feedback Loop on `0 ms` QTimer**: `qt_gui_rep::update()` runs at an idle interval of 15 ms, but flags `delay = 0` whenever `needing_update` is set. Because GUI callbacks (`notify-cursor-moved`, `lazy-initialize-force`, `text-icons`, `texmacs-focus-icons`) fail with `variable <var> is not bound` in `(interaction-environment)`, `apply_changes()` and `update_menus()` repeatedly log errors and trigger `notify_change(THE_CURSOR)`, keeping `needing_update = true` permanently active in a zero-sleep busy loop.
@@ -623,7 +424,7 @@ This document tracks identified architectural improvements and performance bottl
   3. If idle polling overhead remains high, evaluate enabling or modernizing the `QT_CPU_FIX` adaptive sleep mechanism in `qt_gui.cpp`.
 
 #### [ ] Item 13: Replace `...` Identifier in `abbrevs.scm` with `range-inclusive` or `...*`
-- **Location**: [`TeXmacs/progs/kernel/boot/abbrevs.scm:166`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/boot/abbrevs.scm#L166), and 8 call sites across `progs/`
+- **Location**: [`TeXmacs/progs/kernel/boot/abbrevs.scm:166`](TeXmacs/progs/kernel/boot/abbrevs.scm#L166), and 8 call sites across `progs/`
 - **Problem**: `abbrevs.scm` defines an inclusive integer range procedure named `...` (`(define-public (... start end . delta) ...)`). In Chez Scheme, `...` is the core syntax ellipsis keyword in the macro expander (`syntax-case` / `syntax-rules`). Exporting `...` as a procedure binds it at the top level, causing Chez's hygienic macro expander (`free-identifier=?`) to treat `...` as a normal pattern variable rather than the ellipsis keyword, breaking any macro containing multiple ellipses with `duplicate pattern variable ...`.
 - **Call Sites (8 total)**:
   1. `dynamic/animate-menu.scm:322`
@@ -637,28 +438,28 @@ This document tracks identified architectural improvements and performance bottl
 - **Action Plan**: Rename `...` in `abbrevs.scm` (and its 8 callers) to a non-conflicting procedure name (e.g. `range-inclusive` or `..*`) to eliminate the ellipsis identifier collision in Chez Scheme.
 
 #### [ ] Item 14: Legacy 4-Operand `if` Syntax in `client-widgets.scm`
-- **Location**: [`TeXmacs/progs/client/client-widgets.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/client/client-widgets.scm)
+- **Location**: [`TeXmacs/progs/client/client-widgets.scm`](TeXmacs/progs/client/client-widgets.scm)
 - **Affected Module (1)**: `client/client-widgets.scm`
 - **Error**: `Exception: invalid syntax (if (== ret "done") (client-notify-account ...) (client-login-home ...) (client-open-error ...))`
 - **Root Cause**: Upstream GNU Guile 1.8 permitted `if` forms with multiple expressions in the `else` branch (behaving like an implicit `begin`). Chez Scheme strictly enforces R6RS syntax: `(if <test> <consequent> [<alternate>])` taking at most 3 operands.
 - **Action Plan**: Wrap multiple `else` expressions in `(begin ...)` or add a 4-operand `if` desugaring rule in `compile_kernel.scm`'s `prepare-forms`.
 
 #### [ ] Item 15: Empty `(begin)` Form in `wallet-menu.scm`
-- **Location**: [`TeXmacs/progs/security/wallet/wallet-menu.scm:15`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/security/wallet/wallet-menu.scm#L15)
+- **Location**: [`TeXmacs/progs/security/wallet/wallet-menu.scm:15`](TeXmacs/progs/security/wallet/wallet-menu.scm#L15)
 - **Affected Module (1)**: `security/wallet/wallet-menu.scm`
 - **Error**: `Exception: invalid syntax (begin)`
 - **Root Cause**: A conditional menu macro expands into an empty `(begin)`. Chez Scheme's R6RS specification requires `(begin form1 form ...)`, requiring at least one subform.
 - **Action Plan**: Desugar empty `(begin)` into `(noop)` or `(void)` during transpilation in `prepare-forms`, or guard the macro expansion.
 
 #### [ ] Item 16: Premature Definition in Expression Context in `cas-out.scm`
-- **Location**: [`TeXmacs/progs/utils/cas/cas-out.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/utils/cas/cas-out.scm)
+- **Location**: [`TeXmacs/progs/utils/cas/cas-out.scm`](TeXmacs/progs/utils/cas/cas-out.scm)
 - **Affected Module (1)**: `utils/cas/cas-out.scm`
 - **Error**: `Exception: invalid context for definition (define cas-assign-op-table (list->ahash-set (cas-collect-members "arithmetic-assign")))`
 - **Root Cause**: In `cas-out.scm`, side-effecting initialization expressions precede the definition of `cas-assign-op-table`. Under Chez Scheme's R6RS module layout (`defs` before `exprs`), definitions appearing after initialization expressions trigger definition context violations.
 - **Action Plan**: Hoist `cas-assign-op-table` or convert to `tm-define` so `partition-forms` cleanly separates the definition from expression expressions.
 
 #### [ ] Item 17: Unbound Keyword Tokens in Dynamic Hooks (`:on-cpu-idle` & `:uninit`)
-- **Location**: [`TeXmacs/progs/client/client-base.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/client/client-base.scm), [`TeXmacs/progs/tools/spell/spell-lantool.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/tools/spell/spell-lantool.scm)
+- **Location**: [`TeXmacs/progs/client/client-base.scm`](TeXmacs/progs/client/client-base.scm), [`TeXmacs/progs/tools/spell/spell-lantool.scm`](TeXmacs/progs/tools/spell/spell-lantool.scm)
 - **Affected Modules (3)**:
   - `client/client-base.scm` (`:on-cpu-idle`)
   - `tools/spell/spell-lantool.scm` (`:uninit`)
@@ -668,7 +469,7 @@ This document tracks identified architectural improvements and performance bottl
 - **Action Plan**: Add `:on-cpu-idle` and `:uninit` to the keyword binding tables in `init-texmacs-chez.scm` and `boot-chez.scm`.
 
 #### [ ] Item 18: Record Field Specifier Mismatch in `tmcolor.scm`
-- **Location**: [`TeXmacs/progs/convert/tools/tmcolor.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/convert/tools/tmcolor.scm)
+- **Location**: [`TeXmacs/progs/convert/tools/tmcolor.scm`](TeXmacs/progs/convert/tools/tmcolor.scm)
 - **Affected Modules (2)**:
   - `convert/tools/tmcolor.scm`
   - `convert/tools/old-tmtable.scm` (Cascaded: `unknown module convert:tools:tmcolor`)
@@ -677,7 +478,7 @@ This document tracks identified architectural improvements and performance bottl
 - **Action Plan**: Check record type field declarations in `tmcolor.scm` and align with Chez Scheme record accessor conventions.
 
 #### [ ] Item 19: Missing Module Declaration or Search Path for `init-rewrite.scm`
-- **Location**: [`TeXmacs/progs/convert/rewrite/init-rewrite.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/convert/rewrite/init-rewrite.scm)
+- **Location**: [`TeXmacs/progs/convert/rewrite/init-rewrite.scm`](TeXmacs/progs/convert/rewrite/init-rewrite.scm)
 - **Affected Modules (3)**:
   - `doc/apidoc-funcs.scm`
   - `prog/prog-format.scm`
@@ -687,14 +488,14 @@ This document tracks identified architectural improvements and performance bottl
 - **Action Plan**: Include `convert/rewrite/init-rewrite.scm` in Tier 2/5 pipeline so its module symbol is available for import.
 
 #### [ ] Item 20: Unbound `scm-error` in `debug-menu.scm`
-- **Location**: [`TeXmacs/progs/debug/debug-menu.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/debug/debug-menu.scm)
+- **Location**: [`TeXmacs/progs/debug/debug-menu.scm`](TeXmacs/progs/debug/debug-menu.scm)
 - **Affected Module (1)**: `debug/debug-menu.scm`
 - **Error**: `Exception: variable scm-error is not bound`
 - **Root Cause**: `scm-error` is evaluated inside a macro transformer or form during compilation before the runtime bridge in `init-texmacs-chez.scm` is imported.
 - **Action Plan**: Define `scm-error` in `(compilation-environment)` within `boot-chez.scm` / `compile_kernel.scm`.
 
 #### [ ] Item 21: Expand-Time State Contamination from Eager Evaluation in `compile_kernel.scm`
-- **Location**: [`src/Scheme/Chez/compile_kernel.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/compile_kernel.scm), [`TeXmacs/progs/utils/edit/variants.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/utils/edit/variants.scm), [`TeXmacs/progs/graphics/graphics-env.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/graphics/graphics-env.scm)
+- **Location**: [`src/Scheme/Chez/compile_kernel.scm`](src/Scheme/Chez/compile_kernel.scm), [`TeXmacs/progs/utils/edit/variants.scm`](TeXmacs/progs/utils/edit/variants.scm), [`TeXmacs/progs/graphics/graphics-env.scm`](TeXmacs/progs/graphics/graphics-env.scm)
 - **Problem**: Macros generating conditional code via expand-time `(if (ahash-ref ...) ...)` or `(if (top-level-bound? ...) ...)` can miscompile during batch AOT compilation because `compile_kernel.scm`'s Pass 1 eagerly evaluates forms into `(compilation-environment)`. By the time Pass 2 (`compile-file`) runs macro expansion, tables and variables in compiler memory are already populated, triggering the wrong expand-time conditional branch (e.g. omitting definitions that should be generated at runtime module load time).
 - **Remediation Strategies**:
   1. Defer stateful table lookups to runtime by generating `(if (ahash-ref ...) ...)` directly inside the emitted runtime code (`begin ...`) rather than evaluating it at macro-expansion time.
@@ -702,7 +503,7 @@ This document tracks identified architectural improvements and performance bottl
   3. Where macro output needs private module state across modules, use `define-module-macro` with `indirect-export` instead of unquoting expand-time environment variables.
 
 #### [ ] Item 22: Evaluation Timing & Lazy Resolution of `(doc help-funcs)` for `help-menu`
-- **Location**: [`TeXmacs/progs/doc/help-funcs.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/doc/help-funcs.scm), [`TeXmacs/progs/doc/help-menu.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/doc/help-menu.scm), [`TeXmacs/progs/init-texmacs-chez.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/init-texmacs-chez.scm)
+- **Location**: [`TeXmacs/progs/doc/help-funcs.scm`](TeXmacs/progs/doc/help-funcs.scm), [`TeXmacs/progs/doc/help-menu.scm`](TeXmacs/progs/doc/help-menu.scm), [`TeXmacs/progs/init-texmacs-chez.scm`](TeXmacs/progs/init-texmacs-chez.scm)
 - **Problem**: When TeXmacs initializes the GUI window during boot (`TIME-OPEN-WINDOW`), the menu bar resolves `help-menu`. If `help-menu` evaluates before `(module-provide '(doc help-funcs))` has run, global multimethods defined via `tm-define` (such as `load-help-article`, `load-help-buffer`, and `url-exists-in-help?`) are not yet bound in `(interaction-environment)`, raising `(TM-APPLY-ERROR variable load-help-article is not bound)`.
 - **Architectural Principle**: `tm-define` definitions are dynamic multimethods in the global dispatch table (`tm-defined-table` / `(interaction-environment)`), NOT static R6RS module exports. Downstream modules do not import them via static `import`; the defining module must simply be evaluated before symbols are resolved.
 - **Action Plan**:
@@ -711,7 +512,7 @@ This document tracks identified architectural improvements and performance bottl
   2. Verify that accessing `help-menu` on demand triggers `load-module` for `(doc help-funcs)` before menu item callbacks fire.
 
 #### [ ] Item 23: Format Escape `~:s` Evaluation Error in `(open-preferences)`
-- **Location**: [`TeXmacs/progs/texmacs/menus/preferences-*.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/texmacs/menus/), [`TeXmacs/progs/kernel/gui/menu-widget.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/gui/menu-widget.scm)
+- **Location**: [`TeXmacs/progs/texmacs/menus/preferences-*.scm`](TeXmacs/progs/texmacs/menus/), [`TeXmacs/progs/kernel/gui/menu-widget.scm`](TeXmacs/progs/kernel/gui/menu-widget.scm)
 - **Problem**: Invoking `(open-preferences)` in headless mode raises `(PREF-ERROR: variable ~:s is not bound)` when constructing `(top-window preferences-widget "User preferences")`.
 - **Root Cause**: An unescaped or misquoted format string directive (such as `~:s` from `format`, `texmacs-error`, or `display*`) is being evaluated as a Scheme symbol/variable expression rather than parsed as a formatting specifier.
 - **Action Plan**:
@@ -719,7 +520,7 @@ This document tracks identified architectural improvements and performance bottl
   2. Fix the quote or macro expansion causing the format string to be evaluated as Scheme code.
 
 #### [ ] Item 24: Module System Modernization via Explicit Side-Effect Wrapping (`%module-side-effect`)
-- **Location**: [`src/Scheme/Chez/compile_kernel.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/compile_kernel.scm), [`TeXmacs/progs/kernel/texmacs/tm-modes.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/texmacs/tm-modes.scm), macro definers across `progs/`
+- **Location**: [`src/Scheme/Chez/compile_kernel.scm`](src/Scheme/Chez/compile_kernel.scm), [`TeXmacs/progs/kernel/texmacs/tm-modes.scm`](TeXmacs/progs/kernel/texmacs/tm-modes.scm), macro definers across `progs/`
 - **Background & Context**: Upstream GNU TeXmacs used dummy definitions `(define _tm_def_XX (begin ... (void)))` to smuggle runtime side-effects (`set-symbol-procedure!`, `logic-rules`, option registrations) into macro outputs intended for definition contexts.
 - **Proposed Architecture**:
   - Replace artificial `_tm_def_XX` dummy bindings with an explicit compiler marker form: `(%module-side-effect <expr> ...)`.
@@ -729,7 +530,7 @@ This document tracks identified architectural improvements and performance bottl
   - Eliminates dummy variables in symbol tables, prevents compiler definition context violations, and cleanly decouples definitions from runtime side-effects.
 
 #### [x] Item 25: Runtime Unbound Variable `opts` in `(open-preferences)` and `(top-window ...)`
-- **Location**: [`TeXmacs/progs/kernel/gui/menu-widget.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/gui/menu-widget.scm#L1202)
+- **Location**: [`TeXmacs/progs/kernel/gui/menu-widget.scm`](TeXmacs/progs/kernel/gui/menu-widget.scm#L1202)
 - **Error**: `(TM-APPLY-ERROR variable opts is not bound)`
 - **Symptom**: Triggered when invoking `(open-preferences)`, `(open-error-messages)`, or any window constructor delegating to `(top-window ...)` or `(dialogue-window ...)`.
 - **Diagnosis & Root Cause**: 
@@ -761,7 +562,7 @@ This document tracks identified architectural improvements and performance bottl
   - Audit C++ command callback bridging in `object.cpp` (`object_command_rep`, `call_scheme`) to ensure raw property lists are not passed as callbacks.
 
 #### [x] Item 27: Tagged Pointer / Blackbox Conversion Error (`<int> is not a proper list / pair`)
-- **Location**: [`src/Scheme/Chez/chez_tm.cpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/chez_tm.cpp), [`src/Scheme/Chez/chez_tm.hpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/chez_tm.hpp), [`TeXmacs/progs/kernel/boot/boot-chez.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/boot/boot-chez.scm), [`TeXmacs/progs/init-texmacs-chez.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/init-texmacs-chez.scm)
+- **Location**: [`src/Scheme/Chez/chez_tm.cpp`](src/Scheme/Chez/chez_tm.cpp), [`src/Scheme/Chez/chez_tm.hpp`](src/Scheme/Chez/chez_tm.hpp), [`TeXmacs/progs/kernel/boot/boot-chez.scm`](TeXmacs/progs/kernel/boot/boot-chez.scm), [`TeXmacs/progs/init-texmacs-chez.scm`](TeXmacs/progs/init-texmacs-chez.scm)
 - **Errors**:
   - `(TM-APPLY-ERROR 4712781216 is not a pair)`
   - `(TM-APPLY-ERROR 5012788192 is not a proper list)`
@@ -776,7 +577,7 @@ This document tracks identified architectural improvements and performance bottl
   3. **Value Equality & Hash Tables**: Implemented C foreign procedures `tmscm_blackbox_equal` and `tmscm_blackbox_hash` hooked into Scheme's `equal?`, `==`, `!=`, and `make-hash-table`, providing full content-equality and persistent hashing for blackbox-keyed structures.
 
 #### [ ] Item 28: Image Resource Decoding / Conversion Failures (`libpng bad header` / `qt_image_size`)
-- **Location**: [`src/Plugins/Qt/qt_picture.cpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Plugins/Qt/qt_picture.cpp), [`src/Plugins/Qt/qt_image.cpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Plugins/Qt/qt_image.cpp), [`TeXmacs/progs/convert/images/`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/convert/images/)
+- **Location**: [`src/Plugins/Qt/qt_picture.cpp`](src/Plugins/Qt/qt_picture.cpp), [`src/Plugins/Qt/qt_image.cpp`](src/Plugins/Qt/qt_image.cpp), [`TeXmacs/progs/convert/images/`](TeXmacs/progs/convert/images/)
 - **Errors**:
   ```
   libpng error: [00][00][00][00]: bad header (invalid type)
@@ -792,7 +593,7 @@ This document tracks identified architectural improvements and performance bottl
   - Stream virtual filesystem images directly into memory buffers (`QByteArray`) instead of round-tripping through temporary files on disk.
 
 #### [x] Item 29: Unquoted Box / Blackbox Literals in Expressions Passed to `eval` (`invalid syntax #&<addr>`)
-- **Location**: [`TeXmacs/progs/init-texmacs-chez.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/init-texmacs-chez.scm), [`src/Scheme/Scheme/object.cpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Scheme/object.cpp), [`src/Texmacs/Data/new_window.cpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Texmacs/Data/new_window.cpp)
+- **Location**: [`TeXmacs/progs/init-texmacs-chez.scm`](TeXmacs/progs/init-texmacs-chez.scm), [`src/Scheme/Scheme/object.cpp`](src/Scheme/Scheme/object.cpp), [`src/Texmacs/Data/new_window.cpp`](src/Texmacs/Data/new_window.cpp)
 - **Error**: `Exception: invalid syntax #&4974615488` in `(eval '((lambda () (safely-kill-window #&4974615488))))`
 - **Root Cause**:
   - In Chez Scheme, Box objects (`#&...`) are native data records. Unlike numbers, booleans, or strings, an unquoted Box datum in expression position is rejected by Chez's `syntax-case` expander as invalid syntax.
@@ -801,7 +602,7 @@ This document tracks identified architectural improvements and performance bottl
   - In `init-texmacs-chez.scm`, `eval` now runs `tm-quote-boxes` on incoming forms, automatically wrapping unquoted Box datums in `(quote ...)` (`#&addr` -> `'(#&addr)`). This permits C++ commands and closures carrying blackboxes to evaluate without syntax errors.
 
 #### [x] Item 30: Popup / Menu Expansion Latency & Zero-Height Layout Stalls
-- **Location**: [`src/Scheme/Chez/chez_tm.cpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/chez_tm.cpp), [`TeXmacs/progs/kernel/boot/boot-chez.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/boot/boot-chez.scm)
+- **Location**: [`src/Scheme/Chez/chez_tm.cpp`](src/Scheme/Chez/chez_tm.cpp), [`TeXmacs/progs/kernel/boot/boot-chez.scm`](TeXmacs/progs/kernel/boot/boot-chez.scm)
 - **Symptoms**:
   - Submenus such as `HELP -> FULL MANUALS` appeared delayed or stalled on macOS, logging temporary 0-height popup warnings (`qt.qpa.window: Window position QRect(1282,1612 318x0) outside any known screen`).
   - Menu expansion and initial startup had high latency (`TIME-PRE-GUI-LOOP: ~2450 ms`).
@@ -820,7 +621,7 @@ This document tracks identified architectural improvements and performance bottl
   - Reverted Qt C++ files back to upstream master, maintaining pure Scheme/Chez integration integrity.
 
 #### [ ] Item 31: `while` Macro Resolution & Unbound Variable `t` in `(graphics-exit-right)`
-- **Location**: [`TeXmacs/progs/graphics/graphics-main.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/graphics/graphics-main.scm#L63-L76), [`TeXmacs/progs/kernel/boot/abbrevs.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/boot/abbrevs.scm), [`src/Scheme/Chez/compile-texmacs.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/compile-texmacs.scm)
+- **Location**: [`TeXmacs/progs/graphics/graphics-main.scm`](TeXmacs/progs/graphics/graphics-main.scm#L63-L76), [`TeXmacs/progs/kernel/boot/abbrevs.scm`](TeXmacs/progs/kernel/boot/abbrevs.scm), [`src/Scheme/Chez/compile-texmacs.scm`](src/Scheme/Chez/compile-texmacs.scm)
 - **Error**: `(EVAL-ERROR (graphics-exit-right) variable t is not bound (t))`
 - **Symptom**: Triggered when exiting a graphics canvas, e.g. clicking outside a graphics object, invoking `(graphics-exit-right)`, or mouse release events in `src/Edit/Interface/edit_mouse.cpp:559`.
 - **Diagnosis & Root Cause**:
@@ -848,7 +649,7 @@ This document tracks identified architectural improvements and performance bottl
   - Audit `compile-texmacs.scm` macro environment to ensure core control structures (`while`, `repeat`, etc.) are in the compilation expansion environment across all module tiers.
 
 #### [x] Item 32: Unquoted Procedure Literals in Expressions Passed to `eval` (`invalid syntax #<procedure ...>`)
-- **Location**: [`TeXmacs/progs/init-texmacs-chez.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/init-texmacs-chez.scm), [`src/Scheme/Scheme/object.cpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Scheme/object.cpp), [`src/Texmacs/Window/tm_dialogue.cpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Texmacs/Window/tm_dialogue.cpp)
+- **Location**: [`TeXmacs/progs/init-texmacs-chez.scm`](TeXmacs/progs/init-texmacs-chez.scm), [`src/Scheme/Scheme/object.cpp`](src/Scheme/Scheme/object.cpp), [`src/Texmacs/Window/tm_dialogue.cpp`](src/Texmacs/Window/tm_dialogue.cpp)
 - **Error**: `Exception: invalid syntax #<procedure new-val>` in `(eval '((lambda () (#<procedure new-val> (system->url ...)))))`
 - **Symptom**: Triggered when opening an existing file on disk from the file chooser dialogue (`choose-file load-buffer "Load file" ""`).
 - **Diagnosis & Root Cause**:
@@ -861,10 +662,10 @@ This document tracks identified architectural improvements and performance bottl
   - Quoting the procedure literal transforms the form into `(lambda () ((quote #<procedure new-val>) (system->url "...")))`, allowing Chez Scheme's compiler to treat it as a literal datum yielding the procedure while properly evaluating its argument expressions.
 
 #### [ ] Item 33: Explicit Error Reporting in `wrap-catch` & Menu Exception Masking
-- **Location**: [`TeXmacs/progs/kernel/boot/debug.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/boot/debug.scm#L316-L332), [`TeXmacs/progs/kernel/gui/menu-widget.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/gui/menu-widget.scm#L1190-L1195), [`src/Texmacs/Window/tm_frame.cpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Texmacs/Window/tm_frame.cpp#L28-L38)
+- **Location**: [`TeXmacs/progs/kernel/boot/debug.scm`](TeXmacs/progs/kernel/boot/debug.scm#L316-L332), [`TeXmacs/progs/kernel/gui/menu-widget.scm`](TeXmacs/progs/kernel/gui/menu-widget.scm#L1190-L1195), [`src/Texmacs/Window/tm_frame.cpp`](src/Texmacs/Window/tm_frame.cpp#L28-L38)
 - **Problem**:
-  - `(wrap-catch proc)` wraps menu-to-widget generation in [`make-menu-widget`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/gui/menu-widget.scm#L1194).
-  - When exceptions occur inside dynamic menu generation, submenus, or widget constructors, `as_widget` in C++ receives nil or an error pair, causing [`make_menu_widget`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Texmacs/Window/tm_frame.cpp#L28-L38) to silently fall back to an empty menu `horizontal_menu(0)`.
+  - `(wrap-catch proc)` wraps menu-to-widget generation in [`make-menu-widget`](TeXmacs/progs/kernel/gui/menu-widget.scm#L1194).
+  - When exceptions occur inside dynamic menu generation, submenus, or widget constructors, `as_widget` in C++ receives nil or an error pair, causing [`make_menu_widget`](src/Texmacs/Window/tm_frame.cpp#L28-L38) to silently fall back to an empty menu `horizontal_menu(0)`.
   - Empty menu widgets have height 0, causing macOS Cocoa QPA to report:
     `qt.qpa.window: Window position QRect(...) outside any known screen, using primary screen`.
   - Because exceptions can be swallowed or discarded without clear diagnostics reaching the terminal, developers cannot easily see which Scheme procedure or menu item failed.
@@ -874,12 +675,12 @@ This document tracks identified architectural improvements and performance bottl
 
 ---
 
-## 5. Boot File Loading & Foreign Symbol Initialization (Design Note)
+## 6. Boot File Loading & Foreign Symbol Initialization (Design Note)
 
 ### [ ] Move foreign-symbol registration into `Sbuild_heap` `custom_init`
 
 - **Status**: Not implemented; design note.
-- **Location**: [`src/Scheme/Chez/chez_tm.cpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/chez_tm.cpp#L439-L498), [`src/Scheme/Chez/chez_tm.cpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/chez_tm.cpp#L741-L750), [`src/Scheme/Chez/chez_tm.hpp`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/src/Scheme/Chez/chez_tm.hpp)
+- **Location**: [`src/Scheme/Chez/chez_tm.cpp`](src/Scheme/Chez/chez_tm.cpp#L439-L498), [`src/Scheme/Chez/chez_tm.cpp`](src/Scheme/Chez/chez_tm.cpp#L741-L750), [`src/Scheme/Chez/chez_tm.hpp`](src/Scheme/Chez/chez_tm.hpp)
 - **Current state**:
   - `start_scheme` registers `petite.boot`, `scheme.boot`, and optionally `TEXMACS_BOOT_FILE`, then calls `Sbuild_heap (argv[0], custom_init)`.
   - `custom_init` is currently empty.
@@ -950,28 +751,12 @@ This document tracks identified architectural improvements and performance bottl
   - Fewer runtime initialization steps and a shorter startup path.
   - A more natural split between heap construction, foreign-symbol registration, and application entry.
 
-
-
-
 ---
 
-## 6. Session Persistence & the `-x` Entry Point
-
-### [x] `save-object` wrote 0-byte files [RESOLVED 2026-11-02]
-- **Location**: [`TeXmacs/progs/kernel/boot/abbrevs.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/kernel/boot/abbrevs.scm) (`save-object`, ~line 63)
-- **Problem**: `save-object` opened a port and never closed it, and `flush-all-ports` is
-  `(define (flush-all-ports) (noop))` ([`boot-chez.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/kernel/boot/boot-chez.scm) line 213).
-  Every save therefore discarded its buffer: `~/.TeXmacs-chez/system/interactive.scm` was
-  created but always **0 bytes**, so session restore never worked.
-- **Fix**: both branches of `save-object` now bind the port and `close-port` it.
-- **Verified**: `(save-object "$TEXMACS_HOME_PATH/system/interactive.scm" '(1 2 3))`
-  writes 7 bytes containing `(1 2 3)`; before the fix the same call produced 0 bytes.
-- **Still open**: `flush-all-ports` remains a no-op, so any other caller that relies on it
-  is still silently dropping output. Either give it a real implementation with
-  `flush-output-port` or audit its callers.
+## 7. Session Persistence & the `-x` Entry Point
 
 ### [ ] `-x "(save-learned)"` aborts the process (exit 134)
-- **Location**: [`TeXmacs/progs/kernel/texmacs/tm-dialogue.scm`](file:///Users/king-kong/Documents/GitHub/texmacs/TeXmacs/progs/kernel/texmacs/tm-dialogue.scm) (`save-learned`, line 317);
+- **Location**: [`TeXmacs/progs/kernel/texmacs/tm-dialogue.scm`](TeXmacs/progs/kernel/texmacs/tm-dialogue.scm) (`save-learned`, line 317);
   `-x` handling in `src/Texmacs/Texmacs/texmacs.cpp`.
 - **Repro**:
   ```bash

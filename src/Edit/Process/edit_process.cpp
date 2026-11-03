@@ -27,6 +27,9 @@
 
 #ifdef OS_MINGW
 #include <winnls.h>
+/* texmacs_utf8_to_wide() is provided by the Windows64 backend; the CMake
+   build otherwise compiles only src/Plugins/Windows/ (see CMakeLists.txt). */
+#include "Windows64/windows64_encoding.hpp"
 #endif
 
 /******************************************************************************

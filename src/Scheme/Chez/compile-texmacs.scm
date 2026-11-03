@@ -23,8 +23,15 @@
         ((file-exists? "texmacs/TeXmacs/progs") "texmacs/TeXmacs/progs")
         (else "TeXmacs/progs")))
 
+;; Where transpiled sources and compiled modules are written.
+;;
+;; TEXMACS_BOOT_PATH takes precedence, mirroring how boot-chez.scm resolves
+;; compiled modules at runtime, so that build trees with another name (for
+;; instance build-win) work without editing this file. The literals below are
+;; the historical default.
 (define *boot-dir*
-  (cond ((file-exists? "build-texmacos/boot") "build-texmacos/boot")
+  (cond ((getenv "TEXMACS_BOOT_PATH") (getenv "TEXMACS_BOOT_PATH"))
+        ((file-exists? "build-texmacos/boot") "build-texmacos/boot")
         ((file-exists? "texmacs/build-texmacos/boot") "texmacs/build-texmacos/boot")
         ((file-exists? "../build-texmacos/boot") "../build-texmacos/boot")
         (else "build-texmacos/boot")))

@@ -807,7 +807,7 @@ immediate_options (int argc, char** argv) {
     else if (s == "-recompile-modules") {
       headless_mode= true;
       compile_modules_mode= true;
-      setenv ("TEXMACS_RECOMPILE_ALL", "1", 1);
+      set_env ("TEXMACS_RECOMPILE_ALL", "1");
       if (i + 1 < argc && argv[i + 1][0] != '-') {
         compile_modules_script = argv[++i];
       }
@@ -819,7 +819,7 @@ immediate_options (int argc, char** argv) {
       lint_mode= true;
       if (i + 1 < argc && argv[i + 1][0] != '-') {
         lint_script = argv[++i];
-        setenv ("TEXMACS_LINT_SCRIPT", argv[i], 1);
+        set_env ("TEXMACS_LINT_SCRIPT", argv[i]);
       }
     }
     else if (s == "-log-file" && i + 1 < argc) {
