@@ -267,22 +267,31 @@
 ;; Same candidate order as tm-so-candidates in chez_tm.cpp, plus the local
 ;; development layout derived from TEXMACS_PATH:
 ;;   <root>/texmacs/TeXmacs  ->  <root>/build-texmacos/boot
+;;
+;; TEXMACS_BOOT_PATH overrides everything.  Otherwise the first candidate that
+;; actually holds a kernel wins; there is one build tree, and the check exists
+;; so that a checkout with no compiled cache falls back to source loading
+;; instead of pointing at a directory that is not there.
 (define (tm-lint-boot-dir)
-  (let* ((tm-path (getenv "TEXMACS_PATH"))
-         (build   (getenv "TEXMACS_BUILD_DIR"))
-         (root    (and tm-path (tm-lint-parent-dir (tm-lint-parent-dir tm-path))))
-         (cands   (list (getenv "TEXMACS_BOOT_PATH")
-                        (and build (string-append build "/boot"))
-                        (and tm-path (string-append tm-path "/boot"))
-                        (and root (string-append root "/build-texmacos/boot"))
-                        "build-texmacos/boot"
-                        "../build-texmacos/boot")))
-    (let loop ((c cands))
-      (cond ((null? c) #f)
-            ((not (car c)) (loop (cdr c)))
-            ((file-exists? (string-append (car c) "/texmacs-user.so")) (car c))
-            ((file-exists? (string-append (car c) "/kernel")) (car c))
-            (else (loop (cdr c)))))))
+  (let* ((tm-path  (getenv "TEXMACS_PATH"))
+         (build    (getenv "TEXMACS_BUILD_DIR"))
+         (root     (and tm-path (tm-lint-parent-dir (tm-lint-parent-dir tm-path))))
+         (explicit (getenv "TEXMACS_BOOT_PATH"))
+         (cands    (list (and build (string-append build "/boot"))
+                         (and tm-path (string-append tm-path "/boot"))
+                         (and root (string-append root "/build-texmacos/boot"))
+                         "build-texmacos/boot"
+                         "../build-texmacos/boot")))
+    (define (live? d)
+      (or (file-exists? (string-append d "/texmacs-user.so"))
+          (file-exists? (string-append d "/kernel"))))
+    (cond
+      (explicit explicit)
+      (else
+       (let loop ((c cands))
+         (cond ((null? c) #f)
+               ((and (car c) (live? (car c))) (car c))
+               (else (loop (cdr c)))))))))
 
 ;; The bundle embeds the boot directory that existed at *compile* time
 ;; ("build-texmacos/boot/kernel/boot/chez-compat.so"), so the load has to run
@@ -432,9 +441,21 @@
   (putenv "TEXMACS_BOOT_PATH" tm-lint-boot))
 
 (define tm-lint-kernel-via
-  (cond
-    ((and tm-lint-boot (tm-lint-load-aggregate! tm-lint-boot)) 'texmacs-user.so)
-    (else (tm-lint-import-kernel-modules!) 'kernel-modules)))
+  (guard (e (else
+             (printf "~nKERNEL LOAD FAILED~n")
+             (display-condition e)
+             (newline)
+             (printf "~nThe kernel could not be brought up, so no analysis ran.~n")
+             (printf "If this is a `variable ... is not bound` error from a~n")
+             (printf "kernel module, the compiled boot cache is inconsistent:~n")
+             (printf "rebuild it with  TeXmacs -recompile-modules~n")
+             (flush-output-port (current-output-port))
+             ;; exit non-zero: falling through would start a GUI boot, which
+             ;; is never what -lint asked for
+             (exit 3)))
+    (cond
+      ((and tm-lint-boot (tm-lint-load-aggregate! tm-lint-boot)) 'texmacs-user.so)
+      (else (tm-lint-import-kernel-modules!) 'kernel-modules))))
 
 (define (tm-lint-script-path)
   (or (getenv "TEXMACS_LINT_SCRIPT")

@@ -88,10 +88,25 @@
 ;; plain (non-gensym) symbol left in the core AST is a reference to a top-level
 ;; binding.  That is the entire dependency rule: no scope tracking needed.
 
+;;; ------------------------------------------------------- free name walker
+;;
+;; Used on two kinds of input.  On expanded core AST (phases 3-4) every lexical
+;; and module-internal binding has been renamed to a gensym, so a plain
+;; non-gensym symbol is a reference to a top-level binding and no scope
+;; tracking is needed.  On source forms (phase 5) the same walk runs without
+;; expansion, so it has to follow the binders itself: named `let`, `let*`,
+;; `do`, and the definer forms whose head is a name being defined rather than
+;; referenced.
+;;
+;; On source input the result is an over-approximation, which is what phase 5
+;; wants: it may report a reference that never runs, but it cannot miss one.
+
 (define (free-names core)
   (define acc '())
   (define (add s) (unless (memq s acc) (set! acc (cons s acc))))
   (define (walk-all xs b) (walk-each xs (lambda (x) (walk x b))))
+  (define (binding-names bs)
+    (if (list? bs) (map car bs) '()))
   (define (walk x b)
     (cond
       ((symbol? x)
@@ -107,27 +122,55 @@
               (when (symbol? s) (add s))))
            ;; other primitive call: skip the operator, walk the arguments
            ((prim-op x) (walk-all (cdr x) b))
-           ((eq? h 'quote) (void))
+           ;; data, not code
+           ((and (symbol? h)
+                 (memq h '(quote syntax syntax-rules quasiquote quasisyntax)))
+            (void))
+           ;; a macro definition is analysed by phase 3, not here; walking its
+           ;; transformer would report the template's names as references
+           ((and (symbol? h)
+                 (memq h '(define-syntax define-macro define-public-macro
+                           define-module-macro define-export-macro
+                           tm-define-macro)))
+            (void))
+           ;; a definition: the head names a binder, the body is code
+           ((and (symbol? h)
+                 (memq h '(define define-public provide-public tm-define)))
+            (cond
+              ((and (pair? (cdr x)) (pair? (cadr x)))
+               (walk-all (cddr x) (formals->list (cdadr x) b)))
+              ((pair? (cddr x)) (walk (caddr x) b))
+              (else (void))))
            ((and (symbol? h) (eq? h 'lambda))
             (walk-all (cddr x) (formals->list (cadr x) b)))
            ((and (symbol? h) (eq? h 'case-lambda))
             (for-each (lambda (clause)
                         (walk-all (cdr clause) (formals->list (car clause) b)))
                       (cdr x)))
+           ;; (let loop ((i 0)) ...) -- the name is bound too
            ((and (symbol? h) (memq h '(let letrec letrec*)))
-            (let* ((bs (cadr x))
-                   (names (formals->list (map car bs) b)))
-              (walk-all (map cdr bs) b)
+            (let* ((named? (and (pair? (cdr x)) (symbol? (cadr x))))
+                   (bs (if named? (caddr x) (cadr x)))
+                   (body (if named? (cdddr x) (cddr x)))
+                   (names (formals->list (binding-names bs)
+                                         (if named? (cons (cadr x) b) b))))
+              (when (list? bs) (walk-all (map cdr bs) b))
+              (walk-all body names)))
+           ;; let*: each binding sees the previous ones, so no name is free
+           ((and (symbol? h) (eq? h 'let*))
+            (let* ((bs (and (pair? (cdr x)) (cadr x)))
+                   (names (formals->list (binding-names bs) b)))
+              (when (list? bs) (walk-all (map cdr bs) b))
               (walk-all (cddr x) names)))
            ((and (symbol? h) (memq h '(let-values let*-values)))
             (walk-all (cddr x) b))
-           ((and (symbol? h) (memq h '(begin if set! define and or when unless
-                                       do cond)))
+           ((and (symbol? h) (memq h '(begin if set! and or when unless cond)))
             (walk-all (cdr x) b))
            (else (walk-all x b)))))
       (else (void))))
   (walk core '())
   (reverse acc))
+
 
 ;; Subforms shaped (($primitive n define-top-level-syntax) 'name val).
 (define (syntax-defs core)
@@ -229,14 +272,16 @@
         (hashtable-set! defs name site))))
 
 ;; Descend FORM looking for definer-headed subforms, attributing each to TOP,
-;; the enclosing top-level form.  Quoted data, syntax-rules templates and
-;; quasiquote bodies are skipped: a (define-macro ...) written inside a
-;; template is generated code, not a definition in this file.
+;; the enclosing top-level form.  Quoted data, syntax templates (`#'` reads as
+;; `(syntax ...)`, not `(quote ...)`), syntax-rules and quasiquote bodies are
+;; all skipped: a (define-macro ...) written inside a template is generated
+;; code, not a definition in this file.
 (define (index-form! top form file module)
   (define (walk x)
     (when (pair? x)
       (cond
-        ((memq (car x) '(quote syntax-rules quasiquote)) (void))
+        ((memq (car x) '(quote syntax syntax-rules quasiquote quasisyntax))
+         (void))
         (else
          (when (and (symbol? (car x))
                     (or (memq (car x) macro-definers)
@@ -255,6 +300,8 @@
                          forms)))
     (if (and h (pair? (cdr h))) (cadr h) '(no-header))))
 
+(define file-module (make-hashtable string-hash string=?))
+
 (define (index-file! rel)
   (let* ((path (string-append *root* "/" rel))
          (forms (call-with-values (lambda () (read-all-forms path))
@@ -262,6 +309,7 @@
                      (when trunc (set! truncated (cons rel truncated)))
                      fs)))
          (mod (module-of forms)))
+    (hashtable-set! file-module rel mod)
     (set! form-count (+ form-count (length forms)))
     (let loop ((fs forms) (i 0))
       (when (pair? fs)
@@ -442,14 +490,38 @@
 (define top-cache (make-eq-hashtable))     ; top form -> core AST or 'failed
 (define file-order (make-hashtable string-hash string=?))
 
-;; kernel/boot is the compiler's own substrate: boot-chez.scm defines
-;; define-macro / with / define-public-macro, and boot.scm conditionally
-;; *redefines* them for other dialects.  Expanding those forms re-runs the
-;; bootstrap and rewrites the macro layer under our feet, which turns every
-;; later expansion into an "invalid syntax" error.  The bootstrap is already
-;; loaded, so its macros are indexed (for dependency resolution) but never
-;; re-expanded.
-(define (boot-file? rel) (string-prefix? "kernel/boot/" rel))
+;; The kernel is not analysed, for two independent reasons.
+;;
+;; 1. It is already compiled.  Every kernel module ships as a .so in the AOT
+;;    bundle, it is loaded before anything else, and it can never be a
+;;    scheduling choice for a later tier.  Analysing it produces no input to
+;;    the build.  What the build needs is the dependency structure *between*
+;;    the modules it still has to compile.
+;;
+;; 2. Re-evaluating kernel definitions is destructive.  Re-evaluating even one
+;;    of the bootstrap's `define-syntax' forms replaces a working transformer
+;;    with one that produces "invalid syntax" -- by `expand' or by `eval', it
+;;    makes no difference, and re-evaluating a second time does not repair it.
+;;
+;;    Verified on boot-chez.scm's `with', which splices a caller-supplied
+;;    identifier into binding position:
+;;        #'(apply (lambda var body ...) val)
+;;        #'(let ((var val)) body ...)
+;;    Re-evaluating the transformer at top level gives its `#'` templates the
+;;    evaluator's lexical context instead of the caller's, so the identifier
+;;    it splices in carries mismatched marks and the expander rejects the
+;;    result.  Ordinary macros are unaffected; this only bites when a pattern
+;;    variable lands in a binding position.
+;;
+;;    It is not a local problem: `tm-define-macro' is written as
+;;    (with macro-head (tm-macroify head) ...) and `define-public-macro' goes
+;;    through `with-export-if-active', so breaking `with' alone took 276 of
+;;    389 expansions down with it.
+;;
+;; Kernel definitions are therefore still *indexed* -- a dependency name has
+;; to resolve to a module to know whether it is a kernel prerequisite or a
+;; real edge -- but never expanded or evaluated.
+(define (kernel-file? rel) (string-prefix? "kernel/" rel))
 
 (define (collect-macro-sites)
   (let ((acc '()))
@@ -470,7 +542,7 @@
                acc)))
 
 (define (report-phase1 ordered)
-  (printf "~n[1/4] indexing definitions ...~n")
+  (printf "~n[1/5] indexing definitions ...~n")
   (let ((t0 (real-time)))
     (for-each index-file! ordered)
     (printf "      ~a files, ~a top-level forms, ~a definitions in ~a ms~n"
@@ -487,7 +559,7 @@
     (printf "      macros: ~a   values: ~a~n" nm (- (length names) nm))))
 
 (define (report-phase2)
-  (printf "~n[2/4] selecting macro definitions (hardcoded rule) ...~n")
+  (printf "~n[2/5] selecting macro definitions (hardcoded rule) ...~n")
   (printf "      ~a macro definition sites~n" (length macro-sites))
   (let ((by-def (make-hashtable equal-hash equal?)))
     (for-each (lambda (s) (hashtable-update! by-def (car (site-inner s))
@@ -499,29 +571,18 @@
                          (vector->list (hashtable-keys by-def)))))
   (printf "      already installed as macros in env: ~a~n"
           (length (chez-filter (lambda (s) (macro? (site-name s))) macro-sites)))
-  (let ((boot (chez-filter (lambda (s) (boot-file? (site-file s))) macro-sites)))
-    (printf "      bootstrap (kernel/boot) definitions, indexed but not re-expanded: ~a~n"
-            (length boot))
-    (printf "        ~a~n"
-            (join-strings (map (lambda (s) (symbol->string (site-name s)))
-                               (chez-sort (lambda (a b)
-                                            (string<? (symbol->string (site-name a))
-                                                      (symbol->string (site-name b))))
-                                          boot))
-                          " "))
-    (printf "        (the bootstrap redefines `with', `with-define' and~n")
-    (printf "         `define-public-macro' non-hygienically in abbrevs.scm/boot.scm;~n")
-    (printf "         re-expanding it replaces the hygienic versions that~n")
-    (printf "         tm-define-macro's own body depends on, after which every~n")
-    (printf "         later expansion fails with \"invalid syntax\")~n")))
+  (let ((k (chez-filter (lambda (s) (kernel-file? (site-file s))) macro-sites)))
+    (printf "      kernel (already compiled, indexed but not analysed): ~a~n"
+            (length k))
+    (printf "      analysed: ~a~n" (- (length macro-sites) (length k)))))
 
 (define (report-phase3)
-  (printf "~n[3/4] expanding with the kernel only, harvesting dependencies ...~n")
+  (printf "~n[3/5] expanding with the kernel only, harvesting dependencies ...~n")
   (let ((t0 (real-time))
         (verbose (getenv "TEXMACS_LINT_VERBOSE")))
     (for-each
       (lambda (site)
-        (unless (boot-file? (site-file site))
+        (unless (kernel-file? (site-file site))
           (let* ((top (site-top site))
                  (cached (hashtable-ref top-cache top 'unknown)))
             (when (eq? cached 'unknown)
@@ -549,11 +610,11 @@
   (printf "      distinct dependency names: ~a~n" (hashtable-size dep-count)))
 
 (define (report-phase4)
-  (printf "~n[4/4] evaluating with lazy dependency installation ...~n")
+  (printf "~n[4/5] evaluating with lazy dependency installation ...~n")
   (let ((t0 (real-time)))
     (for-each
       (lambda (site)
-        (unless (boot-file? (site-file site))
+        (unless (kernel-file? (site-file site))
           (let ((top (site-top site))
                 (name (site-name site))
                 (was-macro? (macro? (site-name site))))
@@ -581,18 +642,279 @@
   (printf "      helper definitions pulled from the index: ~a (failed ~a)~n"
           n-helper-installed n-install-fail))
 
+;;; ------------------------------------------- module dependency graph (5/5)
+;;
+;; This is what the analysis is for.  The kernel is already compiled and can
+;; never be a scheduling choice, so the question is only: among the modules
+;; still to be built, which must precede which?
+;;
+;; The graph is built SYNTACTICALLY, not by expanding.  Expanding every
+;; top-level form of every module fails on more than half of them, because a
+;; form can only be expanded in the module context it was written for:
+;; (export ...) outside a module, (tm-define ...) without its option tables, a
+;; macro whose helpers live in a module that is not loaded.  Chasing that means
+;; re-implementing the loader.
+;;
+;; Reading the forms and collecting free names needs no environment at all,
+;; covers every form, and errs only in the safe direction: it can see a
+;; reference that never executes (a dead branch, or a local name that happens
+;; to match a top-level definition), which may order two modules that could
+;; have run in parallel.  It cannot miss one.  For a build schedule that is the
+;; right direction to be wrong in.
+;;
+;; Each free name then resolves to a module:
+;;   kernel      -> already compiled, always satisfied
+;;   C++ glue    -> bound in env but defined nowhere in the tree, satisfied
+;;   same module -> intra-module, no ordering constraint
+;;   other       -> a real edge
+;;   nothing     -> a local binding this walker does not model; discarded
+
+(define mod-nodes  (make-hashtable equal-hash equal?))  ; node -> #t
+(define mod-edges  (make-hashtable equal-hash equal?))  ; from -> (to ...) it needs
+(define mod-rev    (make-hashtable equal-hash equal?))  ; to -> (from ...)
+(define mod-via    (make-hashtable equal-hash equal?))  ; (from . to) -> (names ...)
+(define mod-levels (make-hashtable equal-hash equal?))  ; node -> wave
+
+(define n-kernel-refs 0)
+(define n-external-refs 0)
+(define n-intra-refs 0)
+(define n-local-refs 0)    ; resolvable neither in the tree nor in env: a local name
+(define n-macro-edges 0)
+
+(define (site-key s) (site-module s))
+
+;; hashtable-size counts keys, and a key here is a module with outgoing edges.
+;; The edge count is the sum of the adjacency lists.
+(define (count-edges)
+  (let loop ((ks (vector->list (hashtable-keys mod-edges))) (n 0))
+    (if (null? ks) n
+        (loop (cdr ks) (+ n (length (hashtable-ref mod-edges (car ks) '())))))))
+
+(define (note-edge! from to dep)
+  (unless (equal? to from)
+    (hashtable-set! mod-nodes to #t)
+    (hashtable-update! mod-edges from
+                       (lambda (l) (if (member to l) l (cons to l))) '())
+    (hashtable-update! mod-rev to
+                       (lambda (l) (if (member from l) l (cons from l))) '())
+    (hashtable-update! mod-via (cons from to)
+                       (lambda (l) (if (member dep l) l (cons dep l))) '())))
+
+;; A syntactic walk cannot tell a local from a global, so a name that is
+;; neither defined in the tree nor bound in env is almost certainly a local
+;; binding form this walker does not model (`with', `for', `do', `receive',
+;; ...).  Those are discarded rather than reported: a real dangling reference
+;; is what phases 3-4 catch, and they find none.
+(define (headerless? rel)
+  (let ((m (hashtable-ref file-module rel #f)))
+    (or (not m) (eq? (car m) 'no-header))))
+
+(define (note-dep-edge! from dep)
+  (let ((s (hashtable-ref defs dep #f)))
+    (cond
+      ((not s)
+       (if (top-level-bound? dep (tm-lint-env))
+           (set! n-external-refs (+ n-external-refs 1))
+           (set! n-local-refs (+ n-local-refs 1))))
+      ;; A file with no texmacs-module header is a bootstrap or init script,
+      ;; not a module: it has no place in the build order.  Counting it as an
+      ;; edge target makes init-linter.scm (which defines current-module and
+      ;; module-name) a hub that every module appears to depend on.
+      ((headerless? (site-file s))
+       (set! n-external-refs (+ n-external-refs 1)))
+      ((kernel-file? (site-file s))
+       (set! n-kernel-refs (+ n-kernel-refs 1)))
+      ((equal? (site-key s) from)
+       (set! n-intra-refs (+ n-intra-refs 1)))
+      (else (note-edge! from (site-key s) dep)))))
+
+(define (note-form-refs! from form)
+  (for-each (lambda (dep) (note-dep-edge! from dep)) (free-names form)))
+
+(define (note-file-refs! rel)
+  (unless (headerless? rel)
+    (let* ((from (hashtable-ref file-module rel '(no-header)))
+           (forms (call-with-values
+                      (lambda () (read-all-forms (string-append *root* "/" rel)))
+                    (lambda (fs _) fs))))
+      (hashtable-set! mod-nodes from #t)
+      (for-each (lambda (f) (note-form-refs! from f)) forms))))
+
+(define (build-module-graph ordered)
+  ;; the macro pass first, so its contribution can be reported separately
+  (for-each
+    (lambda (site)
+      (unless (kernel-file? (site-file site))
+        (let ((from (site-key site)))
+          (hashtable-set! mod-nodes from #t)
+          (for-each (lambda (d) (note-dep-edge! from d))
+                    (hashtable-ref macro-deps (site-name site) '())))))
+    macro-sites)
+  (set! n-macro-edges (count-edges))
+  (for-each (lambda (rel) (unless (kernel-file? rel) (note-file-refs! rel))) ordered))
+
+;; Tarjan SCC over mod-edges.  TeXmacs modules are mutually recursive in
+;; places, so the module graph is not a DAG and a plain topological sort is
+;; impossible.  The unit that can be scheduled is the strongly connected
+;; component: its members must be compiled together, but the condensation is
+;; acyclic.
+(define (compute-sccs)
+  (let ((index    (make-hashtable equal-hash equal?))
+        (low      (make-hashtable equal-hash equal?))
+        (on-stack (make-hashtable equal-hash equal?))
+        (stack '())
+        (counter 0)
+        (comps '()))
+    (define (pop-until! v)
+      (let loop ((acc '()))
+        (let ((w (car stack)))
+          (set! stack (cdr stack))
+          (hashtable-set! on-stack w #f)
+          (if (equal? w v) (cons w acc) (loop (cons w acc))))))
+    (define (strongconnect! v)
+      (hashtable-set! index v counter)
+      (hashtable-set! low v counter)
+      (set! counter (+ counter 1))
+      (set! stack (cons v stack))
+      (hashtable-set! on-stack v #t)
+      (for-each
+        (lambda (w)
+          (cond
+            ((not (hashtable-ref index w #f))
+             (strongconnect! w)
+             (hashtable-set! low v (min (hashtable-ref low v 0)
+                                        (hashtable-ref low w 0))))
+            ((hashtable-ref on-stack w #f)
+             (hashtable-set! low v (min (hashtable-ref low v 0)
+                                        (hashtable-ref index w 0))))))
+        (hashtable-ref mod-edges v '()))
+      (when (= (hashtable-ref low v 0) (hashtable-ref index v 0))
+        (set! comps (cons (pop-until! v) comps))))
+    (for-each (lambda (v) (unless (hashtable-ref index v #f) (strongconnect! v)))
+              (vector->list (hashtable-keys mod-nodes)))
+    comps))
+
+;; Waves over the condensation: component n may start once every component it
+;; depends on is done.
+(define (condensation-waves comps)
+  (let* ((comp-of (make-hashtable equal-hash equal?))
+         (cid (make-hashtable equal-hash equal?))
+         (cedges (make-hashtable equal-hash equal?))
+         (crev (make-hashtable equal-hash equal?))
+         (remaining (make-hashtable equal-hash equal?)))
+    (let loop ((cs comps) (i 0))
+      (when (pair? cs)
+        (for-each (lambda (n) (hashtable-set! comp-of n i)) (car cs))
+        (hashtable-set! cid i (car cs))
+        (hashtable-set! cedges i '())
+        (hashtable-set! crev i '())
+        (loop (cdr cs) (+ i 1))))
+    (for-each
+      (lambda (from)
+        (let ((cf (hashtable-ref comp-of from 0)))
+          (for-each
+            (lambda (to)
+              (let ((ct (hashtable-ref comp-of to 0)))
+                (unless (= cf ct)
+                  (hashtable-update! cedges cf
+                                     (lambda (l) (if (member ct l) l (cons ct l))) '())
+                  (hashtable-update! crev ct
+                                     (lambda (l) (if (member cf l) l (cons cf l))) '()))))
+            (hashtable-ref mod-edges from '()))))
+      (vector->list (hashtable-keys mod-edges)))
+    (let ((ncomp (hashtable-size cid)))
+      (for-each (lambda (i) (hashtable-set! remaining i
+                                            (length (hashtable-ref cedges i '()))))
+                (let loop ((i 0) (acc '()))
+                  (if (= i ncomp) acc (loop (+ i 1) (cons i acc)))))
+      (let loop ((placed '()) (wave 0) (waves '()))
+        (let ((ready (chez-filter
+                       (lambda (i)
+                         (and (not (memv i placed))
+                              (= 0 (hashtable-ref remaining i 0))))
+                       (let inner ((i 0) (acc '()))
+                         (if (= i ncomp) acc (inner (+ i 1) (cons i acc)))))))
+          (cond
+            ((null? ready)
+             (values (reverse waves) (chez-filter (lambda (i) (not (memv i placed)))
+                                                  (let inner ((i 0) (acc '()))
+                                                    (if (= i ncomp) acc
+                                                        (inner (+ i 1) (cons i acc)))))))
+            (else
+             (for-each
+               (lambda (i)
+                 (for-each (lambda (d)
+                             (hashtable-update! remaining d
+                                                (lambda (v) (if (> v 0) (- v 1) 0)) 0))
+                           (hashtable-ref crev i '())))
+               ready)
+             (loop (append ready placed) (+ wave 1)
+                   (cons (map (lambda (i) (hashtable-ref cid i #f)) ready) waves)))))))))
+
+(define (show-list xs limit)
+  (let ((n (length xs)))
+    (if (<= n limit)
+        (join-strings (map (lambda (x) (format "~s" x)) xs) " ")
+        (string-append
+          (join-strings (map (lambda (x) (format "~s" x)) (list-head xs limit)) " ")
+          (format " ... (~a more)" (- n limit))))))
+
+(define (report-module-graph ordered)
+  (printf "~n[5/5] module dependency graph (non-kernel only) ...~n")
+  (build-module-graph ordered)
+  (printf "      nodes: ~a   edges: ~a   (edges from macro transformers alone: ~a)~n"
+          (hashtable-size mod-nodes) (count-edges) n-macro-edges)
+  (printf "      references: kernel ~a | C++ glue ~a | same module ~a | unresolved ~a~n"
+          n-kernel-refs n-external-refs n-intra-refs n-local-refs)
+  (let* ((comps (compute-sccs))
+         (big (chez-filter (lambda (c) (> (length c) 1)) comps)))
+    (printf "~n      strongly connected components: ~a, of which ~a have more than one~n"
+            (length comps) (length big))
+    (for-each
+      (lambda (c)
+        (printf "        ~a modules: ~a~n" (length c)
+                (show-list (chez-sort (lambda (a b) (string<? (format "~s" a)
+                                                              (format "~s" b))) c)
+                           8)))
+      (list-head (chez-sort (lambda (a b) (> (length a) (length b))) big)
+                 (min 5 (length big))))
+    (let-values (((waves stuck) (condensation-waves comps)))
+      (cond
+        ((pair? stuck)
+         (printf "~n      WARNING: ~a component(s) could not be layered.~n" (length stuck)))
+        (else
+         (printf "~n      waves over the condensation: ~a (widths ~a)~n"
+                 (length waves) (join-strings (map (lambda (w) (format "~a" (length w)))
+                                                   waves) "/")))))
+    (printf "~n      NOTE: this graph is a syntactic over-approximation.  It can see a~n")
+    (printf "      reference that never runs, so the cycle structure is an upper~n")
+    (printf "      bound on coupling, not a build plan.  The authoritative order~n")
+    (printf "      comes from compile-texmacs.scm, which expands each module in its~n")
+    (printf "      own context; this graph is a cross-check on it.~n")))
+
+
 (define (report-summary)
   (newline)
   (printf "============================================================~n")
   (printf " SUMMARY~n")
   (printf "============================================================~n")
   (printf "macro definition sites        ~a~n" (length macro-sites))
-  (printf "  expanded, kernel only       ~a~n" n-cold-ok)
-  (printf "  failed,   kernel only       ~a~n" n-cold-fail)
+  (printf "  kernel, not analysed        ~a~n"
+          (length (chez-filter (lambda (s) (kernel-file? (site-file s))) macro-sites)))
+  (printf "  analysed                    ~a~n"
+          (length (chez-filter (lambda (s) (not (kernel-file? (site-file s))))
+                               macro-sites)))
+  (printf "  expanded, kernel-only env   ~a~n" n-cold-ok)
+  (printf "  failed,   kernel-only env   ~a~n" n-cold-fail)
   (printf "  expanded, lazy install      ~a~n" n-warm-ok)
   (printf "  failed,   lazy install      ~a~n" n-warm-fail)
   (printf "distinct dependencies         ~a~n" (hashtable-size dep-count))
   (printf "helpers installed on demand   ~a~n" n-helper-installed)
+  (printf "module nodes / edges          ~a / ~a~n"
+          (hashtable-size mod-nodes) (count-edges))
+  (printf "  refs: kernel / glue / intra ~a / ~a / ~a~n"
+          n-kernel-refs n-external-refs n-intra-refs)
+  (printf "  refs: unresolved (locals)   ~a~n" n-local-refs)
   (let ((kinds (make-hashtable equal-hash equal?)))
     (for-each (lambda (n)
                 (hashtable-update! kinds (classify n) (lambda (v) (+ v 1)) 0))
@@ -634,7 +956,7 @@
                    (d (hashtable-ref macro-deps n '())))
               (fprintf port "~a\t~a\t~a\t~a\t~a\t~a\t~a~n"
                        n (car (site-inner s)) (site-file s) (site-module s)
-                       (cond ((boot-file? (site-file s)) "boot")
+                       (cond ((kernel-file? (site-file s)) "kernel")
                              ((eq? (hashtable-ref site-status s #f) 'fail) "FAIL")
                              (else "ok"))
                        (length d)
@@ -653,7 +975,32 @@
           (chez-sort (lambda (a b) (string<? (symbol->string a)
                                              (symbol->string b)))
                      (vector->list (hashtable-keys dep-count))))))
-    (printf "WROTE ~a (~a rows)~n" p (hashtable-size dep-count))))
+    (printf "WROTE ~a (~a rows)~n" p (hashtable-size dep-count)))
+  (let* ((p (out-path "TEXMACS_LINT_MODULES_OUT" "macro-lint-modules.tsv"))
+         (rows (apply append
+                      (map (lambda (from)
+                             (map (lambda (to)
+                                    (list from to (hashtable-ref mod-via (cons from to) '())))
+                                  (hashtable-ref mod-edges from '())))
+                           (vector->list (hashtable-keys mod-edges))))))
+    (when (file-exists? p) (delete-file p))
+    (call-with-output-file p
+      (lambda (port)
+        (fprintf port "from\tto\twave-from\twave-to\tvia-count\tvia~n")
+        (for-each
+          (lambda (r)
+            (fprintf port "~s\t~s\t~a\t~a\t~a\t~a~n"
+                     (car r) (cadr r)
+                     (hashtable-ref mod-levels (car r) 0)
+                     (hashtable-ref mod-levels (cadr r) 0)
+                     (length (caddr r))
+                     (symbols->string (caddr r) ",")))
+          (chez-sort (lambda (a b)
+                       (let ((ka (format "~s|~s" (car a) (cadr a)))
+                             (kb (format "~s|~s" (car b) (cadr b))))
+                         (string<? ka kb)))
+                     rows))))
+    (printf "WROTE ~a (~a rows)~n" p (length rows))))
 
 (define (tm-run-linter)
   (let* ((all (walk-files *root*))
@@ -676,6 +1023,7 @@
     (report-phase2)
     (report-phase3)
     (report-phase4)
+    (report-module-graph ordered)
     (report-summary)
     (write-reports)
     (newline)

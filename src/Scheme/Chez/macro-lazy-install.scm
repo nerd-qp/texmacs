@@ -13,7 +13,8 @@
 ;;; static-analysis.scm, driven by a resolver that searches every module.
 
 (library-directories (cons "src/Scheme/Chez" (library-directories)))
-(import (chezscheme) (compiler-db) (compiler-scan) (compile-graph) (static-analysis))
+(import (chezscheme) (compiler-db) (compiler-scan) (compile-graph)
+        (compile-inventory) (static-analysis))
 
 (define root
   (if (and (getenv "TEXMACS_SRC")
@@ -152,22 +153,12 @@
 ;; re-evaluates boot-chez and upsets the keyword bindings.
 (define (boot-file? p)
   (and (>= (string-length p) 11) (string=? (substring p 0 11) "kernel/boot")))
-;; The authoritative order is *source-files* in compile-texmacs.scm:
+;; The authoritative order is *source-files* in (compile-inventory):
 ;; *kernel-files* followed by tier2..tier7, as explicit lists.  The compiler-db
 ;; graph is not used for ordering there, and using it here is measurably worse,
 ;; because a module with no (:use ...) has no edges and can land before its
 ;; real dependencies.
-(define (build-order)
-  (let* ((forms (read-all-forms "src/Scheme/Chez/compile-texmacs.scm"))
-         (names '(*kernel-files* *tier2-files* *tier3-files* *tier4-files*
-                  *tier5-convert-files* *tier6-dynamic-files* *tier7-extended-files*)))
-    (apply append
-           (map (lambda (n)
-                  (let ((f (find (lambda (x) (and (pair? x) (eq? (car x) 'define)
-                                                  (eq? (cadr x) n)))
-                                 forms)))
-                    (if f (guard (e (#t '())) (eval (caddr f) (scheme-environment))) '())))
-                names))))
+(define (build-order) *source-files*)
 
 (define all-files (chez-filter (lambda (p) (not (boot-file? p))) (walk-files root)))
 (define files (chez-filter (lambda (p) (member p all-files)) (build-order)))
