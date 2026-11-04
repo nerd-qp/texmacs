@@ -170,6 +170,32 @@
 (define-public (string-null? s)
   (string=? s ""))
 
+(define-public (sanitize-escapes str)
+  (cond ((not (string? str)) str)
+        ((string=? str "\\") "\\x5C;")
+        ((string=? str "|")  "\\x7C;")
+        ((not (string-index str #\\)) str)
+        (else
+         (let ((len (string-length str))
+               (out (open-output-string)))
+           (let loop ((i 0) (in-string? #f))
+             (if (>= i len)
+                 (get-output-string out)
+                 (let ((c (string-ref str i)))
+                   (cond
+                     ((char=? c #\")
+                      (write-char c out)
+                      (loop (+ i 1) (not in-string?)))
+                     ((and in-string? (char=? c #\\) (< (+ i 1) len))
+                      (let ((next (string-ref str (+ i 1))))
+                        (when (memv next '(#\a #\b #\t #\n #\v #\f #\r #\" #\\ #\x #\newline #\space))
+                          (write-char #\\ out))
+                        (write-char next out)
+                        (loop (+ i 2) #t)))
+                     (else
+                      (write-char c out)
+                      (loop (+ i 1) in-string?))))))))))
+
 ;;; Hash tables (Guile compatibility)
 (define-public (hash-ref t k . default)
   (if (hashtable-contains? t k)

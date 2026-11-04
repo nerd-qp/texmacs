@@ -449,35 +449,37 @@ bool exec_file (url u) {
   object ret= eval_file (materialize (u));
   return ret != object ("#<unspecified>"); }
 
+/* Intern the symbol instead of evaluating it: on Chez, eval compiles native
+   code on every call, whereas tm-apply already resolves symbols by name. */
 object call (const char* fun) {
-  return tmscm_to_object (call_scheme (eval_scheme(fun))); }
+  return tmscm_to_object (call_scheme (symbol_to_tmscm (fun))); }
 object call (const char* fun, object a1) {
-  return tmscm_to_object (call_scheme (eval_scheme(fun), object_to_tmscm (a1))); }
+  return tmscm_to_object (call_scheme (symbol_to_tmscm (fun), object_to_tmscm (a1))); }
 object call (const char* fun, object a1, object a2) {
-  return tmscm_to_object (call_scheme (eval_scheme(fun), object_to_tmscm (a1), object_to_tmscm (a2))); }
+  return tmscm_to_object (call_scheme (symbol_to_tmscm (fun), object_to_tmscm (a1), object_to_tmscm (a2))); }
 object call (const char* fun, object a1, object a2, object a3) {
-  return tmscm_to_object (call_scheme (eval_scheme(fun), object_to_tmscm (a1),
+  return tmscm_to_object (call_scheme (symbol_to_tmscm (fun), object_to_tmscm (a1),
                                        object_to_tmscm (a2), object_to_tmscm (a3))); }
 object call (const char* fun, object a1, object a2, object a3, object a4) {
-  return tmscm_to_object (call_scheme (eval_scheme(fun), object_to_tmscm (a1),
+  return tmscm_to_object (call_scheme (symbol_to_tmscm (fun), object_to_tmscm (a1),
                                        object_to_tmscm (a2), object_to_tmscm (a3), object_to_tmscm (a4))); }
 object call (const char* fun, array<object> a) {
-  return tmscm_to_object (call_scheme (eval_scheme(fun), array_lookup(a))); }
+  return tmscm_to_object (call_scheme (symbol_to_tmscm (fun), array_lookup(a))); }
 
 object call (string fun) {
-  return tmscm_to_object (call_scheme (eval_scheme(fun))); }
+  return tmscm_to_object (call_scheme (symbol_to_tmscm (fun))); }
 object call (string fun, object a1) {
-  return tmscm_to_object (call_scheme (eval_scheme(fun), object_to_tmscm (a1))); }
+  return tmscm_to_object (call_scheme (symbol_to_tmscm (fun), object_to_tmscm (a1))); }
 object call (string fun, object a1, object a2) {
-  return tmscm_to_object (call_scheme (eval_scheme(fun), object_to_tmscm (a1), object_to_tmscm (a2))); }
+  return tmscm_to_object (call_scheme (symbol_to_tmscm (fun), object_to_tmscm (a1), object_to_tmscm (a2))); }
 object call (string fun, object a1, object a2, object a3) {
-  return tmscm_to_object (call_scheme (eval_scheme(fun), object_to_tmscm (a1),
+  return tmscm_to_object (call_scheme (symbol_to_tmscm (fun), object_to_tmscm (a1),
                                        object_to_tmscm (a2), object_to_tmscm (a3))); }
 object call (string fun, object a1, object a2, object a3, object a4) {
-  return tmscm_to_object (call_scheme (eval_scheme(fun), object_to_tmscm (a1),
+  return tmscm_to_object (call_scheme (symbol_to_tmscm (fun), object_to_tmscm (a1),
                                        object_to_tmscm (a2), object_to_tmscm (a3), object_to_tmscm (a4))); }
 object call (string fun, array<object> a) {
-  return tmscm_to_object (call_scheme (eval_scheme(fun), array_lookup(a))); }
+  return tmscm_to_object (call_scheme (symbol_to_tmscm (fun), array_lookup(a))); }
 
 object call (object fun) {
   return tmscm_to_object (call_scheme (object_to_tmscm (fun))); }
