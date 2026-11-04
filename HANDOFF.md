@@ -326,6 +326,10 @@ build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -H -x '(load "verify_module.sc
 The compilation pipeline supports **incremental builds** (default) and a **clean recompile from scratch fallback**:
 
 #### 1. Incremental Compilation (Default: `-compile-modules`)
+
+> [!WARNING]
+> **Incremental compilation is currently broken**: When upstream source files or dependent `.scm` modules are modified, `-compile-modules` fails with unbound variable errors (e.g. `make-soft-port`, `hash-ref`, `ahash-ref`) because cached `.so` files contain serialized FASL environment descriptors that mismatch newly recompiled modules. Until incremental dependency propagation is resolved, always use **`-recompile-modules`** for reliable builds.
+
 When invoking `-compile-modules`, the transpiler checks file modification timestamps (`file-modification-time` vs. output `.so`). Any module whose `.so` binary is newer than both the upstream source `.scm` and the transpiled `.scm` is marked `UP-TO-DATE`, skipping transpilation and compiling. Its `.so` binary is loaded directly into the build environment:
 
 ```bash
@@ -1449,6 +1453,165 @@ Measures incremental and full ahead-of-time compilation speed for all 453 Scheme
 ```bash
 time ./build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -recompile-modules
 ```
+
+---
+
+## 16. Runtime Input Lifecycle & C++ / Scheme Call Profiling Architecture
+
+### 16.1 Character Input Event Lifecycle
+Every keystroke in the TeXmacs editor executes the following cross-language pipeline:
+1. **Qt Platform Event**: `QTMWidget::keyPressEvent` intercepts the OS `QKeyEvent`, translates modifiers/keys, and dispatches to `edit_interface_rep::handle_keypress(string key, time_t t)` in [`src/Edit/Interface/edit_keyboard.cpp`](src/Edit/Interface/edit_keyboard.cpp#L365).
+2. **Editing Transaction Start**: `start_editing()` begins an atomic document transaction.
+3. **Scheme Dispatch**: C++ calls `call ("keyboard-press", gkey, t)` $\to$ invokes `(keyboard-press key time)` in [`TeXmacs/progs/kernel/gui/kbd-handlers.scm`](TeXmacs/progs/kernel/gui/kbd-handlers.scm#L26) $\to$ calls C++ `key_press(string gkey)`.
+4. **Shortcut & Prefix Matching**: `try_shortcut` queries the server keymap via `sv->get_keycomb` $\to$ `find_key_binding` $\to$ calls Scheme `call ("kbd-find-key-binding", key)`.
+5. **Undo Recording & Insertion**:
+   - `archive_state()` records the buffer state for undo/redo.
+   - C++ invokes Scheme `call ("kbd-insert", rew)`.
+   - `(kbd-insert s)` is mode-overloaded: in math mode ([`math-edit.scm`](TeXmacs/progs/math/math-edit.scm#L73)) it inspects preceding tokens and adjusts math symbol spacing; in standard text ([`kbd-handlers.scm`](TeXmacs/progs/kernel/gui/kbd-handlers.scm#L40)) it executes `(insert s)`.
+   - `(insert s)` calls the C++ primitive `cpp-insert` / `insert_tree`, directly mutating the document AST (`tree`).
+6. **Transaction Commit & Box Layout**:
+   - `update_focus_loci()` updates cursor/focus loci.
+   - `notify_change (THE_DECORATIONS)` updates UI toolbars and focus tags.
+   - `end_editing()` commits the transaction, triggering incremental typesetting, line breaking, and box model updates.
+   - `keyboard_message ("kbd-" * key)` notifies document box structures.
+7. **Qt Paint**: Dirty bounding rectangles (`rectangles rs`) are invalidated, and Qt redraws the modified canvas via `QTMWidget::paintEvent` / `drawPixmap`.
+
+### 16.2 The String-Based `call` / `eval_scheme` Bottleneck: Full Native JIT Compilation
+- In [`src/Scheme/Scheme/object.cpp:452-480`](src/Scheme/Scheme/object.cpp#L452-L480), all `call (string fun, ...)` and `call (const char* fun, ...)` variants take function *names* as strings and evaluate them:
+  ```cpp
+  object call (string fun, object a1) {
+    return tmscm_to_object (call_scheme (eval_scheme (fun), object_to_tmscm (a1)));
+  }
+  ```
+- In Chez Scheme ([`src/Scheme/Chez/chez_tm.cpp:391, 553-560`](src/Scheme/Chez/chez_tm.cpp#L391)), `eval_scheme` delegates to `tm-eval-string`, which reads an S-expression and calls `(eval x tm-user-env)`.
+- **The Core Chez Scheme Distinction**:
+  - Unlike GNU Guile 1.8 (a bytecode/AST interpreter), **Chez Scheme's `eval` invokes its full, optimizing native-code compiler on every invocation**.
+  - On every keystroke, evaluating `"keyboard-press"`, `"kbd-find-key-binding"`, and `"kbd-insert"` triggers at least 3 full JIT native-code compilations on the fly.
+  - Bypassing `eval` turns microsecond/millisecond native compilation passes into nanosecond function calls.
+
+### 16.3 Profiling & Elimination Approaches for Chez C++ Dispatch
+
+#### A. Central Observation Point in `call`
+Instrumenting `call` in [`src/Scheme/Scheme/object.cpp`](src/Scheme/Scheme/object.cpp) directly isolates the time spent in `eval_scheme(fun)` (native compilation & symbol resolution) versus `call_scheme(proc, ...)` (procedure execution), yielding precise latency telemetry for interactive keystrokes without touching editor UI code.
+
+#### B. Optimization Approaches
+
+1. **Approach 1: `Stop_level_value` + `ScallN` (Arbitrary Scheme Objects & Moving GC Rules)**
+   - *GC Invariant*: Chez Scheme uses a copying, moving garbage collector. Pointers to heap closures can move in memory during any GC allocation. **However, symbols never move once interned**.
+   - *Rule*: Cache the interned symbol pointer in C++ (e.g. `ptr sym = Sstring_to_symbol ("kbd-insert")`).
+   - Call `ptr proc = Stop_level_value (sym)` right before `Scall1(proc, arg)`. In Chez Scheme, `Stop_level_value` on a known symbol is a single pointer dereference.
+   - Alternatively, if caching the closure pointer across C++ calls, pin it using `Slock_object (proc)` (and `Sunlock_object (proc)` on shutdown) to prevent the moving GC from relocating it.
+
+2. **Approach 2: `foreign-callable` (Fastest — Direct Native C Function Pointers)**
+   - If Scheme procedures take and return C-compatible types (or boxed `ptr` handles), wrap them via Chez's `foreign-callable`:
+     ```scheme
+     (define kbd-insert-code
+       (foreign-callable kbd-insert (scheme-object) void))
+     (lock-object kbd-insert-code)
+     (define (get-kbd-insert-addr)
+       (foreign-callable-entry-point kbd-insert-code))
+     ```
+   - C++ fetches the raw entry-point address once at boot:
+     ```cpp
+     using KbdInsertFn = void (*)(ptr);
+     KbdInsertFn kbd_insert = (KbdInsertFn) Sinteger_value (Scall0 (get_addr_proc));
+     ```
+   - Subsequent calls invoke native machine code directly with zero C-API dispatch overhead.
+
+3. **Approach 3: Data Construction over Dynamic String Evaluation**
+   - For commands that previously built dynamic string expressions (e.g. `"(math-separator \"|\" #t)"`) to pass to `eval`, build Scheme pair/list structures in C++ directly using `Scons`, `Sstring_utf8`, `Sboolean`, and pass them to pre-compiled Scheme handlers via `ScallN`, or use a pre-compiled `case` dispatcher in Scheme.
+
+---
+
+## 17. C++ <-> Scheme Interaction Subsystem: Comprehensive Optimization Blueprint
+
+Beyond eliminating dynamic string evaluation in input events, the C++ <-> Scheme boundary in TeXmacs Chez has several architectural bottlenecks. This section outlines the complete optimization blueprint across all interaction layers.
+
+### 17.1 Scheme Calling C++: Modernizing the Glue Layer Trampoline
+
+#### Current Bottleneck ([`src/Scheme/Chez/chez_tm.cpp:355-367`](src/Scheme/Chez/chez_tm.cpp#L355-L367))
+All ~1,000+ C++ primitives generated across `glue_basic.cpp`, `glue_editor.cpp`, and `glue_server.cpp` are installed into Scheme via `tmscm_install_procedure`:
+```scheme
+(define <name> (lambda args (tm-call-by-name "<name>" args)))
+```
+When Scheme evaluates any primitive (e.g., `(tree-label t)`, `(tree-ref t 0)`, `(cursor-path)` during editing or layout):
+1. Scheme allocates a heap rest-argument list `args`.
+2. Chez FFI transitions across the boundary to C++ `tm_call_by_name`.
+3. C++ executes `std::map<string, tm_proc_entry>::find(name)`, requiring `std::string` heap allocation and $O(\log N)$ string comparisons.
+4. C++ unpacks the Scheme list element-by-element with `Scar`/`Scdr` into a fixed array `ptr a[10]`.
+5. Finally dispatches through a function pointer cast.
+
+#### Optimization Architecture
+1. **Direct Dense Table Indexing (ID Lookup)**:
+   - Assign each registered primitive a dense integer index `0 <= id < N`.
+   - Install fixed-arity wrappers: `(define foo (lambda (a1 a2) (tm-call-by-id 142 a1 a2)))`.
+   - Scheme passes arguments directly without list consing, and C++ indexes a contiguous array `tm_proc_table[id].fn` in $O(1)$ time with zero string comparisons.
+2. **Direct Typed Chez FFI**:
+   - Alternatively, register C++ function pointers directly with Chez Scheme's `foreign-procedure` at boot time, letting Chez generate direct machine-code entry stubs with zero C++ wrapper overhead.
+
+---
+
+### 17.2 C++ Calling Scheme: Native `Scall0..3` & Procedure Caching
+
+#### A. Direct `Scall` Arity Invocation ([`src/Scheme/Chez/chez_tm.cpp:395-438`](src/Scheme/Chez/chez_tm.cpp#L395-L438))
+- **Current Behavior**: `call_scheme (fun, a1, a2, ...)` constructs Scheme lists using `Scons` and dispatches via `Scall2 (tm_apply_proc, fun, args_list)`.
+- **Optimization**: Chez Scheme's C API exposes direct native arity entry points:
+  - `Scall0(fun)`
+  - `Scall1(fun, a1)`
+  - `Scall2(fun, a1, a2)`
+  - `Scall3(fun, a1, a2, a3)`
+  Switching to direct `ScallN` eliminates all intermediate cons-cell allocations and `apply` dispatch overhead for 0 to 3 arguments (which accounts for >95% of all C++ -> Scheme invocations).
+
+#### B. Procedure & Symbol Lookup Caching ([`src/Scheme/Scheme/object.cpp:452-480`](src/Scheme/Scheme/object.cpp#L452-L480))
+- **Current Behavior**: `call (const char* fun, ...)` and `call (string fun, ...)` invoke `eval_scheme(fun)`, which parses the string into an S-expression and calls `(eval x tm-user-env)` via `tm-eval-string`. In Chez Scheme, `eval` invokes the JIT native-code compiler every time.
+- **Optimization**:
+  - Maintain a C++ lookup cache (`hashmap<string, ptr>`).
+  - Cache the interned Chez symbol (`Sstring_to_symbol(name)`) or dereference `Stop_level_value(sym)` directly.
+  - When storing closures across C++ calls, pin them using `Slock_object(proc)` to satisfy Chez's copying/moving GC invariants.
+
+---
+
+### 17.3 Document AST Execution: Typesetter `<extern|...>` AST Nodes
+
+#### Current Bottleneck ([`src/Typeset/Env/env_exec.cpp:49-65`](src/Typeset/Env/env_exec.cpp#L49-L65))
+During typesetting and macro expansion of documents containing `<extern|fun|arg1|...>` tags:
+```cpp
+object expr= cons (string_to_object (fun), convert (args));
+object r = eval (expr);
+```
+`eval(expr)` delegates to `(eval expr tm-user-env)`. In documents with heavy dynamic styling, shortcuts, or equations, compiling expressions on the fly adds millisecond-level pauses and GC pressure.
+
+#### Optimization
+- Resolve `fun` once via the procedure cache and invoke `call_scheme(proc, convert(args))` directly, bypassing runtime expression compilation.
+
+---
+
+### 17.4 Blackbox Boxing & Guardian Lifecycle
+
+#### Current Behavior ([`src/Scheme/Chez/chez_tm.cpp:170-215`](src/Scheme/Chez/chez_tm.cpp#L170-L215))
+- Every C++ object (`tree`, `widget`, `command`, `url`) converted to Scheme (`blackbox_to_tmscm`) triggers:
+  1. `tm_new<blackbox>(b)` (C++ heap allocation).
+  2. `Sinteger((iptr) p)` (Scheme integer).
+  3. `Sbox(...)` (Scheme box allocation).
+  4. `Scall1(tm_blackbox_guardian, box)` (registered with Chez Guardian for GC tracking).
+- Reclaiming unreachable blackboxes requires executing `reap_blackboxes` during garbage collection to call `tm_delete`.
+
+#### Optimization
+- Introduce an object pool/freelist for blackbox wrappers to avoid repeated `tm_new` / `tm_delete` cycles for transient tree references.
+- In hot typesetting and editing paths, prefer querying tree properties directly through C++ primitives on the boxed handle rather than serializing trees back and forth between `tree` (C++) and `stree` (Scheme S-expressions).
+
+---
+
+### 17.5 Thread Activation & Mutex Granularity
+
+#### Current Behavior ([`src/Scheme/Chez/chez_tm.cpp:40-65`](src/Scheme/Chez/chez_tm.cpp#L40-L65))
+Every C++ <-> Scheme boundary crossing enters `chez_lock` (`std::recursive_mutex`) and `chez_activate` (`Sactivate_thread()` / `Sdeactivate_thread()`).
+
+#### Optimization
+When multiple C++ <-> Scheme calls occur within the same editing event or layout cycle on the main UI thread, maintain thread activation across the batch rather than activating and deactivating repeatedly on every individual micro-call.
+
+
+
 
 
 

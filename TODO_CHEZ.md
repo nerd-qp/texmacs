@@ -143,6 +143,33 @@ This document tracks identified architectural improvements and performance bottl
 
 ## 2. Medium Priority (GUI & Responsiveness)
 
+### [ ] Keyboard Input Latency & Eliminating JIT Native-Code `eval` in C++ Dispatch
+- **Location**: [`src/Edit/Interface/edit_keyboard.cpp`](src/Edit/Interface/edit_keyboard.cpp), [`src/Scheme/Scheme/object.cpp`](src/Scheme/Scheme/object.cpp), [`src/Scheme/Chez/chez_tm.cpp`](src/Scheme/Chez/chez_tm.cpp)
+- **Root Cause (Chez JIT Native Compilation Overhead)**:
+  - Typing in TeXmacs can feel sluggish because every single keystroke in `edit_interface_rep::handle_keypress` invokes multiple Scheme procedures by string name:
+    - `call ("keyboard-press", gkey, t)` in `edit_keyboard.cpp`
+    - `call ("kbd-find-key-binding", key)` inside `tm_config.cpp:find_key_binding`
+    - `call ("kbd-insert", rew)` in `edit_keyboard.cpp`
+  - In `src/Scheme/Scheme/object.cpp`, `call (string fun, ...)` wraps the function name with `eval_scheme(fun)`, which in Chez calls `(eval x tm-user-env)` via `tm-eval-string`.
+  - **Why `eval` is exceptionally slow in Chez Scheme**: Unlike bytecode interpreters (like Guile 1.8), **Chez Scheme's `eval` invokes its full optimizing native machine-code compiler on every call**. A single character typed triggers at least 3 full JIT native-code compilations on the fly.
+  - Bypassing `eval` turns microsecond/millisecond native compilations into nanosecond function calls.
+- **Action Plan**:
+  1. **Instrument `call` and Keystroke Phases**:
+     - Instrument `call (string fun, ...)` and `eval_scheme (fun)` with `<chrono>` in `src/Scheme/Scheme/object.cpp`.
+     - Record sub-millisecond breakdowns (`[KBD PERF]`): time spent compiling via `eval_scheme` vs. Scheme execution (`call_scheme`) vs. C++ tree layout (`end_editing`).
+  2. **Approach A: Interned Symbol Caching (`Stop_level_value` + `ScallN`)**:
+     - *Chez GC Invariant*: Chez Scheme uses a moving, copying garbage collector. Pointers to heap closures can move during GC, but **symbols never move once interned**.
+     - Cache the interned symbol `ptr` (e.g. `sym = Sstring_to_symbol ("kbd-insert")`) in C++.
+     - Fetch the procedure via `proc = Stop_level_value (sym)` right before calling (a single pointer dereference in Chez), or pin closure pointers with `Slock_object (proc)`.
+     - Dispatch via `Scall1(proc, ...)` / `Scall2(proc, ...)` with zero `eval` compilation overhead.
+  3. **Approach B: Direct Native Function Pointers (`foreign-callable`)**:
+     - For ultra-hot interactive loops, export Scheme handlers using `(foreign-callable proc (types...) ret-type)`.
+     - Pin the callable with `(lock-object code)` and expose `(foreign-callable-entry-point code)`.
+     - C++ casts this to a raw C function pointer (`using KbdInsertFn = void (*)(ptr)`), executing pure native machine code directly with zero C-API dispatch overhead.
+  4. **Approach C: Replace String-Building `eval` with S-expression / Data Dispatch**:
+     - Avoid constructing dynamic Scheme command strings (e.g. `"(math-separator \"|\" #t)"`) for evaluation.
+     - Build pairs/lists directly in C++ via `Scons` and pass to locked handlers, or pre-compile a pattern-matching `case` dispatcher in Scheme.
+
 ### [ ] Defer Secondary Tool Initialization (92 Delayed Tasks)
 - **Location**: [`TeXmacs/progs/texmacs/menus/`](TeXmacs/progs/texmacs/menus/), [`src/Edit/Interface/edit_interface.cpp`](src/Edit/Interface/edit_interface.cpp)
 - **Problem**: In GUI mode, 92 delayed actions eagerly initialize sub-menus and tools (LaTeX export, BibTeX manager, Collaboration chat, Poster designer, etc.) during startup before the user even clicks them, triggering synchronous loads of 30+ large Scheme files.
@@ -780,3 +807,50 @@ This document tracks identified architectural improvements and performance bottl
   1. Promote `save-learned` to `define-public` so `-x` can reach it.
   2. Guard the `-x` evaluation so a Scheme error is reported as a message rather than
      terminating the process — the same defect will affect any unbound name passed to `-x`.
+
+---
+
+## 8. C++ <-> Scheme Interaction & FFI Optimization Roadmap
+
+### [ ] Eliminate `tm-apply` & List Consing in `call_scheme`
+- **Location**: [`src/Scheme/Chez/chez_tm.cpp:395-438`](src/Scheme/Chez/chez_tm.cpp#L395-L438)
+- **Problem**: `call_scheme (fun, a1, a2, ...)` constructs Scheme lists using `Scons` and dispatches via `Scall2 (tm_apply_proc, fun, args_list)`.
+- **Optimization**: Chez Scheme's C API natively provides `Scall0(fun)`, `Scall1(fun, a1)`, `Scall2(fun, a1, a2)`, `Scall3(fun, a1, a2, a3)`. Invoking `ScallN` directly eliminates Scheme heap allocations (cons cells) and dynamic `apply` dispatch overhead for all 0-3 argument C++ -> Scheme invocations.
+
+### [ ] Cache Scheme Procedures and Symbols in `call (string / const char*, ...)`
+- **Location**: [`src/Scheme/Scheme/object.cpp:452-480`](src/Scheme/Scheme/object.cpp#L452-L480)
+- **Problem**: Every `call("foo", ...)` runs `eval_scheme("foo")`, which calls `(tm-eval-string "foo")` -> `open-input-string` -> `read` -> `eval` in `tm-user-env`. In Chez Scheme, `eval` triggers the full native-code compiler on every lookup.
+- **Optimization**:
+  1. Intern and cache Scheme symbol pointers or top-level procedure pointers (`Stop_level_value(Sstring_to_symbol(name))`).
+  2. Maintain a C++ lookup cache (`hashmap<string, ptr>`) so frequently called Scheme routines (`notify-preference`, `object->string`, `tree->stree`, `keyboard-press`, etc.) resolve in $O(1)$ without string parsing or JIT compilation.
+
+### [ ] Replace Scheme -> C++ Glue Trampoline (`tm-call-by-name` & `std::map`)
+- **Location**: [`src/Scheme/Chez/chez_tm.cpp:250-367`](src/Scheme/Chez/chez_tm.cpp#L250-L367)
+- **Problem**: All 1,000+ C++ glue primitives (`tmg_*`) are installed as:
+  ```scheme
+  (define <name> (lambda args (tm-call-by-name "<name>" args)))
+  ```
+  Every time Scheme calls a C++ primitive (e.g. `(tree-label t)` during editing or typesetting):
+  1. Scheme allocates a heap rest-argument list `args`.
+  2. Calls foreign procedure `tm-call-by-name`.
+  3. C++ executes `std::map<string, tm_proc_entry>::find(name)` with `std::string` heap allocations and $O(\log N)$ comparisons.
+  4. C++ unpacks the Scheme list one element at a time via `Scar`/`Scdr`.
+- **Optimization**:
+  1. **Direct Numeric ID Index**: Bind primitives with integer IDs `(lambda (a b) (tm-call-by-id 42 a b))` and index a flat C++ array `tm_proc_table[id]`, eliminating map lookups and list unpacking.
+  2. **Direct Chez FFI**: Register typed C++ function pointers directly with Chez Scheme's `foreign-procedure` during initialization, bypassing `tm-call-by-name` entirely.
+
+### [ ] Typesetter `<extern|...>` AST Execution: Replace Dynamic `eval` with Cached Procedure Calls
+- **Location**: [`src/Typeset/Env/env_exec.cpp:49-65`](src/Typeset/Env/env_exec.cpp#L49-L65)
+- **Problem**: During typesetting of documents with dynamic tags, menus, or macros, `<extern|fun|arg1|...>` builds a cons cell `(cons (string_to_object fun) args)` and calls `eval(expr)`. In Chez Scheme, this invokes the native compiler on every dynamic tag evaluation.
+- **Optimization**: Look up the cached Scheme procedure `fun` and invoke it directly with `call_scheme(proc, args)` or compile once and reuse.
+
+### [ ] Optimize Blackbox Object Allocation & Guardian Tracking
+- **Location**: [`src/Scheme/Chez/chez_tm.cpp:170-215`](src/Scheme/Chez/chez_tm.cpp#L170-L215)
+- **Problem**: Every C++ object (`tree`, `widget`, `command`, `url`) passed into Scheme triggers `tm_new<blackbox>(b)`, a Chez integer allocation (`Sinteger`), a Box allocation (`Sbox`), and registration with `tm_blackbox_guardian`. Reclaiming requires running `reap_blackboxes` during GC.
+- **Optimization**: Investigate pooling/recycling blackbox memory or batching guardian operations to reduce allocator and GC pressure.
+
+### [ ] Thread Activation & Mutex Granularity (`chez_lock` / `chez_activate`)
+- **Location**: [`src/Scheme/Chez/chez_tm.cpp:40-65`](src/Scheme/Chez/chez_tm.cpp#L40-L65)
+- **Problem**: Every entry point into Scheme acquires a recursive mutex and calls `Sactivate_thread()` and `Sdeactivate_thread()`.
+- **Optimization**: Keep thread activated across batched operations on the main UI/typesetting thread or bypass deactivation when already running within an active engine context.
+
