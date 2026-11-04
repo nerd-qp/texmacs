@@ -12,6 +12,7 @@
 #include "chez_tm.hpp"
 #include "blackbox.hpp"
 #include "file.hpp"
+#include "converter.hpp"
 #include "../Scheme/glue.hpp"
 
 #include <map>
@@ -119,24 +120,26 @@ tmscm_is_equal (tmscm o1, tmscm o2) {
 
 tmscm
 string_to_tmscm (string s) {
-  // Sstring_of_length stops copying at the first '\0' byte, corrupting binary data (e.g. PNGs).
-  // We allocate an uninitialized string and explicitly copy all n bytes via Sstring_set.
-  iptr n= (iptr) N (s);
-  tmscm res= Smake_uninitialized_string (n);
-  for (iptr i= 0; i < n; i++) {
-    Sstring_set (res, i, (unsigned char) s[i]);
+  int i = 0, n = N (s);
+  array<unsigned int> cps;
+  while (i < n) {
+    cps << decode_from_utf8 (s, i);
+  }
+  iptr num_chars = (iptr) N (cps);
+  tmscm res = Smake_uninitialized_string (num_chars);
+  for (iptr j = 0; j < num_chars; j++) {
+    Sstring_set (res, j, (unsigned int) cps[j]);
   }
   return res;
 }
 
 string
 tmscm_to_string (tmscm s) {
-  iptr n= Sstring_length (s);
-  STACK_NEW_ARRAY (buf, char, n + 1);
-  for (iptr i= 0; i < n; i++) buf[i]= (char) Sstring_ref (s, i);
-  buf[n]= '\0';
-  string r (buf, (int) n);
-  STACK_DELETE_ARRAY (buf);
+  iptr n = Sstring_length (s);
+  string r;
+  for (iptr i = 0; i < n; i++) {
+    r << encode_as_utf8 ((unsigned int) Sstring_ref (s, i));
+  }
   return r;
 }
 

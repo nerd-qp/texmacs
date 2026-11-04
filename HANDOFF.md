@@ -550,7 +550,6 @@ In GNU Guile, `tm-define` relied on dynamic module switching via `(set-current-m
 2. **First-Class Overloading Model**:
    - Master definition (1st occurrence of `name`): emits `(define-public name ...)` in the definition block.
    - Overloads (subsequent occurrences): emit `(let ((former name)) (set! name ...))` in the expression block.
-   - Downstream modules importing `name` mutate the imported binding directly without runtime graph traversal (`module-propagate-binding!`).
    - Definitions and expressions are partitioned cleanly, fully conforming to Chez Scheme's R6RS module grammar.
 
 ### 4. Mid-Load Mutation Analysis & Ordering Linter
