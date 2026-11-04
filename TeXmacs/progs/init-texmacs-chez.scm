@@ -224,7 +224,7 @@
                (kernel boot compat) (kernel boot abbrevs)
                (kernel boot debug) (kernel boot srfi)
                (kernel boot ahash-table) (kernel boot prologue))
-  (use-modules (kernel library base) (kernel library list)
+  (use-modules (kernel library list) (kernel library base)
                (kernel library tree) (kernel library content)
                (kernel library patch))
   (use-modules (kernel regexp regexp-match) (kernel regexp regexp-select))
@@ -254,8 +254,6 @@
     (define-top-level-value 'texmacs-user-kernel (copy-environment (interaction-environment) #t)))
 
   (define-top-level-value 'boot-kernel-loaded? #t)
-  (unless (top-level-bound? 'lazy-format-todo)
-    (define-top-level-value 'lazy-format-todo '()))
 
   ;; ---------------------------------------------------------------------------
   ;; Runtime definitions for dynamic Scheme evaluation (slotlist-load, REPL, scripts)

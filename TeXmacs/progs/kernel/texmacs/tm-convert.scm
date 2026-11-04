@@ -20,14 +20,28 @@
 
 (define lazy-format-todo '())
 
+;; Registration must happen at run time, in this module's own environment.
+;; Doing it from the macro body (`set!` at expansion time) is unreliable under
+;; ahead-of-time compilation: the transformer runs while some *other* file is
+;; being compiled, so the write may not reach the `lazy-format-todo' cell that
+;; `lazy-format-force' reads, leaving the list empty and every conversion
+;; returning #f.  See `convert' below, which relies on the list being real.
+(define-public (lazy-format-register module)
+  "Record MODULE as a deferred provider of converters."
+  (if (not (member module lazy-format-todo))
+      (set! lazy-format-todo (cons module lazy-format-todo))))
+
 (define-public-macro (lazy-format module . ignored)
-  (set! lazy-format-todo (cons module lazy-format-todo))
-  `(delayed (:idle 2000) (import-from ,module)))
+  `(begin
+     (lazy-format-register ',module)
+     (delayed (:idle 2000) (import-from ,module))))
 
 (define (lazy-format-force)
-  (if (nnull? lazy-format-todo)
-      (eval (cons 'import-from lazy-format-todo)))
-  (set! lazy-format-todo '()))
+  ;; `module-provide' is what `import-from' expands to; calling it directly
+  ;; avoids depending on macro visibility in whatever environment `eval' uses.
+  (let ((todo lazy-format-todo))
+    (set! lazy-format-todo '())
+    (for-each module-provide todo)))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Adding new converters
