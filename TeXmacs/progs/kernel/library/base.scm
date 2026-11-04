@@ -253,10 +253,6 @@
   "Compose the functions @f and @g"
   (lambda x (g (apply f x))))
 
-(define-public (non pred?)
-  "Return the negation of @pred?."
-  (lambda args (not (apply pred? args))))
-
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Objects
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

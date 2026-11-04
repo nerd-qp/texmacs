@@ -224,7 +224,7 @@
                (kernel boot compat) (kernel boot abbrevs)
                (kernel boot debug) (kernel boot srfi)
                (kernel boot ahash-table) (kernel boot prologue))
-  (use-modules (kernel library base) (kernel library list)
+  (use-modules (kernel library list) (kernel library base)
                (kernel library tree) (kernel library content)
                (kernel library patch))
   (use-modules (kernel regexp regexp-match) (kernel regexp regexp-select))

@@ -195,4 +195,9 @@
           acc
           (loop (+ i 1) (proc (vector-ref ks i) (vector-ref vs i) acc))))))
 
+;;; Functions
+(define-public (non pred?)
+  "Return the negation of @pred?."
+  (lambda args (not (apply pred? args))))
+
 

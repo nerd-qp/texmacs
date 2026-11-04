@@ -12,7 +12,7 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (texmacs-module (prog prog-format-test)
-  (:use (prog prog-format-test)))
+  (:use (prog prog-format)))
 
 (define (regtest-cpp)
   (regression-test-group

@@ -1368,6 +1368,90 @@ That runs the analysis against the real kernel, the real primitives and a popula
 
 What remains valid from 14.9–14.11: the index, the loader rewrites (`uncurry-def`, `tm-strip-docstring`, conditional unwrapping), the boot-file list, and the one-pass discipline. Only the construction of the environment changes.
 
+---
+
+## 15. Test Suites and Benchmarking Reference
+
+### 15.1 Available Unit Test Suites
+
+#### A. Native Scheme / Compiler Toolchain Tests (`src/Scheme/Chez/*-test.scm`)
+Self-contained unit tests running under standard Chez Scheme without requiring GUI or C++ glue. Currently **173 checks, 0 failures**:
+
+* **`compile-inventory-test.scm`** (17 checks): Validates module tier partitioning (Tiers 1–7), whitelist path validity, and bootstrap load order (`chez-compat.scm` first).
+* **`compile-graph-test.scm`** (41 checks): Verifies dependency wave scheduling, topological sorting, strongly connected components (SCCs), and circular dependency cycle breaking.
+* **`compiler-db-test.scm`** (50 checks): Tests the binary FASL compiler database, module record serialization, interface and source hashing, and corrupt cache invalidation.
+* **`compiler-scan-test.scm`** (29 checks): Verifies AST parsing of `tm-define`, `define-macro`, `define-public`, exported symbols, and module headers.
+* **`static-analysis-test.scm`** (36 checks): Tests whole-program call-graph construction, unbound variable detection, and dead code analysis.
+
+To run the full toolchain test suite:
+```bash
+(cd texmacs && for t in src/Scheme/Chez/*-test.scm; do /opt/homebrew/bin/chez -q "$t"; done)
+```
+
+#### B. TeXmacs Scheme Runtime Unit Tests (`TeXmacs/progs/`)
+1. **Core Regression Suite (`(run-all-tests)` in [`TeXmacs/progs/check/check-master.scm`](TeXmacs/progs/check/check-master.scm))**:
+   * `regtest-htmltm`: HTML-to-TeXmacs tree parsing.
+   * `regtest-xmltm`: Fast XML serialization and entity parsing.
+   * `regtest-tmlength`: Length units, arithmetic, and dimension parsing.
+   * `regtest-environment`: Scoped environment hashtables and bindings.
+   * `regtest-mathtm`: MathML conversion.
+   * `regtest-tmhtml`: TeXmacs-to-HTML export.
+   * `regtest-tmmltm`: TMML XML converter.
+   * `regtest-prog-format`: Programming language source format recognition.
+   * `regtest-cite-sort`: Citation and index key sorting.
+
+   *Status & Fixes*:
+   * `regtest-htmltm` & `regtest-xmltm`: Failed due to unbound `list-drop-while`. Resolved by moving `non` into [`kernel/boot/chez-compat.scm`](TeXmacs/progs/kernel/boot/chez-compat.scm) and compiling [`kernel/library/list.scm`](TeXmacs/progs/kernel/library/list.scm) before `base.scm`.
+   * `regtest-prog-format`: Failed on `*.scm` resolving to `"generic"`. Resolved by fixing typo `(:use (prog prog-format-test))` $\to$ `(:use (prog prog-format))` in [`TeXmacs/progs/prog/prog-format-test.scm`](TeXmacs/progs/prog/prog-format-test.scm).
+   * `regtest-tmhtml`: Mismatch on `<img class="image">`. Runtime converter is modern; test fixture `make-expected-sub` in `tmhtml-test.scm` omits `(class "image")` (left unmodified for now).
+
+2. **Additional Suites (Not wired into `run-all-tests`)**:
+   * **`regtest-tm-convert`** ([`TeXmacs/progs/kernel/texmacs/tm-convert-test.scm`](TeXmacs/progs/kernel/texmacs/tm-convert-test.scm)): Tests `format?`, `format-get-name`, and `format-from-suffix`.
+   * **`run-integration-tests`** ([`TeXmacs/progs/check/check-master.scm`](TeXmacs/progs/check/check-master.scm)): Side-effecting tests for server notifications, backups, and disk cache.
+   * **`check-all` / `run-checks`** ([`TeXmacs/progs/utils/test/test-latex-export.scm`](TeXmacs/progs/utils/test/test-latex-export.scm)): Document export verification across test trees.
+
+To execute via TeXmacs headless:
+```bash
+TEXMACS_HOME_PATH="$PWD/.sandbox-texmacs" TEXMACS_BOOT_PATH="$PWD/build-texmacos/boot" \
+  ./build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -H -x '(begin (use-modules (check check-master)) (run-all-tests))'
+```
+
+---
+
+### 15.2 Benchmarking Suites & References
+
+Reference: Massimiliano Gubinelli (mgubi), [*Notes on TeXmacs: Scheming*](https://texmacs.github.io/notes/docs/scheming.html).
+
+#### A. R7RS / Gabriel Scheme Benchmarks
+Evaluates pure Scheme runtime performance (closures, recursion, GC pause times, list/vector mutation) independent of Qt GUI glue:
+* **Benchmark tasks**: `fib`, `tak`, `cpstak`, `div-iter`, `div-rec`, `fft`, `mbrot`, `puzzle`, `triang`, `slatex`.
+* **Findings from mgubi**: Chez Scheme and S7 were consistently the fastest performers compared to Guile 1.8 and Chibi.
+* Can be invoked directly inside TeXmacs via `-x` to compare execution throughput against Guile.
+
+#### B. TeXmacs Startup & Boot Latency
+Measures the cold-start and warm-start overhead of initializing Scheme glue and loading modules:
+* In `scheming.html`, Guile 1.8 cold boot took ~0.8s, whereas modern engines (S7, Guile 3, Chez) boot in ~0.4s.
+* Built-in high-resolution instrumentation already tracks this at startup:
+  * `TIME-SERVER-INIT`: C++ Server and Scheme glue initialization time.
+  * `TIME-OPEN-WINDOW-TOTAL`: Buffer creation and window view construction.
+  * `TIME-PRE-GUI-LOOP`: Total elapsed time from process entry to GUI event loop.
+
+#### C. Full Document Compilation Benchmark (End-to-End Typesetting)
+The primary real-world benchmark used by TeXmacs developers:
+* Compiling the entire TeXmacs manual or heavy `.tm` test document from source to PDF or HTML in headless mode:
+  ```bash
+  time ./build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -H -C \
+    texmacs/TeXmacs/doc/main/man-manual.en.tm /tmp/manual.pdf
+  ```
+  This exercises the full macro expansion engine, font metrics, layout algorithms, and document converters under heavy multi-page load.
+
+#### D. AOT Module Compilation Throughput
+Measures incremental and full ahead-of-time compilation speed for all 453 Scheme modules:
+```bash
+time ./build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -recompile-modules
+```
+
+
 
 
 
