@@ -1618,3 +1618,298 @@ When multiple C++ <-> Scheme calls occur within the same editing event or layout
 
 
 
+## 18. Interactive Keystroke Latency: Measured Profile [MEASURED, 2026-11-05]
+
+This section records what was actually measured, because the working assumptions in §17 (and in
+`TODO_CHEZ.md`) about where typing latency comes from turned out to be wrong by two orders of
+magnitude. Numbers below are from instrumented builds on this machine (macOS arm64, Qt 6.12.0,
+Chez 10.4.1, Release), typing into the real GUI.
+
+### 18.1 Phase 1 landed: `call (name)` without `eval`
+
+`src/Scheme/Scheme/object.cpp`: all twelve `call (string|const char*, ...)` overloads now pass
+`symbol_to_tmscm (fun)` instead of `eval_scheme (fun)`. `tm-apply` already resolves symbols
+through the module-env chain, so no behaviour change; the eval env was `#<environment *top*>`
+anyway.
+
+| path | before | after |
+|---|---|---|
+| `call ("name")` | 3412–4196 ns | 341–568 ns (median ~354) |
+| `call (proc)` | 206–225 ns | 206–225 ns (unchanged) |
+
+~10.7x on the string path. The entire win is `eval`: on Chez, evaluating a bare symbol costs
+2.6–3.5 us because it invokes the native-code compiler on every call.
+
+A Phase 2 (arity trampolines `tm-call0/1/2` replacing the cons + `apply` in `call_scheme`) was
+implemented, measured, and **reverted**: it moved the procedure path from 215 ns to 217 ns, i.e.
+nothing. The fixed per-call costs (recursive `chez_lock`, `Sactivate_thread`/`Sdeactivate_thread`,
+`tmscm_to_object` result conversion) dominate. Do not re-add it without a measurement that
+justifies the code. Note also that `Scall4` does not exist in the Chez C API (max `Scall3`), so
+arity-3 calls cannot use that shape anyway.
+
+### 18.2 The manual benchmark cannot measure dispatch
+
+`docs/chez/bench/manual.scm` (124 pages) performs only **~20k symbol calls and ~470 procedure
+calls** for a full regeneration. At 3.5 us saved per call that is ~70 ms out of ~8 s, i.e. under
+1% — below the run-to-run spread. Interleaved A/B, three runs each: baseline total mean 8273 ms,
+Phase 1 mean 8513 ms (indistinguishable; within-build spread alone is 7300–9150 ms).
+**Never use that benchmark to evaluate dispatch changes.**
+
+### 18.3 A keystroke is 2–3 ms, and it is all Scheme
+
+`handle_keypress` instrumented per phase (`setup` = `apply_changes` + `start_editing`,
+`scheme` = the `call ("keyboard-press", ...)`, `finish` = focus loci + `notify_change` +
+`end_editing`), typed by hand in the GUI:
+
+| document | keys | p50 | mean | max |
+|---|---|---|---|---|
+| `man-manual.en.tm` (117 pp) | 201 | 2 ms | 2.3 ms | 11 ms |
+| `man-user-manual.en.tm` (273 pp) | 105 | 3 ms | 3.2 ms | 36 ms (`return`) |
+
+`setup` was 0 ms on every single key; `finish` never exceeded 2 ms. Document size barely matters
+(2 ms vs 3 ms for 2.3x the pages). Dispatch volume while typing is **~3.5 symbol calls per
+keystroke** (measured with a counter in `call_scheme`; boot itself makes <100 calls), so Phase 1
+saves ~11 us of ~2000 us — **0.5%**. This is why the 10x win is imperceptible while typing.
+
+`call ("delayed-keyboard-press", ...)` at `edit_keyboard.cpp:401` is **IME pre-edit only**; normal
+keys take `call ("keyboard-press", ...)` at line 403.
+
+### 18.4 The lag is in repaint, and it is one rectangle
+
+Same session (334 keys, 17,972 repaint calls to `qt_simple_widget_rep::repaint_invalid_regions`):
+
+- total repaint time **4,870 ms** vs **941 ms** in all key handlers — repaint is ~84% of
+  interactive cost;
+- but only **763 of 17,972** repaint calls (4.2%) did any work; the rest are zero-region polls;
+- two single repaints dominate everything:
+
+| repaint | time | regions | area (renderer px^2) | ratio to window |
+|---|---|---|---|---|
+| after `return` | **352 ms** | 1 | 145,801,600 | 119x |
+| after `a` | **181 ms** | 1 | 326,829,648 | 266x |
+
+A full-window repaint measures 1,228,800. Every other repaint in the session is <= 36 ms.
+
+**Mechanism**: `repaint_invalid_regions` collapses the dirty set into its least upper bound
+([`src/Plugins/Qt/qt_simple_widget.cpp:679-681`](src/Plugins/Qt/qt_simple_widget.cpp#L679-L681)):
+
+```cpp
+rectangle lub = least_upper_bound (invalid_regions);
+if (area (lub) < 1.2 * area (invalid_regions))
+  invalid_regions = rectangles (lub);
+```
+
+When a keystroke dirties two regions far apart in document coordinates — a `return` at a page
+break, or an edit that shifts page numbers so a TOC/index entry and the body both go dirty — the
+resulting rectangle spans the document. The renderer is then asked for a region 119–266x the
+window and spends 181–352 ms on it, clipped to the screen. That is the perceived "slow key":
+4 ms of handler plus 181 ms of paint.
+
+### 18.5 Consequences for the roadmap
+
+1. Further C++ <-> Scheme dispatch work (§17) cannot improve typing. The measured ceiling is
+   ~0.5% of a keystroke. The §17.5 thread-activation batching idea would save a fraction of
+   ~200 ns per call, i.e. ~1 us per keystroke.
+2. The actionable target is **invalidation granularity**: find who calls `invalidate_rect` with a
+   document-spanning rectangle and stop producing it (e.g. avoid LUB collapse for far-apart
+   regions, or invalidate per page/viewport rather than across the document).
+3. `handle_keypress` calls `notify_change (THE_DECORATIONS)` on every key, which is the prime
+   suspect for the full-canvas invalidation — verify with the `invalidate_rect` probe (below)
+   before changing anything.
+
+### 18.6 Instrumentation used (kept, gated behind env vars)
+
+The probes are in the tree but inert unless the matching environment variable is set, so normal
+runs and benchmarks carry no stderr noise:
+
+| env var | file | output |
+|---|---|---|
+| `TEXMACS_KBD_PROBE=1` | `src/Edit/Interface/edit_keyboard.cpp` | `KBD [key] total= setup= scheme= finish=` |
+| `TEXMACS_PAINT_PROBE=1` | `src/Plugins/Qt/qt_simple_widget.cpp` | `PAINT #n total= draw= regions= area=` |
+| `TEXMACS_INV_PROBE=1` | `src/Plugins/Qt/qt_simple_widget.cpp` | `INVALIDATE area= rect=[..] from=<symbol>` |
+
+`draw` is `handle_repaint`, i.e. real TeXmacs rendering, so `total - draw` is the Qt blit.
+`INVALIDATE` fires for `area > 1e7` and resolves the caller with
+`dladdr(__builtin_return_address (0))`.
+
+- **Gotcha**: the Qt widget code that is actually compiled is `src/Plugins/Qt/`, *not*
+  `src/Plugins/Qt6/` (the latter is a parallel copy; patching it changes nothing).
+- **Caveat**: `QTMWidget::paintEvent` never fired in this environment (the window is not
+  composited when launched from a shell), so screen-blit cost is **not** included in the numbers
+  above; only TeXmacs-side rendering is.
+
+Driving real keystrokes from a script is not possible at the Qt level here: `osascript ...
+keystroke` is denied by macOS TCC (`A privilege violation occurred. (-10004)`). It is however
+possible at the Scheme level, which is what `docs/chez/bench/ui.scm` does with
+`start-editing` / `key-press` / `end-editing` / `update-forced`; use that for repeatable typing
+numbers instead of a human typist.
+
+### 18.7 Who produces the huge rectangle [MEASURED]
+
+The `invalidate_rect` probe fires on the very first render, before any typing:
+
+```
+INVALIDATE area=264363112 rect=[28,84,754,348816] from=qt_simple_widget_rep::send(slot, blackbox)
+```
+
+Width 726 px, height **348,732 px**, i.e. the full height of all 273 pages (the window is
+~1280x960). The caller is `qt_simple_widget_rep::send(slot, blackbox)`, so the invalidation is
+requested through the widget protocol, not by a local scroll or resize path. This is the
+document-spanning rectangle that later gets collapsed into the 181–352 ms repaints.
+
+Next step: identify which `slot` / message carries it (instrument the `send` entry to print the
+slot and the message body), then decide whether the editor should invalidate the visible page
+only.
+
+### 18.8 Related upstream work (mgubi/texmacs, branch `wip_other_schemes`)
+
+That branch ports TeXmacs to S7 and femtolisp (plus Guile); it is **not** Chez. Its history has
+no commit touching `eval_scheme` / `call_scheme` dispatch, and none touching repaint or
+invalidation — so neither of the two problems in this section has been addressed there. Their
+performance work is elsewhere: a cache of compiled forms, GC/heap sizing, C primitives, and the
+Scheme->C++ glue path.
+
+Two things there are directly useful:
+
+- **`docs/femtolisp/bench/ui.scm`** (commit `1fb56ec`) is the interactive benchmark this section
+  lacked. It drives typing the way the event loop does, without a human:
+
+  ```scheme
+  (define (key k)
+    (archive-state) (start-editing) (key-press k) (end-editing) (update-forced))
+  ```
+
+  and reports cold + median-of-three warm for: all menus with submenus, 520 keys in text, 270
+  keys in math, and opening + typesetting a document. `update-forced` is the piece that makes it
+  include typesetting — the omission that made the probes in §18.3/18.4 need a human typist.
+  Porting it to the Chez branch would give a repeatable typing benchmark on the large manuals.
+- **Their numbers corroborate ours** (§7.7 of `src/docs/femtolisp/07-performance.md`): 520 keys in
+  text warm = 723–826 ms (~1.5 ms/key) and 270 keys in math = 834–978 ms (~3.2 ms/key) on a
+  small buffer; all menus warm = 76–121 ms. Their C++ <-> Scheme boundary costs (§7.5: glue call
+  40 ns, `tree->string` 50–116 ns) agree that dispatch is not the bottleneck.
+- They also report a startup cost of the same kind as our "opening is ~1 s": the first menu
+  expansion runs `kpsewhich` once per missing font (~0.86 s, `font-exists-in-tt?`).
+
+Their commit `1a5e7b8` adds `scheme_caught_errors()`, which counts errors caught at C++->Scheme
+calls in every backend. It is the upstream precedent for treating the boundary's error path as
+observable state rather than an afterthought — relevant if the `tm-apply` guard is ever revisited
+(§18.1).
+
+### 18.9 Benchmarks: `docs/chez/bench`
+
+The two interactive benchmarks now live together, replacing `docs/s7/bench/`:
+
+| file | what it measures | usage |
+|---|---|---|
+| `manual.scm` | full manual regeneration, per phase, + page count | `-x '(load "docs/chez/bench/manual.scm")'` |
+| `ui.scm` | interactive work: menus, typing, opening a document | `-x '(load "docs/chez/bench/ui.scm")'` |
+
+Both are run from the repository root with the environment of §1.2 (`SCHEMEHEAPDIRS`, `HOME`,
+`TEXMACS_PATH`, `TEXMACS_BOOT_PATH`, `TEXMACS_DOC_PATH`).
+
+`ui.scm` is ported from `docs/femtolisp/bench/ui.scm` (mgubi/texmacs `1fb56ec`, §18.8) and keeps
+its output format so the two can be compared directly: each task runs once cold, then three times
+warm, and reports the median of the warm runs.
+
+```
+BENCH menus-text cold 720 warm 110 items 99
+BENCH menus-math cold 82 warm 74 items 106
+BENCH typing-text-520-keys cold 1955 warm 1358
+BENCH typing-math-270-keys cold 1477 warm 1480
+BENCH open-change-log cold 2103 warm 284
+```
+
+A key is driven exactly as the event loop drives it, including typesetting:
+
+```scheme
+(define (key k)
+  (archive-state) (start-editing) (key-press k) (end-editing) (update-forced))
+```
+
+Chez against the published s7/femtolisp numbers (§7.7 of `src/docs/femtolisp/07-performance.md`),
+load average ~6.5 here vs ~4 there, so treat the absolute gap as an upper bound:
+
+| task | Chez (here) | s7 | femtolisp |
+|---|---|---|---|
+| menus-text, warm | 110–114 ms | 85–121 ms | 76–86 ms |
+| typing-text-520, warm | 1205–1358 ms (~2.4 ms/key) | 723–826 ms | 775–825 ms |
+| typing-math-270, warm | 1323–1480 ms (~5.2 ms/key) | 834–855 ms | 882–978 ms |
+| open-change-log, warm | 198–284 ms | 127–144 ms | 121–132 ms |
+
+The large-document case is off by default because `update-forced` makes it ~40 ms per key:
+
+```bash
+TEXMACS_BENCH_BIG=1 ... -x '(load "docs/chez/bench/ui.scm")'
+# BENCH typing-user-manual-106-keys cold ... warm ...   (~80 s per round)
+```
+
+That task is the one that reproduces the §18.4 repaint behaviour; it types into the 273-page
+`man-user-manual.en.tm`. Note that `update-forced` is stricter than the GUI, which defers
+typesetting to the paint path -- which is precisely why the GUI needs `TEXMACS_PAINT_PROBE` to
+explain a slow key while this bench reports it as a per-key cost.
+
+**Load matters more than any of these differences.** The same binary produced `manual.scm`
+`expand` = 763–1213 ms at load ~2 and 2109 ms at load 7.3. Report the load average with any
+number, and never compare a single run against a single run.
+
+### 18.10 Where the typing speed-up actually lives: incremental typesetting
+
+`upsilon_texmacs` (TeXmacs Upsilon) is `svn_sync` plus every experimental branch merged in, and
+one of those is `wip_fixes`. The typing improvement there is not a Scheme or dispatch change -- it
+is **PR #333, "Incremental typesetting and typing caches: an edit no longer typesets or
+page-breaks the rest of the document"** (merged as `47428ea`, 2026-10-17: 72 commits, 68 files,
++5,335/-356). This is precisely the cost measured in §18.4.
+
+Their published timings (base -> PR):
+
+| operation | before | after |
+|---|---|---|
+| typing a letter | 283 ms | **17 ms** |
+| joining two paragraphs | 854 ms | 16 ms |
+| inserting a new section | 1355 ms | 62 ms |
+| bridge re-typesets, manual, new section | 18,805 | 519 |
+| bridge re-typesets, manual, paragraph join | 13,117 | 3 |
+
+Three independent causes are removed, all of them producing output byte-identical to before:
+
+1. **Counters / reuse by inputs.** A cached paragraph ("bridge") was re-typeset whenever *anything*
+   in its environment changed, not only what it actually read. Now each bridge records what it is
+   typeset from -- variables read before being written, derived environment state, references with
+   the values found, and the line items of neighbouring bridges -- and is reused unless those
+   inputs changed.
+2. **Page breaks.** Every edit re-searched *all* page breaks even when no line height had changed.
+   Breaks are now cached by a signature of the page items (sizes, spaces, penalties, floats), with
+   a history of the last few searches and a faster search.
+3. **Automatic labels.** Labels were named after a counter (`auto-1`, `auto-2`, ...), so inserting
+   a section renamed every following label and forced the rest of the document to be re-typeset.
+   The new `auto-id` primitive numbers labels per document tag, stored as a tree addendum, with a
+   Scheme fallback macro for older binaries.
+
+Related but distinct: **upstream PR `texmacs/texmacs#112`** (GliAcopo, "Faster typing in long
+documents (incremental typesetting caches)"; 15 commits, 32 files, +1,132/-67) states our problem
+almost word for word -- "each keystroke costs 40-110 ms of CPU, with up to ~2 s of lag when typing
+near the start of a document" -- and cuts 57.4 -> 24.7 ms per key on a 2000-paragraph document.
+It was **closed unmerged** upstream, and it only helps **papyrus (continuous) page mode**, not
+paper mode; mgubi kept 10 of its 13 commits inside #333. A book like the user manual is paper
+mode, so #112 alone would not fix it.
+
+**None of this is in this tree.** Verified: no `auto-id`, no page-break cache, no
+`TEXMACS_TYPESET_READS`, no `TEXMACS_EDIT_PROFILE` anywhere under `src/` or `TeXmacs/progs/`.
+
+Porting order, cheapest and most targeted first, measuring after each with
+`TEXMACS_BENCH_BIG=1 docs/chez/bench/ui.scm` (currently ~197 ms/key on the 273-page manual):
+
+1. **Stable automatic labels** (`auto-id`). Smallest and self-contained: one C++ primitive, a tree
+   addendum, a Scheme fallback in `std-automatic.ts`. Removes the renumbering cascade, which is the
+   most likely single cause of the 181-352 ms repaints in §18.4.
+2. **Page-break signature caching.** Localised in `src/Typeset/Page/` plus the breaker; removes the
+   full re-search per edit.
+3. **Reuse by inputs.** The largest piece (`bridge_rep`, `edit_env_rep`, `bridge_document`); do it
+   last, with the `check`-mode comparison technique from the PR (old vs new results diffed) and the
+   fuzz test `892205c`.
+
+Do not treat #333 as a drop-in: 5,335 lines across 68 files, and it depends on other `wip_fixes`
+infrastructure. The switch variables in the PR (`TEXMACS_TYPESET_READS`, `TEXMACS_PAGE_BREAK_CACHE`,
+`TEXMACS_TYPESET_CACHES`, `TEXMACS_PAGE_REUSE`, `TEXMACS_EDIT_PROFILE`, each with an `off`/`check`
+mode) are worth copying as a pattern: they let each optimisation be validated against the old
+behaviour before it is trusted.

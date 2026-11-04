@@ -1,5 +1,5 @@
 ;; Regenerates the full manual (124 pages), as benchmark-manual does,
-;; timing each phase. Usage: texmacs.bin -x '(load "docs/s7/bench/manual.scm")'
+;; timing each phase. Usage: texmacs.bin -x '(load "docs/chez/bench/manual.scm")'
 ;; Output: MANUAL <phase> <ms> lines, then the page count.
 (define manual-t0 (texmacs-time))
 (define manual-last manual-t0)
