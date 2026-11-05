@@ -48,7 +48,7 @@
 (define-public scheme-completions-built? #f)
 
 (tm-define (all-used-modules)
-  (cons (current-module) (module-uses (current-module))))
+  '(texmacs-user))
 
 (tm-define (all-used-symbols)
   (list-fold obarray-fold-sub '() (all-used-modules)))

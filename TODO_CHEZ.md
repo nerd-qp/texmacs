@@ -202,6 +202,18 @@ This document tracks identified architectural improvements and performance bottl
 
 ## 4. Bug Fixes & Stability
 
+### [ ] String Encoding Duality: Unicode Text vs. Binary Asset Buffers (PNG / Images)
+- **Location**: [`src/Scheme/Chez/chez_tm.cpp:121-155`](src/Scheme/Chez/chez_tm.cpp#L121-L155), [`src/System/Files/web_files.cpp:155`](src/System/Files/web_files.cpp#L155), [`src/Scheme/Glue/glue_basic.cpp:7907`](src/Scheme/Glue/glue_basic.cpp#L7907)
+- **Problem**:
+  In GNU Guile 1.8, Scheme strings were raw 8-bit C `char*` byte arrays without Unicode awareness (`scm_str2scm` / `scm_scm2str`). Consequently, TeXmacs historically uses the Scheme `string` type for two conflicting roles:
+  1. **Text**: UTF-8 and Cork encoded strings passed to/from document trees, XML/HTML converters, and Qt GUI widgets (`QString::fromUtf8`).
+  2. **Binary Buffers**: Raw binary file assets (such as PNG images loaded via `(string-load ...)` and `(tmfs-load ...)`).
+  In Chez Scheme, strings are vectors of 32-bit Unicode scalar values. When `string_to_tmscm` and `tmscm_to_string` attempted to transcode all strings with `decode_from_utf8` and `encode_as_utf8` (commit `c4d6282`), all binary bytes $\ge 128$ (such as PNG header byte `0x89`) were treated as Unicode code points and expanded into multi-byte UTF-8 sequences (`0x89` -> `0xC2 0x89`). This inflated and corrupted image files on disk (e.g. 32 KB PNG grew to 46 KB of invalid data), causing Qt to fail with `Cannot read image file ... in qt_image_size` and `warning: cannot render`.
+  Conversely, treating every Scheme string as an uninterpreted 8-bit array (`(char) Sstring_ref`) preserves binary assets byte-for-byte, but does not encode genuine Scheme Unicode characters $> 255$ into valid UTF-8 for C++ `fopen` / `QString::fromUtf8`.
+- **Status / Action Plan**:
+  - Reverted `string_to_tmscm` and `tmscm_to_string` in `chez_tm.cpp` to the 1-character = 1-byte raw representation to restore binary asset loading and fix image rendering. Added explanatory block comments documenting the invariant.
+  - Future architecture should separate binary buffer transfers from text string transfers at the FFI boundary (e.g. using R6RS `bytevector` or dedicated binary asset primitives for `string-load` / `tmfs-load`), or inspect string payloads so binary images are not passed through UTF-8 transcoding.
+
 ### [ ] Top-Level Definitions Inside Conditional Expressions in Plugin Inits (`invalid context for definition`)
 - **Locations**:
   - [`plugins/coq/progs/init-coq.scm:24-26`](plugins/coq/progs/init-coq.scm#L24-L26)

@@ -735,7 +735,6 @@
                         (eval `(import (for ,s-sym run expand)) (compilation-environment)))))))
               deps)
 
-            (set! *current-module* (make-tm-module mod-sym (compilation-environment) '() '() (make-eq-hashtable)))
             (set! module-public-vars '())
             (set! module-local-defs '())
             (let* ((prepared (prepare-forms body)))
@@ -982,12 +981,13 @@
                           (write `(import ,m) p)
                           (newline p))
                         all-mods))
-                    (write `(unless (top-level-bound? 'texmacs-user)
-                              (define-top-level-value 'texmacs-user (interaction-environment)))
+                    ;; The module forms above bind these names to modules, and a
+                    ;; module binding is not a value.  Rebind them to the single
+                    ;; environment that user space means everywhere else.
+                    (write `(define-top-level-value 'texmacs-user (interaction-environment))
                            p)
                     (newline p)
-                    (write `(unless (top-level-bound? 'texmacs-user-kernel)
-                              (define-top-level-value 'texmacs-user-kernel (interaction-environment)))
+                    (write `(define-top-level-value 'texmacs-user-kernel (interaction-environment))
                            p)
                     (newline p))
                   (lambda () (close-port p))))

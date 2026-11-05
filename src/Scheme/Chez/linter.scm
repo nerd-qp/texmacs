@@ -34,7 +34,7 @@
 
 ;; init-texmacs-chez.scm rebinds `eval' to a Guile-compatible wrapper.  Use the
 ;; raw evaluator: the wrapper rewrites quoted literals, which is harmless but
-;; pointless here, and it resolves `current-module-env' on every call.
+;; pointless here.
 (define chez-eval (if (top-level-bound? 'tm-orig-eval) tm-orig-eval eval))
 
 (define (tm-lint-env) (interaction-environment))

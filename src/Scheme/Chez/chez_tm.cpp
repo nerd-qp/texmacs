@@ -12,7 +12,6 @@
 #include "chez_tm.hpp"
 #include "blackbox.hpp"
 #include "file.hpp"
-#include "converter.hpp"
 #include "../Scheme/glue.hpp"
 
 #include <map>
@@ -116,29 +115,36 @@ tmscm_is_equal (tmscm o1, tmscm o2) {
 
 /* ------------------------------------------------------------------------
  * String and symbol conversions
+ *
+ * NOTE [String Encoding Duality & Raw Byte Invariant]:
+ * TeXmacs C++ assumes the Scheme <-> C++ string bridge operates on raw 8-bit
+ * bytes (1 Scheme character = 1 C++ byte), preserving exact byte fidelity for
+ * binary assets (e.g. PNG images loaded via string-load / tmfs-load) as well
+ * as Cork and raw UTF-8 byte streams.
+ *
+ * Do NOT use decode_from_utf8 / encode_as_utf8 here: treating raw binary bytes
+ * >= 128 as UTF-8 expands them into multi-byte sequences (e.g. PNG magic 0x89
+ * -> 0xC2 0x89), inflating and corrupting image data (see TODO_CHEZ.md).
  * ---------------------------------------------------------------------- */
 
 tmscm
 string_to_tmscm (string s) {
-  int i = 0, n = N (s);
-  array<unsigned int> cps;
-  while (i < n) {
-    cps << decode_from_utf8 (s, i);
-  }
-  iptr num_chars = (iptr) N (cps);
-  tmscm res = Smake_uninitialized_string (num_chars);
-  for (iptr j = 0; j < num_chars; j++) {
-    Sstring_set (res, j, (unsigned int) cps[j]);
+  // Sstring_of_length stops copying at the first '\0' byte, corrupting binary data (e.g. PNGs).
+  // We allocate an uninitialized string and explicitly copy all n bytes via Sstring_set.
+  iptr n= (iptr) N (s);
+  tmscm res= Smake_uninitialized_string (n);
+  for (iptr i= 0; i < n; i++) {
+    Sstring_set (res, i, (unsigned char) s[i]);
   }
   return res;
 }
 
 string
 tmscm_to_string (tmscm s) {
-  iptr n = Sstring_length (s);
-  string r;
-  for (iptr i = 0; i < n; i++) {
-    r << encode_as_utf8 ((unsigned int) Sstring_ref (s, i));
+  iptr n= Sstring_length (s);
+  string r ((int) n);
+  for (iptr i= 0; i < n; i++) {
+    r[i]= (char) Sstring_ref (s, i);
   }
   return r;
 }
@@ -559,10 +565,6 @@ static const char* init_prg=
   "    (let ((x (read (open-input-string s))))\n"
   "      (if (eof-object? x) x (eval x tm-user-env)))))\n"
   "\n"
-  "(define (tm-current-eval-env)\n"
-  "  (if (top-level-bound? 'current-module-env)\n"
-  "      (current-module-env)\n"
-  "      tm-user-env))\n"
   "(define (tm-collect-keywords x acc)\n"
   "  (cond ((and (symbol? x)\n"
   "              (let ((s (symbol->string x)))\n"
@@ -573,14 +575,11 @@ static const char* init_prg=
   "                     (tm-collect-keywords (cdr x) acc)))\n"
   "        (else acc)))\n"
   "(define (tm-bind-keywords x)\n"
-  "  (let ((env (tm-current-eval-env))\n"
-  "        (ienv (interaction-environment)))\n"
+  "  (let ((env (interaction-environment)))\n"
   "    (for-each\n"
   "      (lambda (k)\n"
   "        (if (not (top-level-bound? k env))\n"
-  "            (define-top-level-value k k env))\n"
-  "        (if (not (top-level-bound? k ienv))\n"
-  "            (define-top-level-value k k ienv)))\n"
+  "            (define-top-level-value k k env)))\n"
   "      (tm-collect-keywords x '()))))\n"
   "(define (tm-form-diagnose f i x e)\n"
   "    ;; verbose one-screen post-mortem for a persistently failing form\n"
@@ -621,7 +620,7 @@ static const char* init_prg=
   "                     (ok2 (guard (e2 (else (tm-form-diagnose f i2 x2 e2) #f))\n"
   "                            (begin\n"
   "                              (tm-bind-keywords x2)\n"
-  "                              (tm-compile-eval x2 (tm-current-eval-env))\n"
+  "                              (tm-compile-eval x2 (interaction-environment))\n"
   "                              #t))))\n"
   "                (nloop (cdr pending)\n"
   "                       (if ok2 still (+ still 1))))))\n"
@@ -629,7 +628,7 @@ static const char* init_prg=
   "               (ok (guard (e (else #f))\n"
   "                     (begin\n"
   "                       (tm-bind-keywords x)\n"
-  "                       (tm-compile-eval x (tm-current-eval-env))\n"
+  "                       (tm-compile-eval x (interaction-environment))\n"
   "                       #t))))\n"
   "          (loop (cdr pending-forms)\n"
   "                (+ i 1)\n"
@@ -699,11 +698,11 @@ static const char* init_prg=
   "                          (tm-load-forms-itemized f forms)))\n"
   "                (let ((hdr (car forms)))\n"
   "                  (tm-bind-keywords hdr)\n"
-  "                  (tm-compile-eval hdr (tm-current-eval-env)))\n"
+  "                  (tm-compile-eval hdr (interaction-environment)))\n"
   "                (let ((body (cdr forms)))\n"
   "                  (if (null? body)\n"
   "                      #t\n"
-  "                      (let ((env (tm-current-eval-env)))\n"
+  "                      (let ((env (interaction-environment)))\n"
   "                        (tm-bind-keywords (cons 'begin body))\n"
   "                        (tm-compile-eval (cons 'begin body) env)))))\n"
   "              (tm-load-forms-itemized f forms))))))\n"
@@ -742,15 +741,7 @@ static const char* init_prg=
   "(define (tm-apply fun args)\n"
   "  (guard (e (else (begin (display (list 'TM-APPLY-ERROR (tm-error-message e) 'FUN: fun 'ARGS: args)) (newline) (display-condition e) (newline) (tm-backtrace e) (cons #t (list (tm-error-message e))))))\n"
   "    (let ((proc (if (symbol? fun)\n"
-  "                    (let* ((env (tm-current-eval-env))\n"
-  "                           (user-env (and (top-level-bound? 'texmacs-user)\n"
-  "                                          (tm-module-env texmacs-user))))\n"
-  "                      (cond ((top-level-bound? fun env)\n"
-  "                             (top-level-value fun env))\n"
-  "                            ((and user-env (top-level-bound? fun user-env))\n"
-  "                             (top-level-value fun user-env))\n"
-  "                            (else\n"
-  "                             (top-level-value fun))))\n"
+  "                    (top-level-value fun (interaction-environment))\n"
   "                    fun)))\n"
   "      (apply proc args))))\n"
   "\n"

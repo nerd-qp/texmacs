@@ -63,9 +63,7 @@
                      (tm-quote-eval-literals form)
                      form)))
       (if (null? env)
-          (tm-orig-eval form* (if (top-level-bound? 'current-module-env)
-                                  (current-module-env)
-                                  tm-user-env))
+          (tm-orig-eval form* tm-user-env)
           (tm-orig-eval form* (car env))))))
 
 ;; Guile exports POSIX select (fd multiplexing) from its default module;
@@ -122,15 +120,11 @@
                 (else (loop (+ i 1) (quotient m 2))))))
       -1))
 
-;; module introspection: looks up exported/bound symbol in mod's environment
+;; module introspection: looks up a bound symbol in the kernel environment.
+;; Every TeXmacs module shares that one environment, so the module argument is
+;; accepted for API compatibility and otherwise ignored.
 (define (module-ref mod sym . default)
-  (let* ((m (cond ((and (top-level-bound? 'tm-module?) (tm-module? mod)) mod)
-                  ((and (top-level-bound? '*modules*)
-                        (hashtable-ref *modules* mod #f)) => (lambda (x) x))
-                  (else #f)))
-         (env (if (and m (top-level-bound? 'tm-module-env))
-                  (tm-module-env m)
-                  (if (top-level-bound? '*base-kernel-env*) *base-kernel-env* tm-user-env))))
+  (let ((env (if (top-level-bound? '*base-kernel-env*) *base-kernel-env* tm-user-env)))
     (if (top-level-bound? sym env)
         (top-level-value sym env)
         (if (null? default)
@@ -140,57 +134,18 @@
 ;; --- Small Guile/SRFI helpers ----------------------------------------------
 
 ;; --- Module-system context required by boot-chez.scm ------------------------
+;;
+;; Every TeXmacs module is compiled ahead of time into a native .so library, so
+;; there is no runtime module object to track and no environment to switch:
+;; dynamically evaluated forms and all top-level definitions share the
+;; interaction environment, and that environment is what texmacs-user names.
 
 (define *base-kernel-env* tm-user-env)
-
-;; In pure interpreter mode, init-texmacs-chez.scm is evaluated once in the same
-;; process, generating a single runtime Record-Type Descriptor (RTD). However,
-;; during ahead-of-time compilation (compile-file), separate compilation units
-;; compile .scm files into distinct .so binaries. Without `nongenerative`, Chez
-;; generates a fresh, distinct RTD in each compilation unit, causing `tm-module?`
-;; to fail across .so files and runtime boundaries. `(nongenerative tm-module-uid)`
-;; assigns a deterministic global UID, ensuring all compiled units and runtime
-;; instances share the identical record descriptor.
-(define-record-type tm-module
-  (nongenerative tm-module-uid)
-  (fields name env (mutable exports) (mutable importers) (mutable imported)))
-
-(define *modules*
-  (if (top-level-bound? '*modules*)
-      *modules*
-      (make-hashtable equal-hash equal?)))
 
 (define texmacs-user
   (if (top-level-bound? 'texmacs-user)
       texmacs-user
-      (let ((u (make-tm-module 'texmacs-user *base-kernel-env* '() '() (make-eq-hashtable))))
-        (hashtable-set! *modules* 'texmacs-user u)
-        u)))
-
-(define *current-module*
-  (if (top-level-bound? '*current-module*)
-      *current-module*
-      texmacs-user))
-
-;; Returns a quoted token/name: the macro layer splices ,(current-module) into
-;; generated code, so the value must be valid syntax.
-(define (current-module) (list 'quote (tm-module-name *current-module*)))
-(define (current-module-object) *current-module*)
-(define (current-module-env) (tm-module-env *current-module*))
-(define (tm-current-eval-env)
-  (if (top-level-bound? 'current-module-env)
-      (current-module-env)
       tm-user-env))
-
-(define (module-name m)
-  (cond ((tm-module? m) (tm-module-name m))
-        (else m)))
-
-(define (set-current-module m)
-  (let ((mod (cond ((tm-module? m) m)
-                   ((hashtable-ref *modules* m #f) => (lambda (x) x))
-                   (else #f))))
-    (if mod (set! *current-module* mod))))
 
 (define developer-mode?
   (if (top-level-bound? 'developer-mode?)
@@ -248,10 +203,10 @@
                (kernel old-gui old-gui-form)
                (kernel old-gui old-gui-test))
 
-  (unless (top-level-bound? 'texmacs-user)
-    (define-top-level-value 'texmacs-user (copy-environment (interaction-environment) #t)))
+  ;; texmacs-user is already bound to the interaction environment above; the
+  ;; kernel bundle only needs its own name for the aggregate module's import.
   (unless (top-level-bound? 'texmacs-user-kernel)
-    (define-top-level-value 'texmacs-user-kernel (copy-environment (interaction-environment) #t)))
+    (define-top-level-value 'texmacs-user-kernel (interaction-environment)))
 
   (define-top-level-value 'boot-kernel-loaded? #t)
 
@@ -682,8 +637,7 @@
     (delayed (:idle 2000) (updater-initialize)))
 
   (delayed (:idle 10000) (autosave-delayed))
-  (texmacs-banner)
-  (set-current-module texmacs-user))))
+  (texmacs-banner))))
 
 
 

@@ -255,8 +255,16 @@
        (ahash-set! tm-defined-table ',var
                    (cons ',nval (or (ahash-ref tm-defined-table ',var) '())))
        (ahash-set! tm-defined-name new-val ',var)
+       ;; tm-defined-module records, per defined name, the module the
+       ;; definition was expanded in.  It SHOULD be the name of the module
+       ;; whose source contains this tm-define form, taken at expansion time
+       ;; (the value of (current-module) at that point).  Chez compiles every
+       ;; module ahead of time and publishes all definitions into the single
+       ;; interaction environment, so there is only one possible answer today:
+       ;; 'texmacs-user.  If per-module environments are ever reintroduced,
+       ;; substitute the expansion-site module name here.
        (ahash-set! tm-defined-module ',var
-                   (cons (module-name (current-module))
+                   (cons 'texmacs-user
                          (or (ahash-ref tm-defined-module ',var) '())))
        ,@(map property-rewrite cur-props))))
 
