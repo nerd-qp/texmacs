@@ -1,6 +1,6 @@
 # TeXmacs / Chez Scheme — Handoff (compact, verified 2026-11-05)
 
-**Current tree:** `~/texmacs`, branch `wip-chez`, HEAD `59f601221`. Chez Scheme **10.4.1**, Qt **6.12.0** (macOS arm64) / Qt **6.10.2** (Ubuntu 26.04 arm64). **453/453** Scheme modules transpile and compile to native `.so` with 0 failures. GUI launch verified: `texmacs-version` = 2.1.5, `(top-level-bound? 'current-buffer)` = `#t`, no `ERROR` / `LOAD-ERROR` / segfault in the log.
+**Current tree:** `~/Documents/GitHub/texmacs`, branch `wip-chez`, HEAD `3ae4c604e` (2026-11-05: `chez_tm.cpp` now carries no Scheme source — see §1.10 and §5.9; the change is unstaged). Chez Scheme **10.4.1**, Qt **6.12.0** (macOS arm64) / Qt **6.10.2** (Ubuntu 26.04 arm64). **453/453** Scheme modules transpile and compile to native `.so` with 0 failures. GUI launch verified: `texmacs-version` = 2.1.5, `(top-level-bound? 'current-buffer)` = `#t`, no `ERROR` / `LOAD-ERROR` / segfault in the log. Runtime suite: only the documented `regtest-tmhtml` fixture mismatch and the `regtest-xmltm` encoding mismatch (§5.9) remain.
 
 This is a condensed replacement for the 2854-line chronological handoff. Historical checkpoints, completed roadmaps, disproven designs, and references to artifacts that existed only in an earlier, different Chez tree have been removed (§10). The earlier "embedded engine" port (Chez 10.5.0-pre-release.1, `docker-sandbox-opencode` workspace, `chez-harness`, `build-chez-macos/`) is a **different project**; none of its paths or commands apply here.
 
@@ -20,6 +20,9 @@ This is a condensed replacement for the 2854-line chronological handoff. Histori
 7. **Never load `init-texmacs.scm`.** All runtime registrations (`lazy-define`, `lazy-menu`, `lazy-keyboard`, fonts, plugin hooks) belong natively in `init-texmacs-chez.scm`.
 8. **Fail fast.** On any failure, report it loudly. No `if/else` bypasses, silent catches, or `top-level-bound?` fallbacks that mask missing definitions; fix root causes.
 9. **No AI git commits.** All agent changes stay unstaged/uncommitted for user review.
+10. **No Scheme source in C++.** `src/Scheme/Chez/chez_tm.cpp` contains no Scheme code and builds no Scheme source strings. Everything the kernel needs on the Scheme side lives in `TeXmacs/progs/kernel/boot/boot-chez.scm`, which `initialize_scheme()` loads with Chez's primitive `load` **before** `initialize_glue()`. The only Scheme knowledge left in C++ is the *names* it caches with `Stop_level_value` (`tmscm-null`, `tm-blackbox-guardian`, `tm-eval-string`, `tm-load-file`, `tm-apply`, `list?`, `equal?`, `object-stack`, `tm-install-procedure!`) plus the two entry points it calls (`tm-set-compiling-mode!`, and `tm-reinstall-io-hooks!` from `init-texmacs-chez.scm`). Consequences: (a) `boot-chez.scm` must not call a glue procedure at load time; (b) the engine globals must be defined at the very top of that file, because `reap-blackboxes!` is installed as the collect-request handler a few forms down and reads `tm-blackbox-guardian`, so a GC mid-load otherwise raises `variable tm-blackbox-guardian is not bound`; (c) `init-texmacs-chez.scm` and `init-linter.scm` must not re-load `boot-chez.scm` (guard on `boot-chez-loaded?`), or `tm-load-file` is recompiled against the `load` shim and the two recurse forever.
+
+   Dead weight dropped from the bootstrap on 2026-11-05 (160 lines): the per-form / source-loader path (`tm-load-forms-itemized`, `tm-load-from-source`, `tm-read-all-forms`, `tm-compile-eval`, `tm-form-diagnose`, `tm-collect-keywords`, `tm-bind-keywords`) and the compiled-module candidate search (`tm-so-candidates`, `tm-find-so-file`), plus the `tm-load-probe` stub. All of it was unreachable — `tm-load-file` is only `(load f)`, `load-module-file` resolves `.so` files through `module-so-file`, and `compile-texmacs.scm` defines its own `tm-collect-keywords` / `tm-bind-keywords`. Consequence: the `LOAD-START` / `LOAD-SUMMARY` / `FORM-STILL-FAILS` / `LOAD-BATCH-FALLBACK` diagnostic tokens no longer exist; a failing file reports `LOAD-ERROR` with its condition and backtrace, and nothing reports per form.
 
 ## 2. Toolchain, configure and build (macOS, current machine)
 
@@ -158,18 +161,39 @@ Historical 181/186-module timings came from the retired workspace and are not co
 
 ## 5. Engine invariants (C++ ↔ Chez)
 
-1. **GC pinning.** Chez's nursery moves young objects. Any `ptr` held in a C++ global/static must be `Slock_object(p)`-ed (and `Sunlock_object` on shutdown), or it dangles after GC.
+1. **GC pinning.** Chez's nursery moves young objects. Any `ptr` held in a C++ global/static must be `Slock_object(p)`-ed, or it dangles after GC. Two lifetimes, two patterns:
+   - **Process-lifetime handles are locked once and never unlocked.** That is the nine cached in `initialize_scheme` plus `object-stack`. There is no later point to unlock at: `start_scheme` runs once, `server sv;` (`texmacs.cpp:593`) is the only construction site of the server that calls `initialize_scheme`, and the tree never calls `Sdestroy_heap` / `Sscheme_deinit`, so the heap outlives every caller. It also costs no memory — every one of them is independently reachable from the interaction environment (`tmscm-null`, `tm-apply`, `object-stack`, … are top-level definitions; `list?` / `equal?` are live library bindings), so the lock pins the *address*, not the lifetime. Unlocking on shutdown would be strictly harmful: `Sunlock_object` re-permits relocation, so any teardown path still calling through `tm_apply_proc` / `tm_load_file_proc` would read a stale pointer — the exact bug the lock exists to prevent.
+   - **Per-object handles** (`object.cpp`) are locked on construction and `Sunlock_object`-ed when drained — the pattern for anything with a finite lifetime. `load_scheme_file` likewise locks its temporary path string and unlocks it immediately.
+
+   Cost, measured 2026-11-05 by locking N extra pairs in `initialize_scheme` and timing collections: **~2–3 ns per locked object per collection**, linear, paid by *every* minor and major collection.
+
+
+   | locked objects | forced full collects | 100 M-pair allocation churn |
+   |---|---|---|
+   | 0 | 0.0 ms/collect (idle heap) | 237–284 ms |
+   | 100 000 | 0.27 ms/collect | 276–413 ms |
+   | 1 000 000 | 3.0 ms/collect | 929–1118 ms (~4x slower) |
+
+   So the nine pointers cached in `initialize_scheme` (~25 ns per collection) are free, and locking a few hundred more procedure lookups would still be free. Do not lock per-call results, per-module caches, or anything large: for an object that is not otherwise reachable, the lock makes it a permanent root, so the cost becomes both throughput (scanned every collection) and memory (never reclaimed).
+
 2. **Thread activation.** Every C++→Scheme entry (`eval_scheme`, `call_scheme`) from Qt event loops needs an RAII `Sactivate_thread` / `Sdeactivate_thread` activator plus a recursive mutex (`chez_lock`).
 3. **Unbound marker.** `Stop_level_value` returns `0x1e` for unbound symbols (not NULL/0) without throwing; validate handles with `Sprocedurep(p)`.
 4. **Guile→Chez reader differences:** `#{symbol}#` → `|symbol|`; bare `'|` → `(string->symbol "|")`; octal `#\00` → `#\x00`; `#\cr` → `#\return`.
 5. **FFI exceptions.** C++ `string` exceptions cannot be caught by Scheme `guard`; shims must screen preconditions (e.g. `file-exists?`) before invoking C++ routines.
 6. **Top-level variable cells.** A bare symbol inside a running top-level procedure resolves through a mutable cell; if that procedure triggers redefinition of its own symbol (`lazy-define-force`), later reads see the **new** value. Never use `(eq? proc ,name)` for self-identity; use lexical bindings or explicit state flags.
-7. **Introspection is stubbed.** Chez provides no `procedure-name` / `procedure-source` / `procedure-documentation`; `init-texmacs-chez.scm:297-300` stubs them to `#f` (and `func?` to `procedure?`). Guile-side code assumes a form comes back: `promise-source` (`menu-widget.scm:402`) would `(car #f)` and break all menu construction; `replace-procedures` injects `#f`; shortcut hints, check marks, `:applicable` greying and balloon/synopsis help are silently disabled. Guarded 2026-10-04 with `(pair? source)` in `promise-source` — crash gone, features still missing. Correct fix: capture the `(lambda ...)` form at definition time in `tm-define` and in the per-form loader in `chez_tm.cpp`, and store it in a procedure-keyed side table.
+7. **Introspection is stubbed.** Chez provides no `procedure-name` / `procedure-source` / `procedure-documentation`; `init-texmacs-chez.scm:297-300` stubs them to `#f` (and `func?` to `procedure?`). Guile-side code assumes a form comes back: `promise-source` (`menu-widget.scm:402`) would `(car #f)` and break all menu construction; `replace-procedures` injects `#f`; shortcut hints, check marks, `:applicable` greying and balloon/synopsis help are silently disabled. Guarded 2026-10-04 with `(pair? source)` in `promise-source` — crash gone, features still missing. Correct fix: capture the `(lambda ...)` form at definition time in `tm-define`, and store it in a procedure-keyed side table.
 8. **Pure-expression `tm-define`.** It is expression-only (no local definitions), installing values with `define-top-level-value` and syntax with `define-top-level-syntax` in `(interaction-environment)`. This avoids closing the definition context prematurely in R6RS module bodies and removes the need for `define-macro-trace` / `public-trace`.
-9. **String encoding duality (Unicode text vs. raw binary byte buffers).** In GNU Guile 1.8, Scheme strings were raw 8-bit C `char*` arrays (`scm_str2scm` / `scm_scm2str`) without Unicode awareness, so TeXmacs historically reused Scheme strings for two conflicting roles:
-   - **Unicode/Cork text**: Evaluated by HTML/XML/MathML converters and test suites (`regtest-htmltm`, `regtest-mathtm`), requiring UTF-8 decoding/encoding so non-ASCII characters (`é`, `α`, `→`) are not mangled into multi-byte fragments or truncated when code point $> 255$.
-   - **Raw binary buffers**: Read by `(string-load ...)` and `tmfs-load` for assets such as PNG images.
-   Chez Scheme strings are native vectors of Unicode scalar characters. Passing binary strings through UTF-8 encoding (`encode_as_utf8` / `decode_from_utf8` in `tmscm_to_string` / `string_to_tmscm`) expands raw bytes $\ge 128$ into multi-byte UTF-8 sequences (e.g. PNG magic `0x89` $\to$ `0xC2 0x89`), corrupting image files written to disk and triggering `Cannot read image file ... in qt_image_size` and `warning: cannot render`. Conversely, purely casting characters to 8-bit `char` truncates code points $> 255$ and splits UTF-8 sequences, failing parser regression tests. Resolution requires differentiating binary buffers (image magic header sniffing or R6RS `bytevector`) from UTF-8 text transfers.
+9. **String encoding duality (OPEN — raw bytes on the bridge, by design).** The bridge in `chez_tm.cpp` is byte-for-byte: `string_to_tmscm` stores `(unsigned char) s[i]` per byte, `tmscm_to_string` casts `Sstring_ref` back to `char`. One Scheme character = one C++ byte, in both directions.
+   - **Why it is not a UTF-8 bridge.** TeXmacs reuses Scheme strings for two conflicting roles, and Guile 1.8 (byte arrays) let it get away with that. `string-load` / `string-save` and the tmfs handlers move PNG and embedded-object data through Scheme strings (`utils/misc/artwork.scm`, `generic/embedded-edit.scm`). Decoding/encoding UTF-8 here expands PNG magic `0x89` to `0xC2 0x89`, which inflates and corrupts image data.
+   - **The cost.** A code point above `0xFF` cannot cross: `tmscm_to_string` truncates it to its low byte, so `U+03BC μ` reaches C++ as `0xBC` and `regtest-xmltm` reports one mismatch in the `Bx` row of `latin1-chart`. Conversely a non-ASCII C++ string arrives in Scheme as one character per UTF-8 byte.
+   - **Measured 2026-11-05:** this failure is *pre-existing*, not a regression. Stashing every working-tree change and relinking only the C++ (`boot-chez.scm` is loaded from source, never compiled) reproduces it exactly: `Do not match!` ×1, `Regression failure` ×2. Verified healthy in the same state: `(string-save (string-load png) out)` is byte-identical (SHA-256 match on a 97 KB PNG).
+   - **A UTF-8 bridge was tried and reverted.** Decoding UTF-8 on the way in and encoding on the way out, with bytes that fail UTF-8 validation mapped to `U+F0000+b` (Supplementary Private Use Area-A) and back, *is* a bijection — it made `regtest-xmltm` pass and kept the PNG round trip byte-identical. It was still rejected: any Scheme code that inspects a byte buffer numerically (magic sniffing, `string-ref` on loaded data) sees `0xF0089` instead of `0x89`, and nothing in the tree guarantees binary only ever travels load→save. Do not re-land it without auditing every binary consumer.
+   - **Where the real fix belongs.** At the boundary that knows whether it holds text or bytes — an explicit byte-buffer type (R6RS `bytevector`) for the image/tmfs path, leaving text on a UTF-8 bridge — not inside these two functions, which cannot tell the two apart.
+
+
+10. **Glue installation is a Scheme procedure, not generated source.** `chez_install_procedure` no longer builds `(define <name> (lambda args (tm-call-by-name "<name>" args)))` as a string and `eval`s it. It registers the C++ pointer in `tm_proc_registry` and calls `(tm-install-procedure! "name")`, which `define-top-level-value`s a closure over its own name. Failure is reported per name as `INSTALL-FAILED` instead of aborting the whole glue pass. Two ordering traps:
+   - `tm-install-procedure!` must already exist, so `boot-chez.scm` is loaded **before** `initialize_glue()` — the reverse of the old order.
+   - `tm-output` / `tm-errput` are *also* C++ glue procedures (`glue_basic.cpp`), so `initialize_glue()` replaces the Chez-native writers defined in `boot-chez.scm`. With the new order `init-texmacs-chez.scm` therefore calls `(tm-reinstall-io-hooks!)` right after the bootstrap, restoring `original-display` / `console-error-port`. Without it, non-ASCII `display` output would be pushed through the byte-oriented `tmscm_to_string` bridge.
 
 ## 6. Diagnostic rules
 
@@ -303,15 +327,24 @@ Native toolchain tests (`src/Scheme/Chez/*-test.scm`), **173 checks, 0 failures*
 | `static-analysis-test.scm` | 36 | whole-program call graph, unbound variables, dead code |
 
 ```bash
-(cd texmacs && for t in src/Scheme/Chez/*-test.scm; do /opt/homebrew/bin/chez -q "$t"; done)
+cd texmacs
+for t in src/Scheme/Chez/*-test.scm; do /opt/homebrew/bin/chez -q "$t"; done   # 2 of 5 need the cwd below
+cd src/Scheme/Chez && for t in compiler-db-test.scm compiler-scan-test.scm; do /opt/homebrew/bin/chez -q "$t"; done
 ```
 
-TeXmacs runtime suite: `(run-all-tests)` in `TeXmacs/progs/check/check-master.scm` covers `regtest-htmltm`, `regtest-xmltm`, `regtest-tmlength`, `regtest-environment`, `regtest-mathtm`, `regtest-tmhtml`, `regtest-tmmltm`, `regtest-prog-format`, `regtest-cite-sort`. Fixes applied: `non` moved into `kernel/boot/chez-compat.scm` and `kernel/library/list.scm` compiled before `base.scm` (`list-drop-while`); `(:use (prog prog-format-test))` → `(:use (prog prog-format))` typo fixed. Known open mismatch: `regtest-tmhtml` `<img class="image">` — the runtime converter is modern, but the test fixture `make-expected-sub` in `tmhtml-test.scm` omits `(class "image")`.
+`compiler-db-test.scm` and `compiler-scan-test.scm` locate `compiler-db.scm` relative to the working directory, so the single-line loop above reports `cannot find compiler-db.scm` for both; run them from `src/Scheme/Chez` (verified 2026-11-05: 17 + 41 + 36 + 50 + 29 = 173 checks, 0 failures).
+
+TeXmacs runtime suite: `(run-all-tests)` in `TeXmacs/progs/check/check-master.scm` covers `regtest-htmltm`, `regtest-xmltm`, `regtest-tmlength`, `regtest-environment`, `regtest-mathtm`, `regtest-tmhtml`, `regtest-tmmltm`, `regtest-prog-format`, `regtest-cite-sort`. Fixes applied: `non` moved into `kernel/boot/chez-compat.scm` and `kernel/library/list.scm` compiled before `base.scm` (`list-drop-while`); `(:use (prog prog-format-test))` → `(:use (prog prog-format))` typo fixed. Known open mismatches: **`regtest-xmltm`** — one character in the `Bx` row of `latin1-chart` (`U+03BC μ` is truncated to `0xBC ¼` by the byte-oriented string bridge, §5.9; confirmed pre-existing by A/B against a stashed tree); **`regtest-tmhtml`** `<img class="image">` — the runtime converter is modern, but the test fixture `make-expected-sub` in `tmhtml-test.scm` omits `(class "image")`.
 
 ```bash
-TEXMACS_HOME_PATH="$PWD/.sandbox-texmacs" TEXMACS_BOOT_PATH="$PWD/build-texmacos/boot" \
-  ./build-texmacs/TeXmacs.app/Contents/MacOS/TeXmacs -H -x '(begin (use-modules (check check-master)) (run-all-tests))'
+SCHEMEHEAPDIRS="/opt/homebrew/Cellar/chezscheme/10.4.1/lib/csv10.4.1/tarm64osx" HOME="$PWD/fakehome" \
+TEXMACS_PATH="$PWD/TeXmacs" TEXMACS_HOME_PATH="$PWD/.sandbox-texmacs" \
+TEXMACS_BOOT_PATH="$PWD/build-texmacos/boot" \
+  ./build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -H \
+  -x '(begin (use-modules (check check-master)) (run-all-tests) (display "ALL-TESTS-DONE") (newline) (quit-TeXmacs))'
 ```
+
+`run-all-tests` does not return normally: the last `regtest-*` raises, so a following `(quit-TeXmacs)` never runs and the process hangs until killed. Judge the run by the log (count `Do not match!` / `Regression failure`) and by whether `ALL-TESTS-DONE` was printed, not by the exit status. A single `regtest-xmltm`-style check can be run in isolation with `-x '(begin (use-modules (convert tools xmltm-test)) (regtest-xmltm) (quit-TeXmacs))'`.
 
 Not wired into `run-all-tests`: `regtest-tm-convert` (`kernel/texmacs/tm-convert-test.scm`), `run-integration-tests` (server notifications, backups, disk cache), `check-all` / `run-checks` (`utils/test/test-latex-export.scm`). Other reference benchmarks: R7RS/Gabriel tasks, startup boot latency (`TIME-SERVER-INIT`, `TIME-OPEN-WINDOW-TOTAL`, `TIME-PRE-GUI-LOOP`), full-document conversion via `-H -C`, and `time ... -recompile-modules`.
 
@@ -323,7 +356,8 @@ Not wired into `run-all-tests`: `regtest-tm-convert` (`kernel/texmacs/tm-convert
 4. Restore Guile introspection features by capturing source forms at definition time (§5.7).
 5. Reconcile `regtest-tmhtml`'s stale fixture with the modern runtime converter (§8).
 6. Do not trust `TODO_CHEZ.md` as a status source (see header note).
-7. Resolve string encoding duality in `chez_tm.cpp`: differentiate binary buffers (image magic sniffing or R6RS `bytevector`) from UTF-8 text so PNGs render without breaking XML/MathML Unicode test suites (§5.9).
+7. Resolve the string encoding duality (§5.9). The bridge stays byte-oriented until binary data has its own type: introduce an R6RS `bytevector` (or an equivalent explicit marker) for the image / tmfs / `raw-data` path, then let text cross a UTF-8 bridge. A UTF-8 bridge over *all* strings was tried on 2026-11-05 and reverted — see §5.9 for why the `U+F0000+b` escape is not sufficient.
+8. The bootstrap now hard-depends on `TEXMACS_PATH` being resolvable when `initialize_scheme()` runs. If the packaged `.app` or a future Windows build fails with `bootstrap file not found`, check `boot_scheme_path()` in `chez_tm.cpp` before anything else.
 
 ## 10. What was removed, and where to recover it
 

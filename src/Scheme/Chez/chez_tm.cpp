@@ -18,7 +18,7 @@
 #include <mutex>
 #include <string.h>
 #include <cstdio>
-#include <cstdlib>  /* getenv, _fullpath/_MAX_PATH on Windows */  /* CHEZDBG temporary boot instrumentation */
+#include <cstdlib>  /* getenv, _fullpath/_MAX_PATH on Windows */
 
 extern bool compile_modules_mode;
 
@@ -28,7 +28,7 @@ extern bool compile_modules_mode;
 
 tmscm tm_null= 0;
 tmscm tm_blackbox_guardian= 0;
-static ptr tm_install_guarded= 0;   /* CHEZDBG debug aid */
+static ptr tm_install_proc= 0;      /* (tm-install-procedure! name)           */
 tmscm tm_eval_string_proc= 0;
 tmscm tm_load_file_proc= 0;
 tmscm tm_apply_proc= 0;
@@ -125,6 +125,14 @@ tmscm_is_equal (tmscm o1, tmscm o2) {
  * Do NOT use decode_from_utf8 / encode_as_utf8 here: treating raw binary bytes
  * >= 128 as UTF-8 expands them into multi-byte sequences (e.g. PNG magic 0x89
  * -> 0xC2 0x89), inflating and corrupting image data (see TODO_CHEZ.md).
+ *
+ * KNOWN CONSEQUENCE, deliberately kept: a Scheme character above 0xFF cannot
+ * cross this bridge.  tmscm_to_string truncates it to its low byte, so
+ * U+03BC mu reaches C++ as 0xBC and regtest-xmltm reports one mismatch in the
+ * Bx row of latin1-chart.  Fixing that by encoding UTF-8 here breaks binary
+ * round-trips through string-load / tmfs-load, so the fix has to distinguish
+ * text from byte buffers at the boundary that knows which one it is holding --
+ * not inside these two functions.
  * ---------------------------------------------------------------------- */
 
 tmscm
@@ -239,9 +247,10 @@ reap_blackboxes () {
 /* ------------------------------------------------------------------------
  * Registry of C++ procedures callable from Scheme
  *
- * Scheme side: every procedure installed with tmscm_install_procedure is
- * defined as
- *     (define <name> (lambda args (tm-call-by-name "<name>" args)))
+ * Scheme side: boot-chez.scm defines
+ *     (define (tm-install-procedure! name)
+ *       (define-top-level-value (string->symbol name)
+ *         (lambda args (tm-call-by-name name args)) ...))
  * where tm-call-by-name is a foreign procedure into tm_call_by_name below.
  * The Chez FFI brackets the foreign call with Sactivate_thread /
  * Sdeactivate_thread automatically, which is required by the threaded
@@ -329,47 +338,74 @@ tm_call_by_name (const char* name, ptr args) {
   /* normal path */
 }
 
-/* Evaluate a string of Scheme code in the top-level environment.
-   Used for the initialization code and for installing procedures.
-   NOTE: init_prg contains MANY top-level forms; read-eval must loop
-   until eof -- a single read would silently define only the first one
-   (and Stop_level_value later hands back 0x1e, the unbound marker,
-   which detonates at the first call). */
-static ptr
-eval_string_raw (const char* s) {
-  ptr open_proc= Stop_level_value (Sstring_to_symbol ("open-input-string"));
-  ptr read_proc= Stop_level_value (Sstring_to_symbol ("read"));
-  ptr eval_proc= Stop_level_value (Sstring_to_symbol ("eval"));
-  ptr env_proc= Stop_level_value (Sstring_to_symbol ("interaction-environment"));
-  ptr str= Sstring (s);
+/* ------------------------------------------------------------------------
+ * Scheme bootstrap
+ *
+ * No Scheme source lives in this file.  Everything the kernel needs on the
+ * Scheme side -- tm-apply, tm-load-file, tm-eval-string, the blackbox
+ * guardian, the glue installer, texmacs-version -- is defined in
+ * TeXmacs/progs/kernel/boot/boot-chez.scm, which initialize_scheme() loads
+ * with Chez's primitive `load' before initialize_glue() runs.
+ *
+ * The only Scheme knowledge retained here is the *names* of the bindings the
+ * kernel caches, because Stop_level_value() has to look them up by symbol.
+ * ---------------------------------------------------------------------- */
+
+/* FAILED() takes a C string; the messages here are assembled at run time. */
+static void
+boot_failed (string msg) {
+  c_string _msg (msg);
+  fprintf (stderr, "ERROR: %s\n", (const char*) _msg);
+  fflush (stderr);
+  tm_throw ((const char*) _msg);
+}
+
+/* Path of the Scheme bootstrap.  init_texmacs() has already exported
+   TEXMACS_PATH by the time the kernel starts, and a packaged .app sets it
+   relative to the executable, so getenv is authoritative; the url() fallback
+   covers a tree booted without the variable, where the path system still
+   knows where the data directory is. */
+static string
+boot_scheme_path () {
+  const char* env= getenv ("TEXMACS_PATH");
+  if (env != NULL && env[0] != '\0')
+    return string (env) * "/progs/kernel/boot/boot-chez.scm";
+  return as_string (url ("$TEXMACS_PATH/progs/kernel/boot/boot-chez.scm"));
+}
+
+/* Evaluate a file in the interaction environment.  Chez's `load' is what we
+   need here: the engine's guarded per-form loader (tm-load-file) is itself
+   defined by the file being loaded. */
+static void
+load_scheme_file (string file) {
+  ptr load_proc= Stop_level_value (Sstring_to_symbol ("load"));
+  if (!Sprocedurep (load_proc))
+    boot_failed ("Chez Scheme: 'load' is not bound, cannot load " * file);
+  c_string _file (file);
+  ptr str= Sstring_of_length (_file, (iptr) N (file));
   Slock_object (str);
-  ptr port= Scall1 (open_proc, str);
-  Slock_object (port);
-  ptr env= Scall0 (env_proc);
-  ptr r= Svoid;
-  while (true) {
-    ptr form= Scall1 (read_proc, port);
-    if (Seof_objectp (form)) break;
-    r= Scall2 (eval_proc, form, env);
-  }
-  Sunlock_object (port);
+  Scall1 (load_proc, str);
   Sunlock_object (str);
-  return r;
+}
+
+/* Look up a procedure the bootstrap defined and call it with one argument. */
+static void
+call_boot_proc (const char* name, ptr arg) {
+  ptr proc= Stop_level_value (Sstring_to_symbol (name));
+  if (!Sprocedurep (proc))
+    boot_failed ("Chez Scheme: boot-chez.scm did not define " * string (name));
+  Scall1 (proc, arg);
 }
 
 void
 chez_install_procedure (const char* name, void* fn, int arity) {
   chez_lock lock;
   tm_proc_registry[name]= tm_proc_entry { fn, arity };
-  /* define (name . args) as a call into the registry */
-  string def= "(define " * string (name) *
-              " (lambda args (tm-call-by-name \"" * string (name) * "\" args)))";
-  c_string _def (def);
-  ptr ok= Scall1 (tm_install_guarded, Sstring (_def));
-  if (ok == Sfalse) {
-    fprintf (stderr, "CHEZDBG: INSTALL FAILED: %s\n", name);
-    fflush (stderr);
-  }
+  /* (tm-install-procedure! "name") defines the Scheme wrapper that forwards
+     its argument list to tm_call_by_name below. */
+  if (tm_install_proc == 0)
+    FAILED ("Chez Scheme: tm-install-procedure! is not available");
+  Scall1 (tm_install_proc, Sstring_of_length (name, (iptr) strlen (name)));
 }
 
 /* ------------------------------------------------------------------------
@@ -381,12 +417,7 @@ eval_scheme_file (string file) {
   chez_lock lock;
   chez_activate activate;
   c_string _file (file);
-  fprintf (stderr, "CHEZDBG: eval_scheme_file %s\n", (const char*) _file);
-  fflush (stderr);
-  ptr r= Scall1 (tm_load_file_proc, Sstring_of_length (_file, (iptr) N (file)));
-  fprintf (stderr, "CHEZDBG: eval_scheme_file done\n");
-  fflush (stderr);
-  return r;
+  return Scall1 (tm_load_file_proc, Sstring_of_length (_file, (iptr) N (file)));
 }
 
 tmscm
@@ -523,245 +554,31 @@ start_scheme (int argc, char** argv, void (*call_back) (int, char**)) {
   if (call_back != NULL) call_back (argc, argv);
 }
 
-static const char* init_prg=
-  "(define tmscm-null '())\n"
-  "(define tm-blackbox-guardian (make-guardian))\n"
-  "(define tm-user-env (interaction-environment))\n"
-  "\n"
-  "(define (display-to-string obj)\n"
-  "  (call-with-string-output-port\n"
-  "    (lambda (port) (display obj port))))\n"
-  "(define (object->string obj)\n"
-  "  (call-with-string-output-port\n"
-  "    (lambda (port) (write obj port))))\n"
-  "(define (texmacs-version) \"" TEXMACS_VERSION "\")\n"
-  "(define object-stack '(()))\n"
-  "\n"
-  /* Chez's own condition messages are format strings; capture the kernel
-     format before the progs shims can rebind it so that messages are
-     rendered with their irritants. */
-  "(define tm-format format)\n"
-  "(define (tm-safe-irritants e)\n"
-  "  (guard (_ (else '()))\n"
-  "    (cond ((syntax-violation? e)\n"
-  "           (list (syntax-violation-form e) (syntax-violation-subform e)))\n"
-  "          ((condition? e) (condition-irritants e))\n"
-  "          (else '()))))\n"
-  "(define (tm-error-message e)\n"
-  "  (cond ((condition? e)\n"
-  "         (let ((m (condition-message e)) (irr (tm-safe-irritants e)))\n"
-  "           (if (pair? irr)\n"
-  "               (guard (_ (else m)) (apply tm-format m irr))\n"
-  "               m)))\n"
-  "        (else (call-with-string-output-port\n"
-  "                (lambda (p) (display e p))))))\n"
-  "\n"
-  "(define (tm-eval-string s)\n"
-  "  (guard (e (else (begin"
-  "    (display (list 'EVAL-ERROR s (tm-error-message e)"
-  "                   (tm-safe-irritants e)))"
-  "    (newline)"
-  "    (cons #t (list (tm-error-message e))))))\n"
-  "    (let ((x (read (open-input-string s))))\n"
-  "      (if (eof-object? x) x (eval x tm-user-env)))))\n"
-  "\n"
-  "(define (tm-collect-keywords x acc)\n"
-  "  (cond ((and (symbol? x)\n"
-  "              (let ((s (symbol->string x)))\n"
-  "                (and (> (string-length s) 0)\n"
-  "                     (char=? (string-ref s 0) #\\:))))\n"
-  "         (if (member x acc) acc (cons x acc)))\n"
-  "        ((pair? x) (tm-collect-keywords (car x)\n"
-  "                     (tm-collect-keywords (cdr x) acc)))\n"
-  "        (else acc)))\n"
-  "(define (tm-bind-keywords x)\n"
-  "  (let ((env (interaction-environment)))\n"
-  "    (for-each\n"
-  "      (lambda (k)\n"
-  "        (if (not (top-level-bound? k env))\n"
-  "            (define-top-level-value k k env)))\n"
-  "      (tm-collect-keywords x '()))))\n"
-  "(define (tm-form-diagnose f i x e)\n"
-  "    ;; verbose one-screen post-mortem for a persistently failing form\n"
-  "  (display (list 'FORM-STILL-FAILS f i\n"
-  "                 (tm-error-message e)\n"
-  "                 (if (pair? x) (car x) 'atom)\n"
-  "                 (if (who-condition? e) (condition-who e) 'no-who)\n"
-  "                 (tm-safe-irritants e)))\n"
-  "  (newline)\n"
-  "  (guard (e2 (else (begin (display (list 'expand-failed)) (newline))))\n"
-  "    (let ((expansion (expand x)))\n"
-  "      (if (pair? expansion)\n"
-  "          (let ((str (object->string expansion)))\n"
-  "            (display (substring str 0 (min 200 (string-length str)))))\n"
-  "          (display expansion)))\n"
-  "    (newline)))\n"
-  "(define (tm-read-all-forms port)\n"
-  "  (let loop ((acc '()))\n"
-  "    (let ((x (read port)))\n"
-  "      (if (eof-object? x)\n"
-  "          (reverse acc)\n"
-  "          (loop (cons x acc))))))\n"
-  "(define (tm-compile-eval expr env)\n"
-  "  (let ((res (compile expr env)))\n"
-  "    (if (procedure? res) (res) res)))\n"
-  "(define (tm-load-forms-itemized f forms)\n"
-  "  (let loop ((pending-forms forms) (i 0) (retry '()))\n"
-  "    (if (null? pending-forms)\n"
-  "        (let nloop ((pending (reverse retry)) (still 0))\n"
-  "          (if (null? pending)\n"
-  "              (if (> still 0)\n"
-  "                  (begin\n"
-  "                    (display (list 'LOAD-SUMMARY f i still))\n"
-  "                    (newline)))\n"
-  "              (let* ((ix (car pending))\n"
-  "                     (i2 (car ix))\n"
-  "                     (x2 (cdr ix))\n"
-  "                     (ok2 (guard (e2 (else (tm-form-diagnose f i2 x2 e2) #f))\n"
-  "                            (begin\n"
-  "                              (tm-bind-keywords x2)\n"
-  "                              (tm-compile-eval x2 (interaction-environment))\n"
-  "                              #t))))\n"
-  "                (nloop (cdr pending)\n"
-  "                       (if ok2 still (+ still 1))))))\n"
-  "        (let* ((x (car pending-forms))\n"
-  "               (ok (guard (e (else #f))\n"
-  "                     (begin\n"
-  "                       (tm-bind-keywords x)\n"
-  "                       (tm-compile-eval x (interaction-environment))\n"
-  "                       #t))))\n"
-  "          (loop (cdr pending-forms)\n"
-  "                (+ i 1)\n"
-  "                (if ok retry (cons (cons i x) retry)))))))\n"
-  "(define (tm-so-candidates f)\n"
-  "  (let* ((len (string-length f))\n"
-  "         (is-so? (and (>= len 3) (string=? (substring f (- len 3) len) \".so\")))\n"
-  "         (is-scm? (and (>= len 4) (string=? (substring f (- len 4) len) \".scm\"))))\n"
-  "    (cond (is-so? (list f))\n"
-  "          (is-scm?\n"
-  "           (let* ((local-so (string-append (substring f 0 (- len 4)) \".so\"))\n"
-  "                  (progs-idx\n"
-  "                   (let loop ((i (- len 7)))\n"
-  "                     (cond ((< i 0) #f)\n"
-  "                           ((string=? (substring f i (+ i 7)) \"/progs/\") (+ i 7))\n"
-  "                           (else (loop (- i 1))))))\n"
-  "                  (rel-so (if progs-idx\n"
-  "                              (string-append (substring f progs-idx (- len 4)) \".so\")\n"
-  "                              #f))\n"
-  "                  (cache-dirs (list\n"
-  "                                (getenv \"TEXMACS_CACHE_PATH\")\n"
-  "                                \"build-texmacos/boot\"\n"
-  "                                \"../build-texmacos/boot\"\n"
-  "                                \"build-texmacos/boot-cache\"\n"
-  "                                \"../build-texmacos/boot-cache\"\n"
-  "                                (let ((bd (getenv \"TEXMACS_BUILD_DIR\")))\n"
-  "                                  (if bd (string-append bd \"/boot\") #f))\n"
-  "                                (let ((bd (getenv \"TEXMACS_BUILD_DIR\")))\n"
-  "                                  (if bd (string-append bd \"/boot-cache\") #f)))))\n"
-  "             (cons local-so\n"
-  "                   (if rel-so\n"
-  "                       (let loop ((dirs cache-dirs) (acc '()))\n"
-  "                         (if (null? dirs)\n"
-  "                             (reverse acc)\n"
-  "                             (let ((d (car dirs)))\n"
-  "                               (loop (cdr dirs)\n"
-  "                                     (if d (cons (string-append d \"/\" rel-so) acc) acc)))))\n"
-  "                       '()))))\n"
-  "          (else '()))))\n"
-  "(define (tm-find-so-file f)\n"
-  "  (let loop ((cands (tm-so-candidates f)))\n"
-  "    (if (null? cands)\n"
-  "        #f\n"
-  "        (let ((cand (car cands)))\n"
-  "          (if (and (file-exists? cand)\n"
-  "                   (or (not (file-exists? f))\n"
-  "                       (time>=? (file-modification-time cand)\n"
-  "                                (file-modification-time f))))\n"
-  "              cand\n"
-  "              (loop (cdr cands)))))))\n"
-  "(define (tm-load-from-source f)\n"
-  "  (display (list 'LOAD-START f))\n"
-  "  (newline)\n"
-  "  (let* ((port (open-input-file f))\n"
-  "         (forms (dynamic-wind\n"
-  "                  (lambda () #f)\n"
-  "                  (lambda () (tm-read-all-forms port))\n"
-  "                  (lambda () (close-port port)))))\n"
-  "    (if (null? forms)\n"
-  "        #t\n"
-  "        (let ((has-header? (and (pair? (car forms))\n"
-  "                                (eq? (caar forms) 'texmacs-module))))\n"
-  "          (if has-header?\n"
-  "              (guard (e2 (else\n"
-  "                          (display (list 'LOAD-BATCH-FALLBACK f (tm-error-message e2)))\n"
-  "                          (newline)\n"
-  "                          (tm-load-forms-itemized f forms)))\n"
-  "                (let ((hdr (car forms)))\n"
-  "                  (tm-bind-keywords hdr)\n"
-  "                  (tm-compile-eval hdr (interaction-environment)))\n"
-  "                (let ((body (cdr forms)))\n"
-  "                  (if (null? body)\n"
-  "                      #t\n"
-  "                      (let ((env (interaction-environment)))\n"
-  "                        (tm-bind-keywords (cons 'begin body))\n"
-  "                        (tm-compile-eval (cons 'begin body) env)))))\n"
-  "              (tm-load-forms-itemized f forms))))))\n"
-  "(define (tm-load-probe f) (noop))\n"
-  "(define (tm-load-file f)\n"
-  "  (guard (e (else (begin\n"
-  "             (display-condition e)\n"
-  "             (newline)\n"
-  "             (tm-backtrace e)\n"
-  "             (display (list 'LOAD-ERROR f (tm-error-message e)\n"
-  "                            (tm-safe-irritants e)))\n"
-  "             (newline)\n"
-  "             (cons #t (list (tm-error-message e))))))\n"
-  "    (load f)))\n"
-  "\n"
-  "(define (tm-backtrace c)\n"
-  "  (guard (e (else (display (list 'BT-ERR (tm-error-message e))) (newline)))\n"
-  "    (if (continuation-condition? c)\n"
-  "        (let* ((k (condition-continuation c))\n"
-  "               (ko (inspect/object k)))\n"
-  "          (let loop ((i 0))\n"
-  "            (guard (e (else #f))\n"
-  "              (let* ((link (ko 'link* i))\n"
-  "                     (co (guard (e (else #f)) (link 'code)))\n"
-  "                     (name (and co (guard (e (else #f)) (co 'name))))\n"
-  "                     (so (guard (e (else #f)) (link 'source)))\n"
-  "                     (sval (and so (guard (e (else #f)) (so 'value))))\n"
-  "                     (sp (guard (e (else #f))\n"
-  "                           (call-with-values (lambda () (link 'source-path))\n"
-  "                             (lambda v v)))))\n"
-  "                (display (list 'FRAME i 'CODE name 'SRC sval 'LOC sp))\n"
-  "                (newline)\n"
-  "                (when (< i 25) (loop (+ i 1)))))))\n"
-  "        (display \"no continuation in condition\\n\"))))\n"
-  "\n"
-  "(define (tm-apply fun args)\n"
-  "  (guard (e (else (begin (display (list 'TM-APPLY-ERROR (tm-error-message e) 'FUN: fun 'ARGS: args)) (newline) (display-condition e) (newline) (tm-backtrace e) (cons #t (list (tm-error-message e))))))\n"
-  "    (let ((proc (if (symbol? fun)\n"
-  "                    (top-level-value fun (interaction-environment))\n"
-  "                    fun)))\n"
-  "      (apply proc args))))\n"
-  "\n"
-  "(define tm-call-by-name\n"
-  "  (foreign-procedure \"tm-call-by-name\" (string scheme-object) scheme-object))\n";
+/* ------------------------------------------------------------------------
+ * Initialization
+ * ---------------------------------------------------------------------- */
 
 void
 initialize_scheme () {
   chez_lock lock;
-  fprintf (stderr, "CHEZDBG: Sforeign_symbol\n"); fflush (stderr);
+
+  /* Foreign entry points first: boot-chez.scm binds each of them with
+     foreign-procedure while it is being loaded, and Chez resolves the symbol
+     at that point. */
   Sforeign_symbol ("tm-call-by-name", (void*) tm_call_by_name);
   Sforeign_symbol ("tmscm_delete_blackbox", (void*) tmscm_delete_blackbox);
   Sforeign_symbol ("tmscm_blackbox_equal", (void*) tmscm_blackbox_equal);
   Sforeign_symbol ("tmscm_blackbox_hash", (void*) tmscm_blackbox_hash);
-  fprintf (stderr, "CHEZDBG: eval init_prg\n"); fflush (stderr);
-  eval_string_raw (init_prg);
-  if (compile_modules_mode) {
-    eval_string_raw ("(define-top-level-value 'texmacs-chez-compiling? #t)");
-  }
-  fprintf (stderr, "CHEZDBG: init_prg done, lookups\n"); fflush (stderr);
+
+  string boot= boot_scheme_path ();
+  if (!exists (url (boot)))
+    boot_failed ("Chez Scheme: bootstrap file not found: " * boot);
+  fprintf (stderr, "Chez Scheme: loading %s\n", (char*) c_string (boot));
+  fflush (stderr);
+  load_scheme_file (boot);
+  call_boot_proc ("tm-set-compiling-mode!",
+                  Sboolean (compile_modules_mode ? 1 : 0));
+
   /* Cache frequently-used procedures.  These ptrs live in STATIC storage,
      which Chez's collector does not scan: newly allocated objects start in
      the copying nursery and move on collection, so an unpinned handle goes
@@ -783,18 +600,10 @@ initialize_scheme () {
   Slock_object (tm_equal_pred);
   object_stack= Stop_level_value (Sstring_to_symbol ("object-stack"));
   Slock_object (object_stack);
+  tm_install_proc= Stop_level_value (Sstring_to_symbol ("tm-install-procedure!"));
+  Slock_object (tm_install_proc);
 
-  fprintf (stderr, "CHEZDBG: initialize_glue\n"); fflush (stderr);
-  /* Debug aid: report exactly which installed definition fails and why */
-  eval_string_raw (
-    "(define (tm-install-guarded def)"
-    "  (guard (e (else (begin"
-    "    (display (list 'install-failed (tm-error-message e)))"
-    "    (newline) #f)))"
-    "    (eval (read (open-input-string def)) (interaction-environment))"
-    "    #t))");
-  tm_install_guarded= Stop_level_value (Sstring_to_symbol ("tm-install-guarded"));
-  Slock_object (tm_install_guarded);
+  fprintf (stderr, "Chez Scheme: initialize_glue\n"); fflush (stderr);
   initialize_glue ();
-  fprintf (stderr, "CHEZDBG: initialize_glue done\n"); fflush (stderr);
 }
+

@@ -35,11 +35,21 @@
   (define-top-level-value 'primitive-load
     (top-level-value 'load (scheme-environment))))
 
-;; Load foundational Chez Scheme boot definitions
-(let ((boot-chez-path (string-append (or (getenv "TEXMACS_PATH") ".") "/progs/kernel/boot/boot-chez.scm")))
-  (if (file-exists? boot-chez-path)
-      (primitive-load boot-chez-path)
-      (display (list 'WARNING-BOOT-CHEZ-NOT-FOUND boot-chez-path))))
+;; Load foundational Chez Scheme boot definitions.
+;;
+;; The kernel normally gets here second: initialize_scheme() loads
+;; boot-chez.scm before initialize_glue(), because it needs tm-apply,
+;; tm-load-file and the glue installer there.  The fallback below covers the
+;; case where this file is evaluated by something other than the kernel.
+(unless (top-level-bound? 'boot-chez-loaded?)
+  (let ((boot-chez-path (string-append (or (getenv "TEXMACS_PATH") ".") "/progs/kernel/boot/boot-chez.scm")))
+    (if (file-exists? boot-chez-path)
+        (primitive-load boot-chez-path)
+        (display (list 'WARNING-BOOT-CHEZ-NOT-FOUND boot-chez-path)))))
+
+;; initialize_glue() ran after boot-chez.scm and replaced the Chez-native
+;; tm-output / tm-errput with the C++ glue versions; put ours back in charge.
+(tm-reinstall-io-hooks!)
 
 ;; --- Guile eval/defined?/filter semantics ----------------------------------
 ;;
@@ -155,9 +165,9 @@
 
 ;; --- Chain to the standard initialization ------------------------------------
 ;;
-;; Route every subsequent load through the engine's guarded per-form loader,
-;; so failures are reported per form (LOAD-SUMMARY / FORM-FAILED) instead of
-;; aborting a whole subtree silently.
+;; Route every subsequent load through the engine's guarded loader, so a
+;; failing file reports LOAD-ERROR with its condition and backtrace instead of
+;; aborting the whole subtree silently.
 
 (define load
   (lambda (f . ignore-env)

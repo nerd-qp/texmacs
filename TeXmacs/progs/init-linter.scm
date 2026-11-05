@@ -49,11 +49,18 @@
   (define-top-level-value 'primitive-load
     (top-level-value 'load (scheme-environment))))
 
-;; Load foundational Chez Scheme boot definitions
-(let ((boot-chez-path (string-append (or (getenv "TEXMACS_PATH") ".") "/progs/kernel/boot/boot-chez.scm")))
-  (if (file-exists? boot-chez-path)
-      (primitive-load boot-chez-path)
-      (display (list 'WARNING-BOOT-CHEZ-NOT-FOUND boot-chez-path))))
+;; Load foundational Chez Scheme boot definitions.  The kernel normally
+;; already loaded them in initialize_scheme(); the fallback covers standalone
+;; evaluation of this file.
+(unless (top-level-bound? 'boot-chez-loaded?)
+  (let ((boot-chez-path (string-append (or (getenv "TEXMACS_PATH") ".") "/progs/kernel/boot/boot-chez.scm")))
+    (if (file-exists? boot-chez-path)
+        (primitive-load boot-chez-path)
+        (display (list 'WARNING-BOOT-CHEZ-NOT-FOUND boot-chez-path)))))
+
+;; initialize_glue() ran after boot-chez.scm and replaced the Chez-native
+;; tm-output / tm-errput with the C++ glue versions; put ours back in charge.
+(tm-reinstall-io-hooks!)
 
 ;; --- Guile eval/defined?/filter semantics ----------------------------------
 ;;
@@ -219,8 +226,9 @@
             ((string=? (substring hay i (+ i m)) needle) i)
             (else (loop (+ i 1)))))))
 
-;; Same candidate order as tm-so-candidates in chez_tm.cpp, plus the local
-;; development layout derived from TEXMACS_PATH:
+;; Boot-directory search order, mirroring module-so-file in boot-chez.scm
+;; ($TEXMACS_BOOT_PATH first) and adding the local development layout derived
+;; from TEXMACS_PATH:
 ;;   <root>/texmacs/TeXmacs  ->  <root>/build-texmacos/boot
 ;;
 ;; TEXMACS_BOOT_PATH overrides everything.  Otherwise the first candidate that

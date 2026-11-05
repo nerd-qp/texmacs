@@ -2,6 +2,29 @@
   (display "WARNING: boot-chez.scm loaded more than once!\n"))
 (define *boot-chez-loaded* #t)
 
+;;; ---------------------------------------------------------------------------
+;;; Engine globals
+;;;
+;;; These must exist before anything else in this file runs.  The kernel
+;;; caches them by symbol right after the load (marked [C++] below), and
+;;; reap-blackboxes! -- installed as the collect-request handler a few forms
+;;; down -- reads tm-blackbox-guardian, so a GC during this very file would
+;;; otherwise raise "variable tm-blackbox-guardian is not bound".
+;;; ---------------------------------------------------------------------------
+
+;; [C++] the value of '(): the kernel calls tmscm_null() for every empty list
+(define tmscm-null '())
+
+;; [C++] guardian that collects the addresses of unreachable blackbox objects
+(define tm-blackbox-guardian (make-guardian))
+
+;; The environment every dynamically evaluated TeXmacs form lands in.
+(define tm-user-env (interaction-environment))
+
+;; [C++] root of the Scheme-object handle stack (src/Scheme/Scheme/object.cpp):
+;; a pair whose car is the list of live handles.  object.cpp mutates the car.
+(define object-stack '(()))
+
 (define compilation-environment
   (if (top-level-bound? 'compilation-environment)
       compilation-environment
@@ -848,5 +871,137 @@
 
 ;; (define (procedure-source proc)
 ;;   (hashtable-ref *procedure-sources* proc #f))
+
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;;; Engine bootstrap
+;;;
+;;; This section used to be the C string literal `init_prg' in
+;;; src/Scheme/Chez/chez_tm.cpp, which initialize_scheme() evaluated form by
+;;; form before any progs file was read.  chez_tm.cpp now carries no Scheme
+;;; source at all: it registers the foreign entry points declared here and
+;;; loads this file.
+;;;
+;;; Consequence: this file is evaluated BEFORE initialize_glue(), i.e. before a
+;;; single C++ glue procedure exists.  Nothing below may call glue at load
+;;; time.  The names the kernel caches by symbol are marked [C++].
+;;;
+;;; The kernel also needs a `load' that predates tm-load-file (which is defined
+;;; here), so it loads this file with Chez's primitive `load'.
+;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+;; Chez's own condition messages are format strings; capture the kernel format
+;; before the progs shims can rebind it, so messages render with irritants.
+(define tm-format format)
+
+(define (tm-safe-irritants e)
+  (guard (_ (else '()))
+    (cond ((syntax-violation? e)
+           (list (syntax-violation-form e) (syntax-violation-subform e)))
+          ((condition? e) (condition-irritants e))
+          (else '()))))
+
+(define (tm-error-message e)
+  (cond ((condition? e)
+         (let ((m (condition-message e)) (irr (tm-safe-irritants e)))
+           (if (pair? irr)
+               (guard (_ (else m)) (apply tm-format m irr))
+               m)))
+        (else (call-with-string-output-port
+                (lambda (p) (display e p))))))
+
+;; [C++] (tm-eval-string s): read one form and evaluate it in tm-user-env.
+;; eval_scheme() routes every C++-side evaluation through this.
+(define (tm-eval-string s)
+  (guard (e (else (begin
+    (display (list 'EVAL-ERROR s (tm-error-message e)
+                   (tm-safe-irritants e)))
+    (newline)
+    (cons #t (list (tm-error-message e))))))
+    (let ((x (read (open-input-string s))))
+      (if (eof-object? x) x (eval x tm-user-env)))))
+
+;; [C++] (tm-load-file f): the engine's file loader.  Calls the primitive
+;; `load' bound at definition time, not the Guile-compatible `load' that
+;; init-texmacs-chez.scm installs afterwards (which calls back into here).
+(define (tm-load-file f)
+  (guard (e (else (begin
+             (display-condition e)
+             (newline)
+             (tm-backtrace e)
+             (display (list 'LOAD-ERROR f (tm-error-message e)
+                            (tm-safe-irritants e)))
+             (newline)
+             (cons #t (list (tm-error-message e))))))
+    (load f)))
+
+(define (tm-backtrace c)
+  (guard (e (else (display (list 'BT-ERR (tm-error-message e))) (newline)))
+    (if (continuation-condition? c)
+        (let* ((k (condition-continuation c))
+               (ko (inspect/object k)))
+          (let loop ((i 0))
+            (guard (e (else #f))
+              (let* ((link (ko 'link* i))
+                     (co (guard (e (else #f)) (link 'code)))
+                     (name (and co (guard (e (else #f)) (co 'name))))
+                     (so (guard (e (else #f)) (link 'source)))
+                     (sval (and so (guard (e (else #f)) (so 'value))))
+                     (sp (guard (e (else #f))
+                           (call-with-values (lambda () (link 'source-path))
+                             (lambda v v)))))
+                (display (list 'FRAME i 'CODE name 'SRC sval 'LOC sp))
+                (newline)
+                (when (< i 25) (loop (+ i 1)))))))
+        (display "no continuation in condition\n"))))
+
+;; [C++] (tm-apply fun args): the engine's call entry point.  A symbol is
+;; resolved in the top-level environment, so call("name", ...) can pass a
+;; symbol instead of an evaluated expression.
+(define (tm-apply fun args)
+  (guard (e (else (begin (display (list 'TM-APPLY-ERROR (tm-error-message e) 'FUN: fun 'ARGS: args)) (newline) (display-condition e) (newline) (tm-backtrace e) (cons #t (list (tm-error-message e))))))
+    (let ((proc (if (symbol? fun)
+                    (top-level-value fun (interaction-environment))
+                    fun)))
+      (apply proc args))))
+
+;; The C++ glue dispatcher.  Every procedure installed with
+;; tmscm_install_procedure() is a closure over its own name that forwards the
+;; argument list here, so the kernel never has to build Scheme source text.
+(define tm-call-by-name
+  (foreign-procedure "tm-call-by-name" (string scheme-object) scheme-object))
+
+;; [C++] Called once per C++ glue function from chez_install_procedure().
+;; Failure is loud and per-name rather than aborting the whole glue pass.
+(define (tm-install-procedure! name)
+  (guard (e (else (begin
+                   (display (list 'INSTALL-FAILED name (tm-error-message e)))
+                   (newline)
+                   #f)))
+    (define-top-level-value (string->symbol name)
+      (lambda args (tm-call-by-name name args))
+      (interaction-environment))
+    #t))
+
+;; [C++] -compile-modules / -recompile-modules set this before any progs file
+;; is read; init-texmacs-chez.scm and compile-texmacs.scm both consult it.
+(define (tm-set-compiling-mode! on?)
+  (define-top-level-value 'texmacs-chez-compiling? on? (interaction-environment)))
+
+;; The version string is compiled into the C++ side (TEXMACS_VERSION); ask the
+;; glue for it rather than duplicating the number here.  An unrecognised
+;; selector makes texmacs_version() return TEXMACS_VERSION itself.
+(define (texmacs-version)
+  (texmacs-version-release "version"))
+
+;; `tm-output' and `tm-errput' are also C++ glue procedures (glue_basic.cpp)
+;; and initialize_glue() runs *after* this file, so it replaces the writers
+;; above with ones that push strings through the byte-oriented
+;; tmscm_to_string bridge.  init-texmacs-chez.scm calls this once glue is up
+;; to put the Chez-native writers back in charge.
+(define (tm-reinstall-io-hooks!)
+  (define-top-level-value 'tm-output
+    (lambda (s) (original-display s)) (interaction-environment))
+  (define-top-level-value 'tm-errput
+    (lambda (s) (original-display s (console-error-port))) (interaction-environment)))
 
 (define-top-level-value 'boot-chez-loaded? #t)
