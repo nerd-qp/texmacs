@@ -145,7 +145,6 @@
   (and (pair? x)
        (memq (car x) '(define define-syntax
                        define-public define-public-macro
-                       define-macro-trace
                        define-module-macro
                        define-state
                        provide-public

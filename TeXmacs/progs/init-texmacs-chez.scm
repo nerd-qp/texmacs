@@ -246,18 +246,6 @@
               (define-macro (nm . formals) body ...))
              ((_ nm val)
               (define-macro nm val))))
-        (interaction-environment))
-  (eval '(define-syntax define-macro-trace
-           (lambda (x)
-             (syntax-case x ()
-               ((_ (nm . formals) body ...)
-                #'(define-macro (nm . formals) body ...)))))
-        (interaction-environment))
-  (eval '(define-syntax define-public-macro-trace
-           (lambda (x)
-             (syntax-case x ()
-               ((_ (nm . formals) body ...)
-                #'(define-public-macro (nm . formals) body ...)))))
         (interaction-environment)))
 
 (define (eval-forms forms)

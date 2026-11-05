@@ -342,12 +342,12 @@
 ;; and emit only definitions (`define-syntax` and `export`).
 ;;
 ;; Stateful macros that mutate intra-compiler tables or require dynamic overloading
-;; (e.g. `tm-define`, `tm-define-overloaded`, `tm-define-macro`, `tm-property`)
-;; are defined via `define-public-macro-trace`. That macro records its raw procedural
-;; transformer on `(putprop 'nm 'macro-transformer ...)` using an internal definition
-;; wrapper so the transpiler can intercept and expand them in interpreter style,
-;; partition the resulting S-expression trace into pure definitions and expressions,
-;; and emit a compliant compilable unit for Chez's `compile-file`.
+;; (e.g. `tm-define`, `tm-define-overloaded`, `tm-define-macro`, `tm-property`) are
+;; handled by the transpiler itself: it expands them in interpreter style, partitions
+;; the resulting S-expression trace into pure definitions and expressions, and emits a
+;; compliant compilable unit for Chez's `compile-file`.  (This used to be routed through
+;; a `define-public-macro-trace` / `'macro-transformer` property; both were removed on
+;; 2026-11-05 — nothing read the property and no module used the macro.)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (define-syntax define-macro
@@ -413,89 +413,6 @@
 (define (fresh-tm-dummy)
   (set! *tm-dummy-counter* (+ *tm-dummy-counter* 1))
   (string->symbol (string-append "_tm_def_" (number->string *tm-dummy-counter*))))
-
-(define (delayed-sub body)
-  (cond ((or (not (pair? body)) (not (list? (car body))) (not (keyword? (caar body))))
-         `(lambda () ,@body #t))
-        ((eq? (caar body) :pause)
-         `(let* ((start (texmacs-time))
-                 (proc ,(delayed-sub (cdr body))))
-            (lambda ()
-              (let ((left (- (+ start ,(cadar body)) (texmacs-time))))
-                (if (> left 0) left
-                    (begin
-                      (set! start (texmacs-time))
-                      (proc)))))))
-        ((eq? (caar body) :every)
-         `(let* ((time (+ (texmacs-time) ,(cadar body)))
-                 (proc ,(delayed-sub (cdr body))))
-            (lambda ()
-              (let ((left (- time (texmacs-time))))
-                (if (> left 0) left
-                    (begin
-                      (set! time (+ (texmacs-time) ,(cadar body)))
-                      (proc)))))))
-        ((eq? (caar body) :idle)
-         `(let ((proc ,(delayed-sub (cdr body))))
-            (lambda ()
-              (let ((left (- ,(cadar body) (idle-time))))
-                (if (> left 0) left
-                    (proc))))))
-        ((eq? (caar body) :on-cpu-idle)
-         `(let* ((interval ,(cadar body))
-                 (next (+ (texmacs-time) interval))
-                 (proc ,(delayed-sub (cdr body))))
-            (lambda ()
-              (cond ((< (texmacs-time) next)
-                     (- next (texmacs-time)))
-                    ((>= (cpu-idle-time) 30000)
-                     (proc)
-                     (set! next (+ (texmacs-time) interval))
-                     0)
-                    (else
-                     1000)))))
-        ((eq? (caar body) :refresh)
-         (let ((sym (gensym)))
-           `(let* ((,sym #f)
-                   (proc ,(delayed-sub (cdr body))))
-              (lambda ()
-                (if (not (equal? ,sym (change-time))) 0
-                    (let ((left (- ,(cadar body) (idle-time))))
-                      (if (> left 0) left
-                          (begin
-                            (set! ,sym (change-time))
-                            (proc)))))))))
-        ((eq? (caar body) :require)
-         `(let ((proc ,(delayed-sub (cdr body))))
-            (lambda ()
-              (if (not ,(cadar body)) 0
-                  (proc)))))
-        ((eq? (caar body) :while)
-         `(let ((proc ,(delayed-sub (cdr body))))
-            (lambda ()
-              (if (not ,(cadar body)) #t
-                  (let ((left (proc)))
-                    (if (eq? left #t) 0 left))))))
-        ((eq? (caar body) :clean)
-         `(let ((proc ,(delayed-sub (cdr body))))
-            (lambda ()
-              (let ((left (proc)))
-                (if (not (eq? left #t)) left
-                    (begin ,(cadar body) #t))))))
-        ((eq? (caar body) :permanent)
-         `(let ((proc ,(delayed-sub (cdr body))))
-            (lambda ()
-              (let ((left (proc)))
-                (if (not (eq? left #t)) left
-                    (let ((next ,(cadar body)))
-                      (if (not (eq? next #t)) #t
-                          0)))))))
-        ((eq? (caar body) :do)
-         `(let ((proc ,(delayed-sub (cdr body))))
-            (lambda ()
-              ,(cadar body)
-              (proc))))
-        (else (delayed-sub (cdr body)))))
 
 (define has-look-and-feel? (lambda (x) (equal? x "emacs")))
 (define original-display (if (top-level-bound? 'original-display) original-display (top-level-value 'display (scheme-environment))))
@@ -613,53 +530,6 @@
     ((_ nm val)
      (with-export-if-active nm (define-macro nm val)))))
 
-
-;; NOTE on `define-public-macro-trace`:
-;; Stateful and syntax-generating macros in TeXmacs (such as `tm-define-macro`,
-;; `tm-menu`, `tm-widget`, `menu-bind`, etc.) are defined through `define-public-macro-trace`.
-;; This macro attributes the symbol with the `'macro-transformer` property holding its raw
-;; transformer procedure in `(compilation-environment)`.
-;; During ahead-of-time compilation, the transpiler intercepts all calls to these macros
-;; in source order, executes the transformer directly in Scheme, captures the emitted
-;; S-expression trace, and expands it ahead of Chez Scheme's compiler.
-;; This guarantees that dynamic compile-time table side-effects and macro nesting are fully
-;; resolved before Chez Scheme's strict phase-separated compiler processes the forms.
-(define-syntax define-macro-trace
-  (lambda (x)
-    (syntax-case x ()
-      ((_ (nm . formals) body ...)
-       #'(begin
-           (define-syntax nm
-             (lambda (stx)
-               (datum->syntax (car (syntax->list stx))
-                 (eval `(apply (lambda formals body ...)
-                               ',(cdr (syntax->datum stx)))
-                       (compilation-environment)))))
-           (putprop 'nm 'macro-transformer (lambda formals body ...))))
-      ((_ nm (lambda formals body ...))
-       #'(begin
-           (define-syntax nm
-             (lambda (stx)
-               (datum->syntax (car (syntax->list stx))
-                 (eval `(apply (lambda formals body ...)
-                               ',(cdr (syntax->datum stx)))
-                       (compilation-environment)))))
-           (putprop 'nm 'macro-transformer (lambda formals body ...))))
-      ((_ nm proc)
-       #'(begin
-           (define-syntax nm
-             (lambda (stx)
-               (datum->syntax (car (syntax->list stx))
-                 (eval `(apply proc ',(cdr (syntax->datum stx)))
-                       (compilation-environment)))))
-           (putprop 'nm 'macro-transformer proc))))))
-
-(define-syntax define-public-macro-trace
-  (syntax-rules ()
-    ((_ (nm . formals) body ...)
-     (with-export-if-active nm (define-macro-trace (nm . formals) body ...)))
-    ((_ nm val)
-     (with-export-if-active nm (define-macro-trace nm val)))))
 
 (define *texmacs-modules-loaded* (make-ahash-table))
 
