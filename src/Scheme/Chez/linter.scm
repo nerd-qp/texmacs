@@ -1,4 +1,4 @@
-;;; linter.scm -- four-phase static analysis of TeXmacs's macro layer.
+;;; linter.scm -- five-phase static analysis of TeXmacs's macro layer.
 ;;;
 ;;; Loaded by progs/init-linter.scm, i.e. from inside a TeXmacs process that
 ;;; has booted the Scheme *kernel only* (`TeXmacs -lint`).  Nothing below is
@@ -9,16 +9,29 @@
 ;;;   phase 2  select the macro definitions out of that index
 ;;;   phase 3  expand each one and harvest the free top-level names it needs
 ;;;   phase 4  evaluate each one, installing the names phase 3 asked for
+;;;   phase 5  module dependency graph over the whole tree (syntactic)
 ;;;
 ;;; Phases 3 and 4 are deliberately separate runs over the same forms: phase 3
 ;;; sees only what the kernel provides, phase 4 is allowed to pull definitions
-;;; out of the index on demand.  The difference between the two is the point of
-;;; the report -- it is the set of macros that cannot be expanded without help
+;;; out of the index.  The difference between the two is the point of the
+;;; report -- it is the set of macros that cannot be expanded without help
 ;;; from outside the kernel.
 ;;;
-;;; Output: a human summary on stdout plus two TSV files, whose paths come from
-;;; $TEXMACS_LINT_OUT (default ./macro-lint.tsv) and $TEXMACS_LINT_DEPS_OUT
-;;; (default ./macro-lint-deps.tsv).
+;;; Phase 4 installs dependencies PROACTIVELY: before a form is expanded, the
+;;; transitive closure of every name it needs is computed from the index
+;;; (macro-closure.scm) and evaluated in dependency order.  The previous model
+;;; reacted to failures instead -- trap `&assertion`, parse "variable <name>
+;;; is not bound" out of the message, evaluate the definition, retry -- which
+;;; could not work for a missing *macro*: Chez's expander does not raise for
+;;; an unbound identifier, it lowers it to ($primitive n $top-level-value), so
+;;; (for (i l) ...) silently stayed a procedure call and `i' was reported as a
+;;; free variable.
+;;;
+;;; Output: a human summary on stdout plus four TSV files, whose paths come
+;;; from $TEXMACS_LINT_OUT (default ./macro-lint.tsv),
+;;; $TEXMACS_LINT_DEPS_OUT (./macro-lint-deps.tsv),
+;;; $TEXMACS_LINT_MODULES_OUT (./macro-lint-modules.tsv) and
+;;; $TEXMACS_LINT_CLOSURE_OUT (./macro-closure.tsv).
 
 ;;; ---------------------------------------------------------------- preamble
 
@@ -38,6 +51,29 @@
 (define chez-eval (if (top-level-bound? 'tm-orig-eval) tm-orig-eval eval))
 
 (define (tm-lint-env) (interaction-environment))
+
+;;; -------------------------------------------------- the closure engine
+;;
+;; macro-closure.scm sits next to this file and is plain definitions: the
+;; free-name walker, the syntax-rules template reader, and the DFS/SCC closure
+;; over a definition index.  Loading it rather than importing it keeps the
+;; linter loadable from a TeXmacs process, which has no library search path
+;; into src/Scheme/Chez.
+
+(define (tm-lint-script-dir)
+  (let ((p (or (getenv "TEXMACS_LINT_SCRIPT")
+               (let ((t (getenv "TEXMACS_PATH")))
+                 (and t (string-append t "/../src/Scheme/Chez/linter.scm")))
+               "src/Scheme/Chez/linter.scm")))
+    (let loop ((i (- (string-length p) 1)))
+      (cond ((< i 0) ".")
+            ((char=? (string-ref p i) #\/) (substring p 0 i))
+            (else (loop (- i 1)))))))
+
+(define tm-lint-primitive-load
+  (if (top-level-bound? 'primitive-load) (top-level-value 'primitive-load) load))
+
+(tm-lint-primitive-load (string-append (tm-lint-script-dir) "/macro-closure.scm"))
 
 (define (tm-lint-find pred xs)
   (cond ((null? xs) #f)
@@ -84,93 +120,19 @@
 
 ;;; ------------------------------------------------------- free name walker
 ;;
-;; `expand` renames every lexical and module-internal binding to a gensym, so a
-;; plain (non-gensym) symbol left in the core AST is a reference to a top-level
-;; binding.  That is the entire dependency rule: no scope tracking needed.
-
-;;; ------------------------------------------------------- free name walker
+;; mc-free-names (macro-closure.scm) runs on two kinds of input.  On expanded
+;; core AST -- phases 3-4 -- every lexical and module-internal binding has been
+;; renamed to a gensym, so a plain non-gensym symbol is a reference to a
+;; top-level binding and no scope tracking is needed.  On source forms --
+;; phase 5 and the dependency closure -- nothing is expanded, so the walk has
+;; to follow the binders itself, including the TeXmacs macros that bind a name
+;; ((with v e body), (for (i l) body), (receive (a b) v body)).
 ;;
-;; Used on two kinds of input.  On expanded core AST (phases 3-4) every lexical
-;; and module-internal binding has been renamed to a gensym, so a plain
-;; non-gensym symbol is a reference to a top-level binding and no scope
-;; tracking is needed.  On source forms (phase 5) the same walk runs without
-;; expansion, so it has to follow the binders itself: named `let`, `let*`,
-;; `do`, and the definer forms whose head is a name being defined rather than
-;; referenced.
-;;
-;; On source input the result is an over-approximation, which is what phase 5
-;; wants: it may report a reference that never runs, but it cannot miss one.
+;; On source input the result is an over-approximation, which is what the
+;; module graph wants: it may report a reference that never runs, but it
+;; cannot miss one.
 
-(define (free-names core)
-  (define acc '())
-  (define (add s) (unless (memq s acc) (set! acc (cons s acc))))
-  (define (walk-all xs b) (walk-each xs (lambda (x) (walk x b))))
-  (define (binding-names bs)
-    (if (list? bs) (map car bs) '()))
-  (define (walk x b)
-    (cond
-      ((symbol? x)
-       (unless (or (memq x b) (gensym? x) (keyword? x)) (add x)))
-      ((pair? x)
-       (let ((h (car x)))
-         (cond
-           ;; primitive reference, not a call
-           ((and (symbol? h) (eq? h '$primitive)) (void))
-           ;; (($primitive n $top-level-value) 'name) -- a top-level lookup
-           ((eq? (prim-op x) '$top-level-value)
-            (let ((s (quoted-symbol (cadr x))))
-              (when (symbol? s) (add s))))
-           ;; other primitive call: skip the operator, walk the arguments
-           ((prim-op x) (walk-all (cdr x) b))
-           ;; data, not code
-           ((and (symbol? h)
-                 (memq h '(quote syntax syntax-rules quasiquote quasisyntax)))
-            (void))
-           ;; a macro definition is analysed by phase 3, not here; walking its
-           ;; transformer would report the template's names as references
-           ((and (symbol? h)
-                 (memq h '(define-syntax define-macro define-public-macro
-                           define-module-macro define-export-macro
-                           tm-define-macro)))
-            (void))
-           ;; a definition: the head names a binder, the body is code
-           ((and (symbol? h)
-                 (memq h '(define define-public provide-public tm-define)))
-            (cond
-              ((and (pair? (cdr x)) (pair? (cadr x)))
-               (walk-all (cddr x) (formals->list (cdadr x) b)))
-              ((pair? (cddr x)) (walk (caddr x) b))
-              (else (void))))
-           ((and (symbol? h) (eq? h 'lambda))
-            (walk-all (cddr x) (formals->list (cadr x) b)))
-           ((and (symbol? h) (eq? h 'case-lambda))
-            (for-each (lambda (clause)
-                        (walk-all (cdr clause) (formals->list (car clause) b)))
-                      (cdr x)))
-           ;; (let loop ((i 0)) ...) -- the name is bound too
-           ((and (symbol? h) (memq h '(let letrec letrec*)))
-            (let* ((named? (and (pair? (cdr x)) (symbol? (cadr x))))
-                   (bs (if named? (caddr x) (cadr x)))
-                   (body (if named? (cdddr x) (cddr x)))
-                   (names (formals->list (binding-names bs)
-                                         (if named? (cons (cadr x) b) b))))
-              (when (list? bs) (walk-all (map cdr bs) b))
-              (walk-all body names)))
-           ;; let*: each binding sees the previous ones, so no name is free
-           ((and (symbol? h) (eq? h 'let*))
-            (let* ((bs (and (pair? (cdr x)) (cadr x)))
-                   (names (formals->list (binding-names bs) b)))
-              (when (list? bs) (walk-all (map cdr bs) b))
-              (walk-all (cddr x) names)))
-           ((and (symbol? h) (memq h '(let-values let*-values)))
-            (walk-all (cddr x) b))
-           ((and (symbol? h) (memq h '(begin if set! and or when unless cond)))
-            (walk-all (cdr x) b))
-           (else (walk-all x b)))))
-      (else (void))))
-  (walk core '())
-  (reverse acc))
-
+(define (free-names x) (mc-free-names x))
 
 ;; Subforms shaped (($primitive n define-top-level-syntax) 'name val).
 (define (syntax-defs core)
@@ -187,20 +149,9 @@
   (reverse acc))
 
 ;; Rebuild a transformer expression from the source form, for the definers whose
-;; expansion hides the body.
-(define (transformer-expr form)
-  (and (pair? form) (pair? (cdr form))
-       (let ((head (car form)) (spec (cadr form)))
-         (cond
-           ((and (memq head '(define-macro define-public-macro
-                              define-module-macro define-export-macro
-                              tm-define-macro))
-                 (pair? spec))
-            `(lambda ,(cdr spec) ,@(cddr form)))
-           ((and (eq? head 'define-syntax) (symbol? spec) (pair? (cddr form)))
-            (let ((v (caddr form)))
-              (and (pair? v) (eq? (car v) 'lambda) v)))
-           (else #f)))))
+;; expansion hides the body.  One implementation, in macro-closure.scm, because
+;; the closure needs exactly the same reading of a macro definition.
+(define (transformer-expr form) (mc-transformer-expr form))
 
 ;;; ---------------------------------------------------------- file system
 
@@ -388,75 +339,87 @@
        (top-level-syntax? s (tm-lint-env))
        (procedure? (top-level-syntax s (tm-lint-env)))))
 
-(define (unbound-symbol c)
-  "The symbol named by an unbound-variable condition, or #f."
-  (and (condition? c)
-       (let ((irr (and (irritants-condition? c) (condition-irritants c))))
-         (cond
-           ((and (pair? irr) (symbol? (car irr)) (car irr)))
-           (else
-            (let ((m (and (message-condition? c) (condition-message c))))
-              (and (string? m)
-                   (let* ((len (string-length m))
-                          (p (let loop ((i 0))
-                               (cond ((> (+ i 9) len) #f)
-                                     ((string=? (substring m i (+ i 9)) "variable ")
-                                      (+ i 9))
-                                     (else (loop (+ i 1)))))))
-                     (and p
-                          (let loop ((j p))
-                            (cond ((>= j len) #f)
-                                  ((char=? (string-ref m j) #\space)
-                                   (string->symbol (substring m p j)))
-                                  (else (loop (+ j 1))))))))))))))
+;; What a site needs: the definer that heads its top form, plus -- for a macro
+;; -- the transformer body, which `expand' never shows (a define-macro form
+;; expands to (void)).
+(define (site-deps site)
+  (let* ((top (site-top site))
+         (head (and (pair? top) (car top)))
+         (extra (if (and (symbol? head) (hashtable-ref defs head #f))
+                    (list head)
+                    '())))
+    (append extra
+            (if (eq? (site-kind site) 'macro)
+                (or (mc-macro-deps (site-inner site)) '())
+                (free-names top)))))
 
-(define (call-with-lazy-deps thunk)
-  "Run THUNK, installing indexed definitions for every unbound name it hits."
-  (let retry ((tries 0))
-    (guard (c (#t (let ((s (unbound-symbol c)))
-                    (if (and s
-                             (< tries 400)
-                             (hashtable-ref defs s #f)
-                             (not (hashtable-ref installing s #f)))
-                        (begin (install-def! s) (retry (+ tries 1)))
-                        (raise c)))))
-      (thunk))))
+;; Is NAME bound at top level, as a value or as a macro?
+;;
+;; Neither Chez primitive answers this on its own: `top-level-bound?' is #f for
+;; a *syntax* binding (so every macro looks unbound), and `top-level-syntax?'
+;; is #t for any symbol at all (it does not check that anything is there).  The
+;; one signal that discriminates is the syntax value: an installed macro is a
+;; procedure, an unbound name yields a core transformer.
+(define (live? name)
+  (or (top-level-bound? name (tm-lint-env))
+      (guard (c (else #f))
+        (procedure? (top-level-syntax name (tm-lint-env))))))
 
-(define (install-def! name)
-  "Evaluate the defining form of NAME, pulling in its own helpers as needed."
+;; PROACTIVE INSTALL.  No exception is ever trapped and no error message is
+;; ever parsed: the dependencies come from the static index, before anything
+;; runs.  Two rules make the walk terminate on a mutually recursive tree:
+;;
+;;   * `installing' is the "no revisit" stop rule -- a name already being
+;;     installed is left alone rather than re-entered.  Evaluating a definition
+;;     only allocates closures, so the order inside a cycle does not matter.
+;;   * a name that is already live is skipped.  That is what keeps the kernel
+;;     out of the work, and it is not optional: re-evaluating a working
+;;     transformer from source gives its templates the wrong lexical context,
+;;     which took phase 4 from 106 expansions to 7 when the test was wrong.
+(define (ensure-installed! name)
+  "Make NAME live, installing its dependencies first.  #t if it is live."
   (cond
-    ((hashtable-ref installed name #f) #t)
-    ((hashtable-ref installing name #f) #f)      ; circular: give up quietly
+    ((not (symbol? name)) #f)
+    ((or (live? name) (hashtable-ref installed name #f)) #t)
+    ((hashtable-ref installing name #f) #f)
     (else
      (let ((site (hashtable-ref defs name #f)))
-       (if (not site) #f
-           (begin
-             (hashtable-set! installing name #t)
-             (let ((ok? (guard (c (else
-                                   (set! n-install-fail (+ n-install-fail 1))
-                                   (bucket! warm-buckets c "install: ")
-                                   #f))
-                          (call-with-lazy-deps
-                            (lambda () (chez-eval (site-top site) (tm-lint-env))))
-                          #t)))
-               (hashtable-delete! installing name)
-               (when ok?
-                 (hashtable-set! installed name #t)
-                 (set! n-helper-installed (+ n-helper-installed 1))
-                 (set! install-log (cons name install-log)))
-               ok?)))))))
+       (cond
+         ((not site) #f)
+         ;; The kernel is already compiled and loaded; it is indexed only so a
+         ;; dependency name can be classified, never evaluated.
+         ((kernel-file? (site-file site)) #t)
+         (else
+          (begin
+            (hashtable-set! installing name #t)
+            (for-each ensure-installed! (site-deps site))
+            (let ((ok? (guard (c (else
+                                  (set! n-install-fail (+ n-install-fail 1))
+                                  (bucket! warm-buckets c "install: ")
+                                  #f))
+                         (chez-eval (site-top site) (tm-lint-env))
+                         #t)))
+              (hashtable-delete! installing name)
+              (when ok?
+                (hashtable-set! installed name #t)
+                (set! n-helper-installed (+ n-helper-installed 1))
+                (set! install-log (cons name install-log)))
+              ok?))))))))
 
-(define (ensure-head-macro! site)
-  "If SITE's top form is headed by a known macro that is not installed yet,
-   install it.  Without this a (define-export-macro ...) site silently expands
-   as an ordinary call."
-  (let ((top (site-top site)))
-    (when (pair? top)
-      (let ((head (car top)))
-        (when (and (symbol? head) (not (macro? head)))
-          (let ((s (hashtable-ref defs head #f)))
-            (when (and s (eq? (site-kind s) 'macro))
-              (install-def! head))))))))
+;; The closure over every macro site, computed once: it is the install order,
+;; the recorded dependency set, and the cycle report.
+(define closure-order '())
+(define closure-sets  (make-eq-hashtable))   ; macro name -> dependency set
+(define closure-cycles '())
+(define closure-back-edges 0)
+
+(define (compute-closures)
+  (let-values (((order sets cycles back)
+                (mc-closures defs site-deps (map site-name macro-sites))))
+    (set! closure-order order)
+    (set! closure-sets sets)
+    (set! closure-cycles cycles)
+    (set! closure-back-edges back)))
 
 ;;; ------------------------------------------------------------------ report
 
@@ -610,7 +573,17 @@
   (printf "      distinct dependency names: ~a~n" (hashtable-size dep-count)))
 
 (define (report-phase4)
-  (printf "~n[4/5] evaluating with lazy dependency installation ...~n")
+  (printf "~n[4/5] evaluating with the proactive closure ...~n")
+  (compute-closures)
+  (printf "      closure: ~a definitions, ~a cycle(s), stop rule fired ~a time(s)~n"
+          (length closure-order) (length closure-cycles) closure-back-edges)
+  ;; Install the whole closure first, in dependency order.  Doing it in one
+  ;; pass instead of per site is what keeps the cost linear: each definition is
+  ;; evaluated at most once, and nothing has to fail to be discovered.
+  (let ((t0 (real-time)))
+    (for-each ensure-installed! closure-order)
+    (printf "      installed ~a definitions from the index in ~a ms~n"
+            (hashtable-size installed) (- (real-time) t0)))
   (let ((t0 (real-time)))
     (for-each
       (lambda (site)
@@ -622,13 +595,15 @@
                        (set! n-warm-fail (+ n-warm-fail 1))
                        (bucket! warm-buckets c "")
                        (hashtable-set! site-status site 'fail)))
-              (ensure-head-macro! site)
-              (call-with-lazy-deps (lambda () (expand top (tm-lint-env))))
+              ;; the definer heading the form is part of site-deps, so a
+              ;; (define-export-macro ...) site can no longer expand as a call
+              (for-each ensure-installed! (site-deps site))
+              (expand top (tm-lint-env))
               (set! n-warm-ok (+ n-warm-ok 1))
               (guard (c (else
                          (set! n-eval-fail (+ n-eval-fail 1))
                          (bucket! warm-buckets c "eval: ")))
-                (call-with-lazy-deps (lambda () (chez-eval top (tm-lint-env))))
+                (chez-eval top (tm-lint-env))
                 (unless was-macro?
                   (when (macro? name)
                     (set! n-macro-installed (+ n-macro-installed 1))))
@@ -639,7 +614,7 @@
   (printf "      eval failures (form expanded but did not evaluate): ~a~n"
           n-eval-fail)
   (printf "      macros newly installed: ~a~n" n-macro-installed)
-  (printf "      helper definitions pulled from the index: ~a (failed ~a)~n"
+  (printf "      definitions installed from the index: ~a (failed ~a)~n"
           n-helper-installed n-install-fail))
 
 ;;; ------------------------------------------- module dependency graph (5/5)
@@ -906,10 +881,13 @@
                                macro-sites)))
   (printf "  expanded, kernel-only env   ~a~n" n-cold-ok)
   (printf "  failed,   kernel-only env   ~a~n" n-cold-fail)
-  (printf "  expanded, lazy install      ~a~n" n-warm-ok)
-  (printf "  failed,   lazy install      ~a~n" n-warm-fail)
+  (printf "  expanded, proactive closure ~a~n" n-warm-ok)
+  (printf "  failed,   proactive closure ~a~n" n-warm-fail)
   (printf "distinct dependencies         ~a~n" (hashtable-size dep-count))
-  (printf "helpers installed on demand   ~a~n" n-helper-installed)
+  (printf "definitions installed         ~a~n" n-helper-installed)
+  (printf "closure: definitions / cycles ~a / ~a~n"
+          (length closure-order) (length closure-cycles))
+  (printf "closure: stop rule fired      ~a~n" closure-back-edges)
   (printf "module nodes / edges          ~a / ~a~n"
           (hashtable-size mod-nodes) (count-edges))
   (printf "  refs: kernel / glue / intra ~a / ~a / ~a~n"
@@ -942,7 +920,8 @@
   (when (> (hashtable-size cold-buckets) 0)
     (print-top cold-buckets "phase 3 failure reasons (kernel only)" 12))
   (when (> (hashtable-size warm-buckets) 0)
-    (print-top warm-buckets "phase 4 failure reasons (lazy install)" 12)))
+    (print-top warm-buckets "phase 4 failure reasons (proactive closure)" 12))
+)
 
 (define (write-reports)
   (let ((p (out-path "TEXMACS_LINT_OUT" "macro-lint.tsv")))
@@ -976,6 +955,25 @@
                                              (symbol->string b)))
                      (vector->list (hashtable-keys dep-count))))))
     (printf "WROTE ~a (~a rows)~n" p (hashtable-size dep-count)))
+  ;; The recorded closure: for every macro definition, the unique set of
+  ;; in-tree names that must be live before it can be expanded.
+  (let ((p (out-path "TEXMACS_LINT_CLOSURE_OUT" "macro-closure.tsv")))
+    (when (file-exists? p) (delete-file p))
+    (call-with-output-file p
+      (lambda (port)
+        (fprintf port "name\tdefiner\tfile\tmodule\tclosure-size\tclosure~n")
+        (for-each
+          (lambda (s)
+            (let* ((n (site-name s))
+                   (c (chez-sort (lambda (a b) (string<? (symbol->string a)
+                                                         (symbol->string b)))
+                                 (hashtable-ref closure-sets n '()))))
+              (fprintf port "~a\t~a\t~a\t~a\t~a\t~a~n"
+                       n (car (site-inner s)) (site-file s) (site-module s)
+                       (length c)
+                       (if (null? c) "-" (symbols->string c ",")))))
+          macro-sites)))
+    (printf "~nWROTE ~a (~a rows)~n" p (length macro-sites)))
   (let* ((p (out-path "TEXMACS_LINT_MODULES_OUT" "macro-lint-modules.tsv"))
          (rows (apply append
                       (map (lambda (from)

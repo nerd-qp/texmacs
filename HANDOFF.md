@@ -1,6 +1,6 @@
 # TeXmacs / Chez Scheme — Handoff (compact, verified 2026-11-05)
 
-**Current tree:** `~/Documents/GitHub/texmacs`, branch `wip-chez`, HEAD `3ae4c604e` (2026-11-05: `chez_tm.cpp` now carries no Scheme source — see §1.10 and §5.9; the change is unstaged). Chez Scheme **10.4.1**, Qt **6.12.0** (macOS arm64) / Qt **6.10.2** (Ubuntu 26.04 arm64). **453/453** Scheme modules transpile and compile to native `.so` with 0 failures. GUI launch verified: `texmacs-version` = 2.1.5, `(top-level-bound? 'current-buffer)` = `#t`, no `ERROR` / `LOAD-ERROR` / segfault in the log. Runtime suite: only the documented `regtest-tmhtml` fixture mismatch and the `regtest-xmltm` encoding mismatch (§5.9) remain.
+**Current tree:** `~/Documents/GitHub/texmacs`, branch `wip-chez`, HEAD `dc683be7e` (2026-11-06: `linter.scm` phase 4 installs the macro dependency closure proactively — see §4.1; the change is unstaged, together with the new `src/Scheme/Chez/macro-closure*.scm`). Chez Scheme **10.4.1**, Qt **6.12.0** (macOS arm64) / Qt **6.10.2** (Ubuntu 26.04 arm64). **453/453** Scheme modules transpile and compile to native `.so` with 0 failures. GUI launch verified: `texmacs-version` = 2.1.5, `(top-level-bound? 'current-buffer)` = `#t`, no `ERROR` / `LOAD-ERROR` / segfault in the log. Runtime suite: only the documented `regtest-tmhtml` fixture mismatch and the `regtest-xmltm` encoding mismatch (§5.9) remain.
 
 This is a condensed replacement for the 2854-line chronological handoff. Historical checkpoints, completed roadmaps, disproven designs, and references to artifacts that existed only in an earlier, different Chez tree have been removed (§10). The earlier "embedded engine" port (Chez 10.5.0-pre-release.1, `docker-sandbox-opencode` workspace, `chez-harness`, `build-chez-macos/`) is a **different project**; none of its paths or commands apply here.
 
@@ -161,6 +161,35 @@ TEXMACS_RECOMPILE_ALL=1 build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -compi
 
 Historical 181/186-module timings came from the retired workspace and are not comparable to this tree.
 
+### 4.1 Static analysis: `TeXmacs -lint`
+
+`texmacs.cpp:819` sets `lint_mode`, which makes `tm_server` boot `progs/init-linter.scm` instead of `init-texmacs.scm` — kernel only, no GUI, no editor program. `init-linter.scm` loads `src/Scheme/Chez/linter.scm`, which runs five phases over the progs tree and writes four TSVs:
+
+```bash
+SCHEMEHEAPDIRS="/opt/homebrew/Cellar/chezscheme/10.4.1/lib/csv10.4.1/tarm64osx" \
+HOME="$PWD/fakehome" TEXMACS_PATH="$PWD/TeXmacs" TEXMACS_HOME_PATH="$PWD/.sandbox-texmacs" \
+TEXMACS_LINT_CLOSURE_OUT=/tmp/macro-closure.tsv \
+  ./build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -lint
+```
+
+| phase | what | measured 2026-11-06 |
+|---|---|---|
+| 1 | index every definition site | 459 files, 14431 top-level forms, 11710 definitions |
+| 2 | select macro sites by hardcoded head rule | 387 (280 kernel, 107 analysed) |
+| 3 | expand each with the kernel only, harvest free names | 106 ok, 1 fail, 82 distinct deps |
+| 4 | install the proactive closure, expand, evaluate | 106 ok, 1 fail, 402 installed |
+| 5 | syntactic module dependency graph | 408 nodes / 1929 edges, 209 SCCs, 7 waves |
+
+Outputs: `$TEXMACS_LINT_OUT` (per macro: status + deps), `_DEPS_OUT` (dependency demand), `_MODULES_OUT` (edges), `_CLOSURE_OUT` (per macro: its transitive helper set).
+
+**Dependency resolution is proactive, not reactive.** The old model trapped `&assertion`, parsed `"variable <name> is not bound"` out of the message, evaluated the definition and retried up to 400 times. That cannot work for a missing *macro*: `expand` does not raise for an unbound identifier, it lowers it to `($primitive n $top-level-value)`, so `(for (i l) ...)` stayed a procedure call and `i` was reported as a free variable. `src/Scheme/Chez/macro-closure.scm` instead computes, before anything runs and with no environment, the transitive closure of every name a form needs, and installs it in dependency order.
+
+**The relation is a DAG of SCCs, not a tree.** 117 mutually recursive groups exist here (largest 62 names: the `Big-*` / `And-*` symbol tables). Two mechanisms handle that: the DFS keeps a three-state mark per node and stops at any node it is already inside — the "no revisit" rule, which terminates the walk and yields the install order; and Tarjan's condensation makes the recorded *set* exact, so every member of a cycle reports the whole cycle rather than whichever part the walk reached first. The walker also reads `syntax-rules` templates (pattern variables, literals and `...` excluded), because a template's helper identifiers are invisible to the definer-headed walk and a missing one silently misparses at the consumer.
+
+Phase 4's *outcome* is unchanged at 106/1 — the kernel already sufficed — so the gain is structural: the retry loop and the message scraping are gone, and macro dependencies classified "defined but not installed" fell **10 → 1**. The closure is 1194 definitions, 117 SCCs, stop rule fired 62 times; 402 install in 415 ms with 8 failures (`graphical-tag-list`, `graphical-group-tag-list` need runtime state `-lint` does not create).
+
+`macro-closure.scm` is plain definitions loaded with `primitive-load` (a TeXmacs process has no library search path into `src/Scheme/Chez`), so `src/Scheme/Chez/macro-closure-report.scm` can also run it standalone: `chez --script src/Scheme/Chez/macro-closure-report.scm /tmp/closure.tsv` indexes the tree and records 345 closures in **0.7 s**, no build and no TeXmacs. That script is a recorder, not a build-order tool: a closure says what must be *live* before a macro expands, not which module compiles first, and a form still needs its own module context to expand at all.
+
 ## 5. Engine invariants (C++ ↔ Chez)
 
 1. **GC pinning.** Chez's nursery moves young objects. Any `ptr` held in a C++ global/static must be `Slock_object(p)`-ed, or it dangles after GC. Two lifetimes, two patterns:
@@ -203,6 +232,10 @@ Historical 181/186-module timings came from the retired workspace and are not co
 - **`pretty-print` after `expand`.** To diagnose a "variable is not bound" that only appears in compiled modules, pretty-print `(expand '<form>)`. The expander renames lexically bound identifiers to `#{name <unique>}`; the same identifier renamed in one place and bare in another means a non-hygienic macro lost lexical context. Reproduce headlessly by copying `init-texmacs-chez.scm`, appending `(load "/tmp/probe.scm")`, and launching with `-i /tmp/init-probe.scm`; add `(delayed (:idle 3000) (open-preferences))` to reproduce GUI-only bugs without a mouse. Probe output goes to stdout — grep the log.
 - **Macros must exist at COMPILE time.** A macro must already be a syntax binding when the consuming module is compiled; `define-top-level-syntax` afterwards does not repair an already-compiled call. Any module using a macro from another module must be compiled **after** it, declare the `:use`, and confirm the ordering. If a declared dependency never appears in the emitted `(import ...)`, suspect ordering. Kernel modules need `:use` for macros, not for plain functions.
 - **Stale cache after a `TEXMACS_PATH` change.** `$TEXMACS_HOME_PATH/system/cache` memoises filesystem lookups by absolute path; a cache built for `./TeXmacs` breaks a packaged `.app` — menu entries and style macros silently disappear with no error. Clear it first: `mv ~/.TeXmacs/system/cache ~/.TeXmacs/system/cache.bak`. The Chez build defaults `TEXMACS_HOME_PATH` to `~/.TeXmacs-chez` so Guile and Chez never share a cache. When a packaged build renders differently, clear the cache before suspecting missing files.
+- **Testing whether a name is bound in Chez.** Neither primitive answers it. `top-level-bound?` is `#f` for a *syntax* binding, so every macro looks unbound; `top-level-syntax?` is `#t` for any symbol at all, including one that was never defined. The only discriminating signal is the syntax value — an installed macro is a `procedure`, an unbound name yields a `#<core-transformer>`. Use `(procedure? (top-level-syntax s env))`; using `top-level-syntax?` on 2026-11-06 made a whole install pass a silent no-op (0 of 1194 definitions installed, and nothing failed).
+- **Never re-evaluate a live macro.** Evaluating a `define-macro` / `define-syntax` form whose name is already a working syntax binding replaces the transformer with one whose template identifiers resolve in the evaluator's context rather than the defining module's. Expanding the site then fails with renamed-but-unbound identifiers (`(#{map *top*:map})`, `(#{body *top*:body})`). One unguarded re-evaluation took linter phase 4 from 106 expansions to 7.
+- **`(interaction-environment)` is global.** Anything evaluated into it can redefine the analyser's own top-level names: a definition named `mode` in the tree overwrote the linter's run mode mid-run, which silently switched it back to the reactive path. Prefix analyser globals (`*mcr-*`) or read them before installing anything.
+- **Do not index headerless files.** The four `init-*.scm` scripts at the progs root are bootstrap glue, not modules. `init-linter.scm:133` declares a two-argument `(func? p kind)` stub that sorts *before* `kernel/library/base.scm:273`'s real 2+-argument definition, so an index built over them records the stub and every `(func? x 'tag n)` call looks broken.
 
 ## 7. Measured performance
 
@@ -318,7 +351,7 @@ Do not treat #333 as a drop-in (5,335 lines across 68 files, depends on other `w
 
 ## 8. Test suites
 
-Native toolchain tests (`src/Scheme/Chez/*-test.scm`), **173 checks, 0 failures**:
+Native toolchain tests (`src/Scheme/Chez/*-test.scm`), **231 checks, 0 failures**:
 
 | suite | checks | covers |
 |---|---|---|
@@ -327,14 +360,15 @@ Native toolchain tests (`src/Scheme/Chez/*-test.scm`), **173 checks, 0 failures*
 | `compiler-db-test.scm` | 50 | FASL compiler DB, record serialization, interface/source hashing, corrupt cache invalidation |
 | `compiler-scan-test.scm` | 29 | AST parsing of `tm-define` / `define-macro` / `define-public`, exports, module headers |
 | `static-analysis-test.scm` | 36 | whole-program call graph, unbound variables, dead code |
+| `macro-closure-test.scm` | 58 | dependency closure: chain / diamond / 2- and 3-cycle / self-edge, exactness inside a cycle, install-order validity, free-name walker on source *and* core AST, `syntax-rules` template deps |
 
 ```bash
 cd texmacs
-for t in src/Scheme/Chez/*-test.scm; do /opt/homebrew/bin/chez -q "$t"; done   # 2 of 5 need the cwd below
+for t in src/Scheme/Chez/*-test.scm; do /opt/homebrew/bin/chez -q "$t"; done   # 2 of 6 need the cwd below
 cd src/Scheme/Chez && for t in compiler-db-test.scm compiler-scan-test.scm; do /opt/homebrew/bin/chez -q "$t"; done
 ```
 
-`compiler-db-test.scm` and `compiler-scan-test.scm` locate `compiler-db.scm` relative to the working directory, so the single-line loop above reports `cannot find compiler-db.scm` for both; run them from `src/Scheme/Chez` (verified 2026-11-05: 17 + 41 + 36 + 50 + 29 = 173 checks, 0 failures).
+`compiler-db-test.scm` and `compiler-scan-test.scm` locate `compiler-db.scm` relative to the working directory, so the single-line loop above reports `cannot find compiler-db.scm` for both; run them from `src/Scheme/Chez` (verified 2026-11-06: 17 + 41 + 36 + 50 + 29 + 58 = 231 checks, 0 failures). `macro-closure-test.scm` finds `macro-closure.scm` by searching up from the cwd, so it runs from either.
 
 TeXmacs runtime suite: `(run-all-tests)` in `TeXmacs/progs/check/check-master.scm` covers `regtest-htmltm`, `regtest-xmltm`, `regtest-tmlength`, `regtest-environment`, `regtest-mathtm`, `regtest-tmhtml`, `regtest-tmmltm`, `regtest-prog-format`, `regtest-cite-sort`. Fixes applied: `non` moved into `kernel/boot/chez-compat.scm` and `kernel/library/list.scm` compiled before `base.scm` (`list-drop-while`); `(:use (prog prog-format-test))` → `(:use (prog prog-format))` typo fixed. Known open mismatches: **`regtest-xmltm`** — one character in the `Bx` row of `latin1-chart` (`U+03BC μ` is truncated to `0xBC ¼` by the byte-oriented string bridge, §5.9; confirmed pre-existing by A/B against a stashed tree); **`regtest-tmhtml`** `<img class="image">` — the runtime converter is modern, but the test fixture `make-expected-sub` in `tmhtml-test.scm` omits `(class "image")`.
 
@@ -360,6 +394,10 @@ Not wired into `run-all-tests`: `regtest-tm-convert` (`kernel/texmacs/tm-convert
 6. Do not trust `TODO_CHEZ.md` as a status source (see header note).
 7. Resolve the string encoding duality (§5.9). The bridge stays byte-oriented until binary data has its own type: introduce an R6RS `bytevector` (or an equivalent explicit marker) for the image / tmfs / `raw-data` path, then let text cross a UTF-8 bridge. A UTF-8 bridge over *all* strings was tried on 2026-11-05 and reverted — see §5.9 for why the `U+F0000+b` escape is not sufficient.
 8. The bootstrap now hard-depends on `TEXMACS_PATH` being resolvable when `initialize_scheme()` runs. If the packaged `.app` or a future Windows build fails with `bootstrap file not found`, check `boot_scheme_path()` in `chez_tm.cpp` before anything else.
+9. **`func?` has the wrong arity in both bootstraps.** `init-texmacs-chez.scm:122` and `init-linter.scm:133` both declare `(define (func? p kind) (procedure? p))`, while `kernel/library/base.scm:273` is `(define-public (func? x f . opts) ...)`. Any `(func? x 'tag n)` — e.g. `convert/tools/tmconcat.scm:90` — raises `incorrect number of arguments` instead of returning `#f`. Fix the stubs to `(lambda (x f . opts) (procedure? x))`. Not urgent for the editor, but it costs the linter and every standalone harness a whole class of spurious failures.
+10. **Linter phase 4 leaves 8 install failures**, all `graphical-tag-list` / `graphical-group-tag-list`: they read `graphics-state`, which `-lint` never creates. Decide whether to model that state in the linter or to keep reporting them as expected.
+11. **The closure has no consumer yet.** Its only effect so far is a recorded TSV plus the removal of the retry loop — phase 4's outcome did not move. The natural consumer is `compile-texmacs.scm`'s eager-evaluation step, which spends 51 s of the 52 s transpile budget in `eval-eager-form!` (§7.1); installing a definition once, in closure order, instead of per-file on demand is the obvious thing to try there, and it must be measured against the §7.1 tier table before it is believed.
+12. **Do not quote numbers from the older exploratory scripts.** `macro-lazy-install.scm`, `macro-helpers.scm`, `macro-inventory.scm` and `macro-expand-inventory.scm` predate `macro-closure.scm` and re-implement a partial TeXmacs bootstrap by hand. That bootstrap is where their numbers come from, not the macro layer: they need the transpiler's three eval rewrites (uncurry, strip docstring, unwrap a top-level `if`) and still hit stub limits. `macro-lazy-install.scm` is worth keeping only as the record of what the reactive model did.
 
 ## 10. What was removed, and where to recover it
 
