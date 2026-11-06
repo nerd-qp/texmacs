@@ -400,6 +400,14 @@ call_boot_proc (const char* name, ptr arg) {
   Scall1 (proc, arg);
 }
 
+/* TODO: Sstring_of_length converts 'name' into a Chez Scheme Sstring by
+ * treating raw 8-bit bytes as Unicode scalar values (Latin-1 mapping). If a
+ * procedure name ever contained non-ASCII UTF-8 characters, this would corrupt
+ * the symbol name (Sstring_utf8 or interning via Sstring_to_symbol would be needed).
+ * In addition, passing an Sstring across this boundary deviates from the rule
+ * that TeXmacs strings over FFI are pure bytevectors (Sbytevectorp). It is currently
+ * safe only because 'name' is an internal ASCII identifier passed once to
+ * (tm-install-procedure! name) to be interned with string->symbol during glue setup. */
 void
 chez_install_procedure (const char* name, void* fn, int arity) {
   chez_lock lock;

@@ -349,6 +349,21 @@ Related upstream PR `texmacs/texmacs#112` (15 commits, 32 files, +1,132/-67) cut
 
 Do not treat #333 as a drop-in (5,335 lines across 68 files, depends on other `wip_fixes` infrastructure). Its `off`/`check` switch variables (`TEXMACS_TYPESET_READS`, `TEXMACS_PAGE_BREAK_CACHE`, `TEXMACS_TYPESET_CACHES`, `TEXMACS_PAGE_REUSE`, `TEXMACS_EDIT_PROFILE`) are worth copying as a validation pattern.
 
+### 7.5 Figure 9.5 animations: O(document) per frame (measured 2026-11-06)
+
+The composed-animation examples in the user manual (Fig. 9.5: Compose, Blinking, TeXmacs logo, Magix) are **not** slowed down by their durations. Timing is correct: `sec-length` is 1000 ms (`src/Typeset/Env/env_length.cpp:533`), and on a one-page document blinking/logo measured ~1 s per state and the Magix cycle ~3 s (`anim-repeat` of a 2 s `anim-progressive` + 1 s `anim-constant`). The cost is that per-frame bookkeeping is **global, not per animated box**:
+
+- `edit_interface_rep::animate()` (`src/Edit/Interface/edit_interface.cpp:1147-1153`) calls `eb->anim_invalid()` on the **whole buffer box**.
+- The default `box_rep::anim_invalid()` (`src/Typeset/Boxes/Basic/boxes.cpp:795`) and `box_rep::anim_next()` (`:784`) recurse into every subbox of every page; only the animation boxes override them. Nothing caches the set of boxes that animate.
+- `draw_text()` (`src/Edit/Interface/edit_repaint.cpp:49-55`) recomputes the same full-tree `anim_next()` minimum on every repaint, and floors the next frame at `now + 25 ms`.
+- `anim_effect_box_rep::anim_next()` asks for `get_refresh_time (0.0)` — now + 1 ms — while a progressive animation is incomplete (`src/Typeset/Boxes/Animate/animate_boxes.cpp:391-399`). The Magix example is progressive 2 s of every 3 s, so while the figure is visible the editor requests a frame every 25 ms continuously.
+
+Each frame therefore performs two O(all boxes in all pages) traversals while only four small table cells change. `sample` of the generated manual with Fig. 9.5 on screen (3 s, main thread; pre-existing `build-texmacos` binary — the profiled path is C++-only and identical in this tree): **23% of all samples in `animate()` → `box_rep::anim_invalid()`**, and **93% of repaint samples in `draw_text()` → `box_rep::anim_next()`**. Rendering the figure itself is negligible.
+
+Consequence: the animation clock is wall-clock and stays correct, but the frame rate degrades with document size. On the ~67-page generated manual the walks still fit the 25 ms budget; at the 273-page manual's box count they do not — frames are dropped and the animation looks slow/choppy. §7.2's LUB collapse (`qt_simple_widget.cpp:679-681`) can amplify a frame further by merging the small animation rectangle with distant dirty rectangles into one large repaint.
+
+Ruled out: Chez↔C++ dispatch (no Scheme on the per-frame path), player speed/elapsed (`basic_player_rep` speed 1, elapsed = wall clock, `src/Kernel/Abstractions/player.cpp:90-100`), and the ms/second units. Fix direction: keep a per-view registry of animated boxes and walk only those in `animate()`/`draw_text()` instead of recursing from the root.
+
 ## 8. Test suites
 
 Native toolchain tests (`src/Scheme/Chez/*-test.scm`), **231 checks, 0 failures**:
@@ -398,6 +413,7 @@ Not wired into `run-all-tests`: `regtest-tm-convert` (`kernel/texmacs/tm-convert
 10. **Linter phase 4 leaves 8 install failures**, all `graphical-tag-list` / `graphical-group-tag-list`: they read `graphics-state`, which `-lint` never creates. Decide whether to model that state in the linter or to keep reporting them as expected.
 11. **The closure has no consumer yet.** Its only effect so far is a recorded TSV plus the removal of the retry loop — phase 4's outcome did not move. The natural consumer is `compile-texmacs.scm`'s eager-evaluation step, which spends 51 s of the 52 s transpile budget in `eval-eager-form!` (§7.1); installing a definition once, in closure order, instead of per-file on demand is the obvious thing to try there, and it must be measured against the §7.1 tier table before it is believed.
 12. **Do not quote numbers from the older exploratory scripts.** `macro-lazy-install.scm`, `macro-helpers.scm`, `macro-inventory.scm` and `macro-expand-inventory.scm` predate `macro-closure.scm` and re-implement a partial TeXmacs bootstrap by hand. That bootstrap is where their numbers come from, not the macro layer: they need the transpiler's three eval rewrites (uncurry, strip docstring, unwrap a top-level `if`) and still hit stub limits. `macro-lazy-install.scm` is worth keeping only as the record of what the reactive model did.
+13. **Animation frame cost is O(document).** `animate()` and `draw_text()` walk the entire box tree every frame via `anim_invalid()` / `anim_next()`, so Fig. 9.5's animations in the full manual run at a collapsing frame rate (§7.5). Track animated boxes per view instead of recursing from the root.
 
 ## 10. What was removed, and where to recover it
 

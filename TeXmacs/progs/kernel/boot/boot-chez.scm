@@ -789,11 +789,81 @@
 
 (define (recur-utf8->string x)
   (cond
-    ((bytevector? x) (guard (e (else x)) (utf8->string x)))
+    ((bytevector? x) (utf8->string x))
     ((pair? x)       (cons (recur-utf8->string (car x))
                            (recur-utf8->string (cdr x))))
     ((vector? x)     (vector-map recur-utf8->string x))
     (else x)))
+
+;;; ---------------------------------------------------------------------------
+;;; Native file loading
+;;;
+;;; `string-load' is not registered by initialize_glue() for Chez (see the
+;;; TEXMACS_ENGINE_CHEZ guard in src/Scheme/Glue/glue_basic.cpp).  The C++
+;;; glue can only hand back a raw bytevector, which forced the bridge above to
+;;; guess whether the payload was text or binary.  Reading the file here lets
+;;; us decide properly: valid UTF-8 becomes a native Scheme string, anything
+;;; else is returned as an R6RS bytevector -- exactly what string-save, the
+;;; artwork/tmfs handlers and embedded-edit.scm need for PNG/JPEG/font data.
+;;;
+;;; Chez's native transcoder uses the REPLACE error-handling mode, so
+;;; `call-with-input-file' + `get-string-all' silently substitutes U+FFFD for
+;;; invalid bytes and never raises an i/o-decoding-error.  An explicit RAISE
+;;; transcoder is required to be able to detect a binary file at all.
+;;; ---------------------------------------------------------------------------
+
+(define tm-text-transcoder
+  (make-transcoder (utf-8-codec) (native-eol-style) 'raise))
+
+;; Return an OS path only for a URL that resolves to an existing file.
+;; url-exists? must be checked first: materialize() raises a C++ FAILED error
+;; (a full crash report) for an unresolvable URL, and C++ exceptions cannot be
+;; caught from Scheme.  The old C++ string_load() just returned "" in that case.
+(define (tm-load-path u)
+  (cond ((string? u) (and (file-exists? u) u))
+        ((url-exists? u) (url-materialize u "r"))
+        (else #f)))
+
+(define (tm-loadable? path)
+  (and (string? path) (> (string-length path) 0) (file-exists? path)))
+
+;; Read raw bytes for the binary fallback (PNG, JPEG, fonts).
+(define (tm-load-bytes path)
+  (guard (e (else #vu8()))
+    (if (tm-loadable? path)
+        (call-with-port (open-file-input-port path)
+          (lambda (p) (or (get-bytevector-all p) #vu8())))
+        #vu8())))
+
+;; Dedicated binary loader, also usable directly by callers that know they
+;; want a bytevector rather than a string.
+(define (binary-load u)
+  (tm-load-bytes (tm-load-path u)))
+
+
+;; TODO: to review carefully.
+(define (string-load u)
+  (let ((path (tm-load-path u)))
+    (if (not path)
+      ""
+      (guard (e
+               ((i/o-decoding-error? e) (tm-load-bytes path))
+               (else
+                 ;; Mirrors C++ string_load(): a failed load yields ""
+                 ;; rather than aborting, but is still reported.
+                 (display (list 'STRING-LOAD-ERROR u
+                            (if (condition? e)
+                              (condition-message e)
+                              e))
+                   (console-error-port))
+                 (newline (console-error-port))
+                 ""))
+        (if (tm-loadable? path)
+          (call-with-port
+            (open-file-input-port path (file-options) 'block
+              tm-text-transcoder)
+            (lambda (p) (or (get-string-all p) "")))
+          "")))))
 
 ;; [C++] (tm-eval-string s): read one form and evaluate it in tm-user-env.
 ;; eval_scheme() routes every C++-side evaluation through this.
@@ -864,11 +934,8 @@
                    (newline)
                    #f)))
     (define-top-level-value (string->symbol name)
-      (if (member name '("string-load" "tmfs-load"))
-          (lambda args
-            (tm-call-by-name name (recur-string->utf8 args)))
-          (lambda args
-            (recur-utf8->string (tm-call-by-name name (recur-string->utf8 args)))))
+      (lambda args
+        (recur-utf8->string (tm-call-by-name name (recur-string->utf8 args))))
       (interaction-environment))
     #t))
 

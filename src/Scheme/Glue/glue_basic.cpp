@@ -7903,6 +7903,14 @@ tmg_string_save (tmscm arg1, tmscm arg2) {
   return TMSCM_UNSPECIFIED;
 }
 
+// Under Chez Scheme, `string-load' is implemented natively in
+// TeXmacs/progs/kernel/boot/boot-chez.scm.  The C++ glue can only return a
+// raw bytevector, which makes the Scheme side guess whether the payload is
+// text or binary; the native implementation reads the file with an explicit
+// UTF-8 transcoder and returns a native string for text and a bytevector for
+// binary data.  Keep the C++ internal string_load() (glue.cpp) untouched:
+// it is still used by the rest of the kernel and by the Guile build.
+#ifndef TEXMACS_ENGINE_CHEZ
 tmscm
 tmg_string_load (tmscm arg1) {
   TMSCM_ASSERT_URL (arg1, TMSCM_ARG1, "string-load");
@@ -7915,6 +7923,7 @@ tmg_string_load (tmscm arg1) {
 
   return string_to_tmscm (out);
 }
+#endif
 
 tmscm
 tmg_string_append_to_file (tmscm arg1, tmscm arg2) {
@@ -11746,7 +11755,9 @@ initialize_glue_basic () {
   tmscm_install_procedure ("url-backup?",  tmg_url_backupP, 1, 0, 0);
   tmscm_install_procedure ("url-cache-invalidate",  tmg_url_cache_invalidate, 1, 0, 0);
   tmscm_install_procedure ("string-save",  tmg_string_save, 2, 0, 0);
+#ifndef TEXMACS_ENGINE_CHEZ
   tmscm_install_procedure ("string-load",  tmg_string_load, 1, 0, 0);
+#endif
   tmscm_install_procedure ("string-append-to-file",  tmg_string_append_to_file, 2, 0, 0);
   tmscm_install_procedure ("system-move",  tmg_system_move, 2, 0, 0);
   tmscm_install_procedure ("system-copy",  tmg_system_copy, 2, 0, 0);
