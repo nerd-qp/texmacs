@@ -151,13 +151,20 @@ Per module `kernel/.../<name>.scm`:
 Batch modes:
 
 ```bash
+# 0. Recompile C++ binary if commits touch C++ or glue files:
+ninja -C build-texmacos                                                    # or: cmake --build build-texmacos -j 10
+
+# 1. Module compiler invocation:
 build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -compile-modules          # incremental (default)
-build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -recompile-modules        # full clean rebuild
+build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -recompile-modules        # full clean rebuild (~8-10 min)
 TEXMACS_RECOMPILE_ALL=1 build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -compile-modules
 ```
 
+> [!IMPORTANT]
+> **Always recompile the C++ binary when commits touch C++ code.** `boot-chez.scm` is loaded dynamically from source at runtime, whereas the C++ executable is compiled ahead-of-time. If commits touch `chez_tm.cpp`, `chez_tm.hpp`, or glue code (e.g. FFI string/bytevector bridges), running with a stale binary causes immediate FFI type signature mismatches (such as string vs. bytevector) that hang or crash the session. Run `ninja -C build-texmacos` before running `-compile-modules` or launching the editor.
+
 > [!WARNING]
-> **Incremental builds run, but there is no guarantee that the result compiles correctly.** `-compile-modules` compares mtimes, marks up-to-date `.so` files `UP-TO-DATE` and loads them directly. Cached `.so` files carry serialized FASL environment descriptors that can mismatch newly recompiled modules, producing unbound-variable errors (`make-soft-port`, `hash-ref`, `ahash-ref`). A successful exit is **not** evidence that the produced modules are correct. Use `-recompile-modules` whenever correctness matters; treat incremental only as a fast smoke pass (~seconds, 0–1 recompiled). A full rebuild of 453 modules takes ~10 min.
+> **Incremental builds run, but there is no guarantee that the result compiles correctly.** `-compile-modules` compares mtimes, marks up-to-date `.so` files `UP-TO-DATE` and loads them directly. Cached `.so` files carry serialized FASL environment descriptors that can mismatch newly recompiled modules, producing unbound-variable errors (`make-soft-port`, `hash-ref`, `ahash-ref`). A successful exit is **not** evidence that the produced modules are correct. Use `-recompile-modules` (or `TEXMACS_RECOMPILE_ALL=1`) whenever running into trouble or certifying a release; however, use it **sparingly** during routine development since a full clean rebuild of 453 modules currently takes **~8–10 min** (efforts to optimize this via `macro-closure.scm` are in progress). For fast smoke testing, selectively delete target `.so` files in `build-texmacos/boot/` to force recompilation of only those modules.
 
 Historical 181/186-module timings came from the retired workspace and are not comparable to this tree.
 

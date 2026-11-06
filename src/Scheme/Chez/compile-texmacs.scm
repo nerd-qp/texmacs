@@ -70,6 +70,144 @@
 (primitive-load (string-append *compiler-dir* "/compile-inventory.scm"))
 (import (compile-inventory))
 
+;; ---- gated eager evaluation + on-demand install of expand-time helpers ---
+;; Plain value definitions are left to `compile-file'; the definitions that
+;; must be live while a macro expands are installed on demand into the
+;; module's own compilation environment.  Set TEXMACS_EAGER_GATE=0 to get the
+;; original behaviour back.
+(primitive-load (string-append *compiler-dir* "/macro-closure.scm"))
+
+(define *oracle-defs* (make-eq-hashtable))
+(define *oracle-installing* (make-eq-hashtable))
+(define *oracle-installed* (make-eq-hashtable))
+
+(define (oracle-index-tree! defs root)
+  (define macro-definers
+    '(define-syntax define-macro define-public-macro define-module-macro
+      define-export-macro tm-define-macro))
+  (define value-definers '(define define-public provide-public tm-define))
+  (define (walk-files dir)
+    (let loop ((rel "") (acc '()))
+      (let ((full (if (string=? rel "") dir (string-append dir "/" rel))))
+        (if (file-directory? full)
+            (fold-left (lambda (a n)
+                         (if (member n '("." "..")) a
+                             (loop (if (string=? rel "") n (string-append rel "/" n)) a)))
+                       acc (directory-list full))
+            (if (and (> (string-length rel) 4)
+                     (string=? (substring rel (- (string-length rel) 4) (string-length rel)) ".scm"))
+                (cons rel acc) acc)))))
+  (define (index-top! top rel mod)
+    ;; only definitions a top-level context can hold: the form itself, or a
+    ;; definition under a top-level begin/if/when/unless wrapper.
+    (define (walk x at-top?)
+      (cond
+        ((not (pair? x)) (void))
+        ((memq (car x) '(quote syntax syntax-rules quasiquote)) (void))
+        ((and at-top? (symbol? (car x))
+              (or (memq (car x) macro-definers) (memq (car x) value-definers))
+              (pair? (cdr x)))
+         (let ((n (mc-leftmost-symbol (mc-cadr x))))
+           (when (symbol? n)
+             (unless (hashtable-ref defs n #f)
+               (hashtable-set! defs n
+                 (vector n (if (memq (car x) macro-definers) 'macro 'value)
+                         x top rel mod))))))
+        ((and at-top? (memq (car x) '(begin if when unless)))
+         (for-each (lambda (y) (walk y #t)) (cdr x)))
+        (else (void))))
+    (walk top #t))
+  (for-each
+    (lambda (rel)
+      (let ((forms (guard (e (else '()))
+                     (call-with-input-file
+                         (string-append root "/" rel)
+                       (lambda (p)
+                         (let lp ((a '()))
+                           (let ((x (read p)))
+                             (if (eof-object? x) (reverse a) (lp (cons x a))))))))))
+        (let ((hdr (find (lambda (f) (and (pair? f) (eq? (car f) 'texmacs-module))) forms)))
+          (when hdr
+            (for-each (lambda (top) (index-top! top rel (mc-cadr hdr))) forms)))))
+    (walk-files root)))
+
+;; A name is live if it holds a value or a working syntax binding.  Neither
+;; primitive answers this alone: `top-level-bound?' is #f for a macro, and
+;; `top-level-syntax?' is #t for symbols that were never defined.
+(define (oracle-live? name env)
+  (or (top-level-bound? name env)
+      (guard (e (else #f)) (procedure? (top-level-syntax name env)))
+      (hashtable-ref *oracle-installed* name #f)))
+
+(define (oracle-site-deps site)
+  (let* ((top (vector-ref site 3))
+         (inner (vector-ref site 2))
+         (head (and (pair? top) (car top))))
+    (append (if (and (symbol? head) (hashtable-ref *oracle-defs* head #f)) (list head) '())
+            (if (eq? (vector-ref site 1) 'macro)
+                (or (mc-macro-deps inner) '())
+                (mc-free-names top)))))
+
+;; Install NAME into the current compilation environment, dependencies first.
+;; The two rewrite steps matter: the sources contain curried definitions and
+;; docstrings, which `define' rejects when evaluated raw.
+(define (oracle-install! name)
+  (let ((env (compilation-environment))
+        (site (and (symbol? name) (hashtable-ref *oracle-defs* name #f))))
+    (cond
+      ((not (symbol? name)) #f)
+      ((oracle-live? name env) #t)
+      ((hashtable-ref *oracle-installing* name #f) #f)   ; cycle: leave it
+      ((not site) #f)
+      (else
+       (hashtable-set! *oracle-installing* name #t)
+       (for-each oracle-install! (oracle-site-deps site))
+       (let ((form (if (eq? (vector-ref site 1) 'macro)
+                       (vector-ref site 3)
+                       (tm-strip-docstring (tm-maybe-uncurry (vector-ref site 2))))))
+         (let ((ok? (guard-eval 'ORACLE-INSTALL-FAIL (list name) #f
+                      (lambda ()
+                        ;; `tm-define' publishes through
+                        ;; `(interaction-environment)'; keep that inside the
+                        ;; module's environment, not the global one.
+                        (parameterize ((interaction-environment env))
+                          (eval form (interaction-environment)))
+                        #t))))
+           (hashtable-delete! *oracle-installing* name)
+           (when ok? (hashtable-set! *oracle-installed* name #t))
+           ok?))))))
+
+;; A macro definer hides its body from `mc-free-names' (a template is not a
+;; use), so its dependencies come from `mc-macro-deps' instead.
+(define (oracle-bring-in-form! form)
+  (let ((head (and (pair? form) (car form))))
+    (for-each oracle-install!
+              (if (memq head '(define-syntax define-macro define-public-macro
+                               define-module-macro define-export-macro
+                               tm-define-macro))
+                  (or (mc-macro-deps form) '())
+                  (mc-free-names form)))))
+
+;; What must stay eager: everything that is *expand-time state*, not just a
+;; procedure.  Skipping these breaks option tables, `define-table' registries
+;; consulted during expansion, and group predicates.
+(define (eager-skip? x)
+  (let ((head (and (pair? x) (car x))))
+    (not (or (memq head '(define-syntax define-macro define-public-macro
+                          define-module-macro define-export-macro tm-define-macro
+                          define-top-level-syntax define-state define-table
+                          define-collection extend-table extend-collection
+                          smart-table define-group cas-define-test
+                          define-table-decls define-collection-decls))
+             (and (eq? head 'ahash-set!) (pair? (cdr x))
+                  (eq? (cadr x) 'define-option-table))))))
+
+(define *eager-gated?*
+  (let ((v (getenv "TEXMACS_EAGER_GATE")))
+    (and v (not (string=? v "")) (not (string=? v "0")))))
+
+(oracle-index-tree! *oracle-defs* *progs-dir*)
+
 ;; The tiers below are compiled in the order *source-files* was appended, so
 ;; index n is always the nth module of that list.
 (progress-start! (length *source-files*))
@@ -429,15 +567,6 @@
                 (publish-syntax! sym message))))
         after-syms))))
 
-;; For forms that install something other than a value -- a syntax binding, a property --
-;; publishing the value is not enough, so the form has to run again in the global
-;; environment.
-(define (eval-twice x message)
-  (eval-in-compile x message)
-  (guard-eval message (list x) #f
-	      (lambda ()
-		(eval x (interaction-environment)))))
-
 (define (eval-eager-form! x)
   (let ((head (and (pair? x) (car x))))
     (cond
@@ -484,9 +613,6 @@
       ((eq? head 'define-top-level-syntax)
        (eval-install-syntax-env x 'WARNING-TOP-LEVEL-SYNTAX-FAIL))
 
-      ((eq? head 'putprop)
-       (eval-twice x 'WARNING-PUTPROP-FAIL))
-
       ;; We do not evaluate it here at all: the form stays in the module body, Chez
       ;; expands it at compile time, and the emitted `(property-set! ...)` runs at load
       ;; time inside the module's own environment.
@@ -528,7 +654,7 @@
                                 tm-property
                                 define-preferences)))
               (loop (cdr rest) (cons x acc)))
-            ((and (pair? x) (memq (car x) '(define-top-level-syntax putprop)))
+            ((and (pair? x) (eq? (car x) 'define-top-level-syntax))
               (loop (cdr rest) (cons x acc)))
             ((and (pair? x)
                (eq? (car x) 'define)
@@ -792,7 +918,12 @@
                 (set! export-forms (reverse export-forms))
                 ;; Evaluate eager forms sequentially in source order before partitioning:
                 (parameterize ((compile-export-mode? #f))
-                  (for-each eval-eager-form! prepared))
+                  (for-each
+                    (lambda (x)
+                      (unless (and *eager-gated?* (eager-skip? x))
+                        (when *eager-gated?* (oracle-bring-in-form! x))
+                        (eval-eager-form! x)))
+                    prepared))
                 (let-values (((defs exprs) (partition-forms prepared)))
                   (let* ((keywords (tm-collect-keywords forms '()))
                          (keyword-defs (map (lambda (k) `(define ,k ',k)) keywords))
