@@ -779,6 +779,22 @@
         (else (call-with-string-output-port
                 (lambda (p) (display e p))))))
 
+(define (recur-string->utf8 x)
+  (cond
+    ((string? x) (string->utf8 x))
+    ((pair? x)   (cons (recur-string->utf8 (car x))
+                       (recur-string->utf8 (cdr x))))
+    ((vector? x) (vector-map recur-string->utf8 x))
+    (else x)))
+
+(define (recur-utf8->string x)
+  (cond
+    ((bytevector? x) (guard (e (else x)) (utf8->string x)))
+    ((pair? x)       (cons (recur-utf8->string (car x))
+                           (recur-utf8->string (cdr x))))
+    ((vector? x)     (vector-map recur-utf8->string x))
+    (else x)))
+
 ;; [C++] (tm-eval-string s): read one form and evaluate it in tm-user-env.
 ;; eval_scheme() routes every C++-side evaluation through this.
 (define (tm-eval-string s)
@@ -788,7 +804,7 @@
     (newline)
     (cons #t (list (tm-error-message e))))))
     (let ((x (read (open-input-string s))))
-      (if (eof-object? x) x (eval x tm-user-env)))))
+      (if (eof-object? x) x (recur-string->utf8 (eval x tm-user-env))))))
 
 ;; [C++] (tm-load-file f): the engine's file loader.  Calls the primitive
 ;; `load' bound at definition time, not the Guile-compatible `load' that
@@ -832,7 +848,7 @@
     (let ((proc (if (symbol? fun)
                     (top-level-value fun (interaction-environment))
                     fun)))
-      (apply proc args))))
+      (recur-string->utf8 (apply proc (recur-utf8->string args))))))
 
 ;; The C++ glue dispatcher.  Every procedure installed with
 ;; tmscm_install_procedure() is a closure over its own name that forwards the
@@ -848,7 +864,11 @@
                    (newline)
                    #f)))
     (define-top-level-value (string->symbol name)
-      (lambda args (tm-call-by-name name args))
+      (if (member name '("string-load" "tmfs-load"))
+          (lambda args
+            (tm-call-by-name name (recur-string->utf8 args)))
+          (lambda args
+            (recur-utf8->string (tm-call-by-name name (recur-string->utf8 args)))))
       (interaction-environment))
     #t))
 

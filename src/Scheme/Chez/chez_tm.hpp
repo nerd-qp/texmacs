@@ -53,7 +53,7 @@ inline bool tmscm_is_pair (tmscm obj) { return Spairp (obj); }
 inline bool tmscm_is_bool (tmscm obj) { return Sbooleanp (obj); }
 inline bool tmscm_is_int (tmscm obj)   { return Sfixnump (obj) || Sbignump (obj); }
 inline bool tmscm_is_double (tmscm obj) { return Sflonump (obj); }
-inline bool tmscm_is_string (tmscm obj) { return Sstringp (obj); }
+inline bool tmscm_is_string (tmscm obj) { return Sbytevectorp (obj); }
 inline bool tmscm_is_symbol (tmscm obj) { return Ssymbolp (obj); }
 bool tmscm_is_list (tmscm obj);   /* needs a call to list?; defined in cpp  */
 bool tmscm_is_equal (tmscm o1, tmscm o2); /* needs equal?; defined in cpp   */

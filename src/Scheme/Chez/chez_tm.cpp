@@ -12,6 +12,7 @@
 #include "chez_tm.hpp"
 #include "blackbox.hpp"
 #include "file.hpp"
+#include "converter.hpp"
 #include "../Scheme/glue.hpp"
 
 #include <map>
@@ -137,24 +138,22 @@ tmscm_is_equal (tmscm o1, tmscm o2) {
 
 tmscm
 string_to_tmscm (string s) {
-  // Sstring_of_length stops copying at the first '\0' byte, corrupting binary data (e.g. PNGs).
-  // We allocate an uninitialized string and explicitly copy all n bytes via Sstring_set.
   iptr n= (iptr) N (s);
-  tmscm res= Smake_uninitialized_string (n);
-  for (iptr i= 0; i < n; i++) {
-    Sstring_set (res, i, (unsigned char) s[i]);
-  }
+  tmscm res= Smake_bytevector (n, 0);
+  memcpy (Sbytevector_data (res), &s[0], n);
   return res;
 }
 
 string
 tmscm_to_string (tmscm s) {
-  iptr n= Sstring_length (s);
-  string r ((int) n);
-  for (iptr i= 0; i < n; i++) {
-    r[i]= (char) Sstring_ref (s, i);
+  if (Sbytevectorp (s)) {
+    iptr n= Sbytevector_length (s);
+    string r ((int) n);
+    memcpy (&r[0], Sbytevector_data (s), n);
+    return r;
   }
-  return r;
+  FAILED ("bytevector expected in tmscm_to_string");
+  return "";
 }
 
 tmscm
@@ -166,7 +165,11 @@ symbol_to_tmscm (string s) {
 string
 tmscm_to_symbol (tmscm s) {
   tmscm str= Ssymbol_to_string (s);
-  return tmscm_to_string (str);
+  iptr n= Sstring_length (str);
+  string r;
+  for (iptr i= 0; i < n; i++)
+    r << encode_as_utf8 (Sstring_ref (str, i));
+  return r;
 }
 
 /* ------------------------------------------------------------------------
@@ -417,7 +420,7 @@ eval_scheme_file (string file) {
   chez_lock lock;
   chez_activate activate;
   c_string _file (file);
-  return Scall1 (tm_load_file_proc, Sstring_of_length (_file, (iptr) N (file)));
+  return Scall1 (tm_load_file_proc, Sstring_utf8 (_file, (iptr) N (file)));
 }
 
 tmscm
@@ -425,7 +428,7 @@ eval_scheme (string s) {
   chez_lock lock;
   chez_activate activate;
   c_string _s (s);
-  return Scall1 (tm_eval_string_proc, Sstring_of_length (_s, (iptr) N (s)));
+  return Scall1 (tm_eval_string_proc, Sstring_utf8 (_s, (iptr) N (s)));
 }
 
 tmscm
