@@ -35,6 +35,45 @@ This document tracks identified architectural improvements and performance bottl
      - All other procedures: standard `recur-string->utf8` / `recur-utf8->string`.
   4. Verified full round-trip fidelity with French and German accented text (`(cork->utf8 (utf8->cork "élève naïve à l'Haÿ-les-Roses Grüße"))` $\implies$ `#t`).
 
+### [ ] Eliminate Universal FFI Transcoding Overhead in `tm-call-by-name`
+- **Location**: [`TeXmacs/progs/kernel/boot/boot-chez.scm:956-970`](TeXmacs/progs/kernel/boot/boot-chez.scm#L956-L970), [`src/Scheme/Chez/chez_tm.cpp:138-160`](src/Scheme/Chez/chez_tm.cpp#L138-L160)
+- **Problem & Measured Impact**:
+  - In commit `705e0d47`, `tm-call-by-name` was wrapped with `(in-trans args)` and `(out-trans ...)` to handle Cork/UTF-8 bytevector conversions.
+  - Because `tm-call-by-name` is the central trampoline for **all ~1,150 C++ glue procedures**, every keystroke triggers dozens of glue queries (`(tree-label t)`, `(tree-ref t 0)`, `(cursor-path)`).
+  - On every single glue call, `recur-string->utf8` and `recur-utf8->string` execute recursive loops over argument lists and return values. This allocates dozens of transient `bytevector` and `string` objects on the Chez nursery heap per keystroke.
+  - **Measured Regression**: Math typing regressed from **728.8 ms** (with peaks of **460 ms**) to **1,152.6 ms** (+58% latency); text typing regressed from **1,035.5 ms** to **1,147.0 ms**.
+- **Technical Distinction: Symbols vs. Raw Binary Strings**:
+  - **Scheme Symbols (`Ssymbolp`, `'math`, `'concat`, `'fraction`, `'bold`)**:
+    - Symbols are immutable, interned pointers in Chez Scheme.
+    - They represent AST node tags, grammar keywords, and procedure names. They are strictly ASCII identifiers (`[a-z0-9_-]+`).
+    - Symbols **never have encoding ambiguity**: they cannot contain 8-bit Cork font bytes, null bytes, or multi-byte UTF-8 sequences.
+    - Running `recur-string->utf8` on symbols is a 100% redundant, no-op tree walk that wastes CPU cycles.
+  - **Raw Binary Strings in TeXmacs (`string` in C++)**:
+    - TeXmacs's C++ `string` class is an unformatted 8-bit byte array (`char*` + length). It is overloaded across the engine to represent three distinct types of data:
+      1. *Semantic Unicode/ASCII Text*: e.g. `"The quick brown fox"`, `"change-log.en.tm"`.
+      2. *Cork Font Strings*: TeX's T1 Cork font encoding, where bytes `0x80`–`0xFF` represent accented characters and math symbols (e.g. `0x0D` is `‚`, `0xE9` is `'é'`). In Chez Scheme, raw bytes in the range `0x80`–`0xFF` are invalid UTF-8 sequences and cannot be stored in standard Chez `Sstring`s without decoding errors (`\ufffd`).
+      3. *Raw Binary Data*: PNG/JPEG images loaded via `tmfs://`, binary TrueType/OpenType font tables, or SQLite database blobs, containing arbitrary byte sequences including `0x00` (null bytes).
+    - Chez Scheme strings (`Sstring`) are strictly vectors of 32-bit Unicode scalar values (`0 <= c <= 0x10FFFF`). Passing Cork bytes or binary image buffers to Chez `Sstring` crashes or corrupts data.
+- **Granular Census: Which Primitives Need Transcoding vs. Which DO NOT**:
+  - **>90% of All Glue Primitives DO NOT Need Any Transcoding**:
+    - *AST & Tree Navigation*: `tree-label`, `tree-ref`, `tree-set!`, `tree-children`, `tree-arity`, `tree-insert!`, `tree-remove!`, `tree-cursor`, `cursor-path`, `tree-search`, `tree-copy`. (Operate purely on `tree` blackboxes, integer fixnums, and Scheme symbols).
+    - *Typesetting & Layout Controls*: `update-current-buffer`, `update-forced`, `typeset-forced`, `generate-all-aux`, `inclusions-gc`, `picture-gc`, `window-set-view`, `get-page-count`.
+    - *Buffer & Window Navigation*: `current-buffer`, `new-buffer`, `buffer-close`, `go-to`, `go-end`, `go-start`, `buffer-tree`, `has-selection?`, `selection-active?`.
+    - *Coordinates, State & Undo*: `get-x`, `get-y`, `archive-state`, `start-editing`, `end-editing`, `keyboard-message`.
+    - *Mathematical / Geometry Primitives*: All coordinate arithmetic, rectangle computations, and boolean queries.
+  - **The Few Primitives That ACTUALLY Handle Strings**:
+    - *Text Node Editing*: `cpp-insert` / `insert-tree` (when inserting user text into an atomic AST leaf), `tree-node-text` (reading text from a leaf).
+    - *File & URL I/O*: `string-load`, `tm-load-path`, `tm-load-bytes`, `url-load-binary`, `file-save`, `url-save`.
+    - *Cork Codecs (Already Custom)*: `cork->utf8`, `utf8->cork`, `cork->sourcecode`, `sourcecode->cork`, `escape-to-ascii`.
+- **Targeted Action Plan to Restore Peak Performance (460 ms Math / 751 ms Text)**:
+  1. **Option A: Signature-Based or Set-Based Dispatch in `tm-install-procedure!`**:
+     - Maintain a small set of the ~20 glue procedures that actually accept or return text strings.
+     - Only wrap those specific procedures with `in-trans` / `out-trans`.
+     - For all other ~1,130 procedures (trees, coordinates, layout, buffers), bind `(lambda args (raw-tm-call-by-name name args))` directly with zero transcoding and zero recursive traversal.
+  2. **Option B: Move Transcoding into C++ Glue (`glue_basic.cpp`)**:
+     - Handle bytevector $\leftrightarrow$ string conversions directly in C++ for the few procedures that take `string`, reading raw bytes via `Sbytevector_data`.
+     - This eliminates Scheme-side tree walking and closures entirely.
+
 ### [ ] Progressive Compilation Census (184 Compiled, 273 Remaining)
 - **Total Scheme files**: 457 files across `TeXmacs/progs/`.
 - **Compiled `.so` files**: 184 files in `build-texmacos/boot/` (including all 39 kernel modules and 38 Tier 2 modules).

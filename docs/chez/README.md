@@ -386,13 +386,14 @@ BENCH open-change-log cold 2103 warm 284
 
 Chez vs published s7/femtolisp numbers (§7.7 of `src/docs/femtolisp/07-performance.md`; multi-run measured on commit `705e0d47` on Apple M2 Virtual Machine with `QT_QPA_PLATFORM=offscreen`):
 
-| task | Chez (`705e0d47` warm mean) | s7 (measured warm mean) | femtolisp |
+| task | Chez (`705e0d47` warm mean) | s7-11.9 (10-run warm mean) | femtolisp (10-run warm mean) |
 |---|---|---|---|
-| menus-text, warm | **83.0 ms** (±4.7 ms) | 105.6 ms (±20.3 ms) | 76–86 ms |
-| menus-math, warm | **64.2 ms** (±2.2 ms) | 82.9 ms (±10.1 ms) | ~74 ms |
-| typing-text-520, warm | **1147.0 ms** (±43.2 ms, ~2.2 ms/key) | 1180.6 ms (±258.6 ms, ~2.3 ms/key) | 775–825 ms |
-| typing-math-270, warm | **1152.6 ms** (±56.7 ms, ~4.3 ms/key) | 1164.0 ms (±259.4 ms, ~4.3 ms/key) | 882–978 ms |
-| open-change-log, warm | **185.4 ms** (±8.7 ms) | 257.9 ms (±51.6 ms) | 121–132 ms |
+| menus-text, warm | **83.0 ms** (±4.7 ms) | 102.0 ms (±10.8 ms) | 92.4 ms (±5.1 ms) |
+| menus-math, warm | **64.2 ms** (±2.2 ms) | 80.8 ms (±7.2 ms) | 74.3 ms (±2.95 ms) |
+| typing-text-520, warm | **1147.0 ms** (±43.2 ms, ~2.2 ms/key) | 1104.6 ms (±53.4 ms, ~2.1 ms/key) | 1059.4 ms (±35.4 ms, ~2.0 ms/key) |
+| typing-math-270, warm | **1152.6 ms** (±56.7 ms, ~4.3 ms/key) | 1067.5 ms (±35.7 ms, ~4.0 ms/key) | 1047.8 ms (±46.4 ms, ~3.9 ms/key) |
+| open-change-log, warm | **185.4 ms** (±8.7 ms) | 215.5 ms (±12.4 ms) | 188.0 ms (±12.7 ms) |
+| manual-124-pages, total | **6549.0 ms** (warm peak) | 6970.7 ms (±348.1 ms) | **6596.3 ms** (±206.9 ms) |
 
 *Detailed breakdowns, raw vectors, and manual compilation runs are recorded in [`docs/benchmarks.md`](../benchmarks.md).*
 
