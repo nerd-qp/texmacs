@@ -1,7 +1,7 @@
 # TeXmacs UI Benchmark: Chez Scheme vs. s7 Scheme (10-Run Statistical Suite)
 
 **Date**: 2026-11-05  
-**Platform**: macOS arm64 (Apple Silicon), Qt 6.12.0  
+**Platform**: Apple M2 Virtual Machine (macOS arm64), Qt 6.12.0  
 **Benchmark Script**: [`docs/chez/bench/ui.scm`](chez/bench/ui.scm)  
 **Execution Environment**:
 
@@ -47,7 +47,40 @@ export TEXMACS_DOC_PATH="$PWD/TeXmacs/doc"
 
 ---
 
-## 3. Raw 10-Run Datasets (`QT_QPA_PLATFORM=offscreen`)
+## 4. Multi-Run Verification for Commit `705e0d47` (2026-11-07)
+
+**Commit**: `705e0d4746ece72ddcd34adaa4fe46305d742177`  
+**Description**: *chez: fix Cork FFI transcoding, tmfs binary loading, and relocate dev guide*  
+**Platform**: Apple M2 Virtual Machine (macOS arm64), Qt 6.12.0 (`QT_QPA_PLATFORM=offscreen`)
+
+### A. UI Benchmark Suite (`docs/chez/bench/ui.scm`, 5 Runs)
+
+| Benchmark Task | **Commit `705e0d47` Mean** | Stdev | **s7 Reference Mean** | s7 Stdev | Delta (Chez vs. s7) |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **`menus-text`** | **83.0 ms** | **$\pm 4.7$ ms** | 105.6 ms | $\pm 20.3$ ms | **Chez is 21% faster & 4× more consistent** |
+| **`menus-math`** | **64.2 ms** | **$\pm 2.2$ ms** | 82.9 ms | $\pm 10.1$ ms | **Chez is 23% faster & 5× more consistent** |
+| **`typing-text-520-keys`** | **1,147.0 ms** <br>*(~2.20 ms/key)* | **$\pm 43.2$ ms** | 1,180.6 ms <br>*(~2.27 ms/key)* | $\pm 258.6$ ms | **Chez is faster & 6× more consistent** |
+| **`typing-math-270-keys`** | **1,152.6 ms** <br>*(~4.27 ms/key)* | **$\pm 56.7$ ms** | 1,164.0 ms <br>*(~4.31 ms/key)* | $\pm 259.4$ ms | **Chez is faster & 4.5× more consistent** |
+| **`open-change-log`** | **185.4 ms** | **$\pm 8.7$ ms** | 257.9 ms | $\pm 51.6$ ms | **Chez is 28% faster & 6× more consistent** |
+
+#### Raw Values (5 Runs)
+- **`menus-text`**: warm `[79, 91, 82, 80, 83]`, cold `[515, 507, 472, 461, 493]`
+- **`menus-math`**: warm `[67, 65, 65, 62, 62]`, cold `[90, 82, 89, 75, 79]`
+- **`typing-text-520-keys`**: warm `[1119, 1219, 1136, 1110, 1151]`, cold `[1201, 1090, 1108, 1120, 1221]`
+- **`typing-math-270-keys`**: warm `[1244, 1157, 1117, 1096, 1149]`, cold `[1855, 1474, 1376, 1423, 1413]`
+- **`open-change-log`**: warm `[200, 183, 178, 186, 180]`, cold `[631, 562, 569, 637, 610]`
+
+### B. Manual Regeneration Benchmark (`docs/chez/bench/manual.scm`, 3 Runs)
+
+| Phase | Run 1 | Run 2 | Run 3 (Fully Warm) | s7 Reference |
+| :--- | :--- | :--- | :--- | :--- |
+| **`expand`** | 1,109 ms | 863 ms | **866 ms** | 1,008 ms *(Chez is ~15% faster)* |
+| **`update-1`** | 3,851 ms | 3,949 ms | **3,361 ms** | 3,873 ms |
+| **`update-2`** | 1,461 ms | 1,601 ms | **1,193 ms** | 1,261 ms |
+| **`update-3`** | 1,465 ms | 1,525 ms | **1,129 ms** | 1,080 ms |
+| **Total** | 7,886 ms | 7,938 ms | **6,549 ms** | **7,222 ms** *(Chez is ~670 ms faster)* |
+| **Pages** | **124** | **124** | **124** | **124** *(Verified)* |
+
 
 ### Chez Scheme Port (Offscreen)
 

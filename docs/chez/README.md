@@ -325,7 +325,7 @@ Cumulative: kernel+tier2 28.5 s, through tier3 39.5 s, tier4 59.1 s, tier5 93.2 
 
 That prediction held: gating the eager pass by default and dropping the per-module `copy-environment` took the total from 8 m 6 s to ~30 s between these two measurements (table above; different tree and Chez build, so indicative only).
 
-### 7.2 Keystroke latency (measured 2026-11-05; macOS arm64, Qt 6.12.0, Chez 10.4.1, Release)
+### 7.2 Keystroke latency (measured 2026-11-05; Apple M2 Virtual Machine, macOS arm64, Qt 6.12.0, Chez 10.4.1, Release)
 
 Earlier assumptions that C++↔Scheme dispatch dominates typing were **wrong by two orders of magnitude**. The C++↔Scheme optimization blueprint (`Scall0..3` trampolines, procedure caching, `foreign-callable`, thread-activation batching) is **ruled out**: a "Phase 2" arity-trampoline implementation was built, measured (215 → 217 ns on the procedure path) and **reverted**. Do not re-add it without a measurement. `Scall4` does not exist in the Chez C API (max `Scall3`).
 
@@ -384,14 +384,17 @@ BENCH typing-math-270-keys cold 1477 warm 1480
 BENCH open-change-log cold 2103 warm 284
 ```
 
-Chez vs published s7/femtolisp numbers (§7.7 of `src/docs/femtolisp/07-performance.md`; load average ~6.5 here vs ~4 there — treat the gap as an upper bound):
+Chez vs published s7/femtolisp numbers (§7.7 of `src/docs/femtolisp/07-performance.md`; multi-run measured on commit `705e0d47` on Apple M2 Virtual Machine with `QT_QPA_PLATFORM=offscreen`):
 
-| task | Chez | s7 | femtolisp |
+| task | Chez (`705e0d47` warm mean) | s7 (measured warm mean) | femtolisp |
 |---|---|---|---|
-| menus-text, warm | 110–114 ms | 85–121 ms | 76–86 ms |
-| typing-text-520, warm | 1205–1358 ms (~2.4 ms/key) | 723–826 ms | 775–825 ms |
-| typing-math-270, warm | 1323–1480 ms (~5.2 ms/key) | 834–855 ms | 882–978 ms |
-| open-change-log, warm | 198–284 ms | 127–144 ms | 121–132 ms |
+| menus-text, warm | **83.0 ms** (±4.7 ms) | 105.6 ms (±20.3 ms) | 76–86 ms |
+| menus-math, warm | **64.2 ms** (±2.2 ms) | 82.9 ms (±10.1 ms) | ~74 ms |
+| typing-text-520, warm | **1147.0 ms** (±43.2 ms, ~2.2 ms/key) | 1180.6 ms (±258.6 ms, ~2.3 ms/key) | 775–825 ms |
+| typing-math-270, warm | **1152.6 ms** (±56.7 ms, ~4.3 ms/key) | 1164.0 ms (±259.4 ms, ~4.3 ms/key) | 882–978 ms |
+| open-change-log, warm | **185.4 ms** (±8.7 ms) | 257.9 ms (±51.6 ms) | 121–132 ms |
+
+*Detailed breakdowns, raw vectors, and manual compilation runs are recorded in [`docs/benchmarks.md`](../benchmarks.md).*
 
 The large-document case is off by default: `TEXMACS_BENCH_BIG=1 ... -x '(load "docs/chez/bench/ui.scm")'` types into the 273-page manual (~80 s per round, currently ~197 ms/key) and reproduces §7.2's repaint behaviour. `update-forced` is stricter than the GUI, which defers typesetting to the paint path. **Load matters more than any of these gaps** — the same binary gave `manual.scm expand` 763–1213 ms at load ~2 and 2109 ms at load 7.3. Report load average with every number; never compare a single run against a single run.
 
