@@ -314,7 +314,8 @@
 ;; Store learned arguments from one session to another
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(define (save-learned)
+;; TODO: private before.
+(define-public (save-learned)
   (with l (ahash-table->list interactive-arg-table)
     (save-object "$TEXMACS_HOME_PATH/system/interactive.scm" l)))
 
@@ -343,7 +344,8 @@
            (m (map rearrange-old r)))
       (list->ahash-table m))))
 
-(define (retrieve-learned)
+;; TODO: private before.
+(define-public (retrieve-learned)
   (if (url-exists? "$TEXMACS_HOME_PATH/system/interactive.scm")
       (let* ((l (load-object "$TEXMACS_HOME_PATH/system/interactive.scm"))
              (old? (and (pair? l) (pair? (car l)) (list-2? (caar l))))

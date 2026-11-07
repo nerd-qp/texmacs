@@ -18,6 +18,23 @@ This document tracks identified architectural improvements and performance bottl
   2. **Audit Macros for Expand-Time State Dependencies**: Review macro definers (`define-macro`, `define-public-macro`, `define-module-macro`) across `TeXmacs/progs/` that query hash tables, property lists, or top-level bound status during expansion.
   3. **Phase-Isolated Compilation Environment**: Investigate parameterizing `(compilation-environment)` with an isolated, copy-on-write snapshot during Pass 1 eager evaluation or resetting stateful tables before `compile-file` to prevent expand-time state leakage between passes.
 
+### [X] Cork Encoding & FFI String/Bytevector Transcoding Mismatch [RESOLVED]
+- **Location**: [`TeXmacs/progs/kernel/boot/boot-chez.scm`](TeXmacs/progs/kernel/boot/boot-chez.scm) (`recur-transcode-bytevector`, `recur-transcode-string`, `recur-utf8->string`, `recur-string->utf8`, `recur-cork->string`, `recur-string->cork`, `tm-call-by-name`)
+- **Problem**:
+  In Guile 1.8, Scheme strings were raw 8-bit byte arrays (`char*`), allowing UTF-8, Latin-1, and 8-bit Cork (TeX T1 font encoding with bytes `0x80`–`0xFF`) to coexist without transcoding.
+  In Chez Scheme, strings are strictly vectors of Unicode scalar values.
+  At the FFI boundary (`chez_tm.cpp`), C++ `string_to_tmscm` allocates an R6RS bytevector (`Smake_bytevector`) containing the raw bytes of `tm_string`.
+  However, in `boot-chez.scm`, `recur-utf8->string` unconditionally wrapped every returned bytevector in `(utf8->string bytevector)`.
+  When procedures such as `utf8->cork` returned Cork-encoded bytevectors containing 8-bit non-ASCII bytes (e.g. `0xE9` for `'é'`), Chez Scheme's UTF-8 decoder replaced them with Unicode replacement character `U+FFFD` (`\ufffd`), permanently mangling data (`(cork->utf8 (utf8->cork "zéro"))` $\to$ `"zï£¡ro"`).
+- **Solution Implemented**:
+  1. Built recursive combinators `recur-transcode-bytevector` and `recur-transcode-string` to traverse arbitrary trees, pairs, and vectors cleanly without a generic predicate dispatch.
+  2. Implemented bijective 8-bit Cork codecs `cork-bytes->string` and `string->cork-bytes` using R6RS `(latin-1-codec)` with `(eol-style none)` (preventing platform EOL normalization of byte `0x0D` / Cork low quote `‚`), establishing a lossless 1-to-1 mapping between 8-bit Cork byte values `0x00`–`0xFF` and Unicode codepoints `U+0000`–`U+00FF`. Documented the architectural trade-offs, 32-bit container memory cost, semantic operation limitations, and the long-term roadmap to migrate Cork strings to native bytevectors.
+  3. Wrapped `tm-call-by-name` (the central C++ glue dispatcher) to handle Cork vs UTF-8 input/output transcoding directly based on procedure name, keeping `tm-install-procedure!` completely generic and `tm-apply` untouched:
+     - `utf8->cork` and `sourcecode->cork`: input encoded via `recur-string->utf8`, output decoded via `recur-cork->string`.
+     - `cork->utf8`, `cork->sourcecode`, and `escape-to-ascii`: input encoded via `recur-string->cork`, output decoded via `recur-utf8->string`.
+     - All other procedures: standard `recur-string->utf8` / `recur-utf8->string`.
+  4. Verified full round-trip fidelity with French and German accented text (`(cork->utf8 (utf8->cork "élève naïve à l'Haÿ-les-Roses Grüße"))` $\implies$ `#t`).
+
 ### [ ] Progressive Compilation Census (184 Compiled, 273 Remaining)
 - **Total Scheme files**: 457 files across `TeXmacs/progs/`.
 - **Compiled `.so` files**: 184 files in `build-texmacos/boot/` (including all 39 kernel modules and 38 Tier 2 modules).
@@ -202,17 +219,23 @@ This document tracks identified architectural improvements and performance bottl
 
 ## 4. Bug Fixes & Stability
 
-### [ ] String Encoding Duality: Unicode Text vs. Binary Asset Buffers (PNG / Images)
-- **Location**: [`src/Scheme/Chez/chez_tm.cpp:121-155`](src/Scheme/Chez/chez_tm.cpp#L121-L155), [`src/System/Files/web_files.cpp:155`](src/System/Files/web_files.cpp#L155), [`src/Scheme/Glue/glue_basic.cpp:7907`](src/Scheme/Glue/glue_basic.cpp#L7907)
+### [X] String Encoding Duality: Unicode Text vs. Binary Asset Buffers (PNG / Images) [RESOLVED]
+- **Location**: [`TeXmacs/progs/kernel/texmacs/tm-file-system.scm:38,58-64`](TeXmacs/progs/kernel/texmacs/tm-file-system.scm#L38), [`src/System/Files/web_files.cpp:155`](src/System/Files/web_files.cpp#L155), [`TeXmacs/progs/kernel/boot/boot-chez.scm:830`](TeXmacs/progs/kernel/boot/boot-chez.scm#L830)
 - **Problem**:
   In GNU Guile 1.8, Scheme strings were raw 8-bit C `char*` byte arrays without Unicode awareness (`scm_str2scm` / `scm_scm2str`). Consequently, TeXmacs historically uses the Scheme `string` type for two conflicting roles:
   1. **Text**: UTF-8 and Cork encoded strings passed to/from document trees, XML/HTML converters, and Qt GUI widgets (`QString::fromUtf8`).
   2. **Binary Buffers**: Raw binary file assets (such as PNG images loaded via `(string-load ...)` and `(tmfs-load ...)`).
-  In Chez Scheme, strings are vectors of 32-bit Unicode scalar values. When `string_to_tmscm` and `tmscm_to_string` attempted to transcode all strings with `decode_from_utf8` and `encode_as_utf8` (commit `c4d6282`), all binary bytes $\ge 128$ (such as PNG header byte `0x89`) were treated as Unicode code points and expanded into multi-byte UTF-8 sequences (`0x89` -> `0xC2 0x89`). This inflated and corrupted image files on disk (e.g. 32 KB PNG grew to 46 KB of invalid data), causing Qt to fail with `Cannot read image file ... in qt_image_size` and `warning: cannot render`.
-  Conversely, treating every Scheme string as an uninterpreted 8-bit array (`(char) Sstring_ref`) preserves binary assets byte-for-byte, but does not encode genuine Scheme Unicode characters $> 255$ into valid UTF-8 for C++ `fopen` / `QString::fromUtf8`.
-- **Status / Action Plan**:
-  - Reverted `string_to_tmscm` and `tmscm_to_string` in `chez_tm.cpp` to the 1-character = 1-byte raw representation to restore binary asset loading and fix image rendering. Added explanatory block comments documenting the invariant.
-  - Future architecture should separate binary buffer transfers from text string transfers at the FFI boundary (e.g. using R6RS `bytevector` or dedicated binary asset primitives for `string-load` / `tmfs-load`), or inspect string payloads so binary images are not passed through UTF-8 transcoding.
+  In Chez Scheme, `string-load` was updated to read non-UTF-8 binary files into native R6RS bytevectors (`#vu8(...)`).
+  However, in `tm-file-system.scm`, `tmfs-load` checked `(if (string? r) r (object->tmstring r))`.
+  Because `(string? #vu8(...))` is `#f`, `tmfs-load` fell back to calling `(object->tmstring r)` on the bytevector!
+  `object->tmstring` printed the bytevector as an ASCII text string (`"#vu8(137 80 78 71 13 10 ...)"`, inflating a 32 KB PNG into 115 KB of Scheme text).
+  C++ `web_files.cpp` wrote that text string to temporary files in `/tmp/` and Qt reported:
+  `convert-error, Cannot read image file 'tmfs://help/article/tm/misc/images/welcome-videos.png' in qt_image_size` and `warning: cannot render`.
+- **Solution Implemented**:
+  1. Updated `tmfs-load` in `tm-file-system.scm` to accept both strings and bytevectors directly: `(if (or (string? r) (bytevector? r)) r (object->tmstring r))`.
+  2. Updated `object->tmstring` to pass bytevectors through unchanged.
+  3. Exported `bytevector?` cleanly in `kernel/boot/chez-compat.scm` (using `(#%bytevector? x)`) and `kernel/boot/compat.scm` (returning `#f` in Guile 1.8).
+  4. Verified that `(url-materialize "tmfs://help/article/tm/misc/images/welcome-videos.png" "r")` writes exact raw binary PNG data (verified with `file`: `PNG image data, 371 x 248, 8-bit/color RGBA`) and renders in the welcome page without warnings.
 
 ### [ ] Top-Level Definitions Inside Conditional Expressions in Plugin Inits (`invalid context for definition`)
 - **Locations**:
@@ -794,31 +817,29 @@ This document tracks identified architectural improvements and performance bottl
 
 ## 7. Session Persistence & the `-x` Entry Point
 
-### [ ] `-x "(save-learned)"` aborts the process (exit 134)
-- **Location**: [`TeXmacs/progs/kernel/texmacs/tm-dialogue.scm`](TeXmacs/progs/kernel/texmacs/tm-dialogue.scm) (`save-learned`, line 317);
-  `-x` handling in `src/Texmacs/Texmacs/texmacs.cpp`.
-- **Repro**:
-  ```bash
-  TeXmacs -x '(begin (save-learned) (quit-TeXmacs))'
-  ```
-- **Symptom**: exit code **134**, `libc++abi: terminating due to uncaught exception of type
-  string`. The C++ backtrace ends at
-  `TeXmacs_main + 2564` → `start_scheme + 2388` → `texmacs_entrypoint + 2248`.
-- **Cause**: `save-learned` is a module-private `(define ...)` inside
-  `(kernel texmacs tm-dialogue)`, not `define-public`. Evaluating the bare symbol from `-x`
-  raises an unbound-variable error, and that Scheme condition is converted into a C++
-  `string` exception which nothing on the `-x` path catches, so the process aborts instead
-  of printing an error.
-- **Consequence**: the quit-time save cannot be exercised from a script. The
-  `interactive.scm` "file exists" failure seen at shutdown has therefore **no scripted
-  repro** — only an interactive session with real command history reaches
-  `quit-TeXmacs-scheme` → `save-learned`.
-- **Workaround**: call `save-object` directly (it is public and reproduces the save), or
-  test through the GUI.
-- **Candidate fixes**:
-  1. Promote `save-learned` to `define-public` so `-x` can reach it.
-  2. Guard the `-x` evaluation so a Scheme error is reported as a message rather than
-     terminating the process — the same defect will affect any unbound name passed to `-x`.
+### [X] RESOLVED: `-x "(save-learned)"` and shutdown hook abort
+- **Location**: [`TeXmacs/progs/kernel/texmacs/tm-dialogue.scm`](TeXmacs/progs/kernel/texmacs/tm-dialogue.scm) (`save-learned`, `retrieve-learned`).
+- **Why it worked in Guile 1.8**: In Guile 1.8, `(texmacs-module (kernel texmacs tm-dialogue) ...)` dynamically switched `(current-module)`. When `(on-exit (save-learned))` expanded in Guile, the lambda captured the active module's environment as its lexical environment. When C++ later invoked `quit-TeXmacs-scheme` at exit, Guile executed the closure within that captured module scope, so private `(define (save-learned) ...)` was resolved successfully.
+- **Why it failed in Chez Scheme**: Chez Scheme compiles files ahead-of-time (AOT) via `compile-texmacs.scm` into R6RS `(module kernel:texmacs:tm-dialogue () ...)` blocks. Definitions using plain `(define ...)` are strictly private and excluded from the module's `(export ...)` list. At runtime, C++ calls `call ("quit-TeXmacs-scheme")` from the top-level `(interaction-environment)`. Because `save-learned` was not exported publicly, the top-level environment had no binding for it, raising `Exception: variable save-learned is not bound` and aborting shutdown.
+- **Fix**: Promoted `save-learned` and `retrieve-learned` from module-private `(define ...)` to `(define-public ...)`. Recompiled `tm-dialogue.so`.
+- **Verification**: `TeXmacs -x '(begin (save-learned) (quit-TeXmacs))'` exits cleanly with code 0; `interactive.scm` is written successfully without raising `variable save-learned is not bound`.
+
+### [ ] Qt 6 / Emacs Look-and-Feel: Minibuffer Footer Prompt Auto-Cancelled by Focus Race
+- **Location**: [`src/Plugins/Qt/QTMMenuHelper.cpp:443-448`](src/Plugins/Qt/QTMMenuHelper.cpp#L443-L448) (`QTMInputTextWidgetHelper::leave`), [`src/Texmacs/Window/tm_dialogue.cpp`](src/Texmacs/Window/tm_dialogue.cpp), [`TeXmacs/progs/texmacs/texmacs/tm-server.scm`](TeXmacs/progs/texmacs/texmacs/tm-server.scm) (`safely-quit-TeXmacs`).
+- **Symptom**: In Emacs mode (`"look and feel" "emacs"`, where `"interactive questions"` defaults to `"footer"`), closing an unsaved buffer causes the confirmation prompt in the footer to flash for a fraction of a second and immediately disappear; the right footer then resets to `"start" "s"`, and the window does not close.
+- **Why it worked in Guile / Qt 4-5**: Under Qt 4 and Qt 5, window and canvas focus was not forced asynchronously on buffer switch, and status bar focus was retained.
+- **Why it fails in Qt 6 / Chez**:
+  1. `safely-quit-TeXmacs` calls `(switch-to-buffer (car l))` immediately prior to `(user-confirm ...)`.
+  2. `switch-to-buffer` invokes `window_set_view(win, v, focus=true)`, which queues `send_keyboard_focus` (`canvas()->setFocus()`) to the Qt event loop.
+  3. `user-confirm` installs the prompt into the status bar and focuses `_le` (`QTMInteractivePrompt::start()`).
+  4. The Qt event loop then processes the queued `canvas()->setFocus()`, stealing keyboard focus from `_le`.
+  5. `QTMLineEdit::focusOutEvent` emits `focusOut(reason)`, calling `QTMInputTextWidgetHelper::leave(reason)`.
+  6. In `leave()`, because autocommit is off and reason is focus loss, it calls `wid()->commit(false)`.
+  7. `commit(false)` notifies `ia_command_rep` with `#f`, which calls `win->interactive_return()`, dismantling the interactive prompt and restoring the status bar with canvas cursor context (`"start"` `"s"`).
+  8. Because confirmation returned `#f` (cancelled), the quit sequence is aborted.
+- **Candidate Fixes**:
+  1. In `QTMMenuHelper.cpp` (`QTMInputTextWidgetHelper::leave`), only commit if autocommit is explicitly `"on"`; do not auto-cancel active interactive footer prompts on focus loss.
+  2. In `fakehome/.TeXmacs-chez/system/preferences.scm`, set `("interactive questions" "popup")` so confirmation uses persistent modal dialogs rather than the focus-sensitive footer line.
 
 ---
 

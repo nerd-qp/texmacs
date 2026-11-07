@@ -11,7 +11,7 @@
 ;; `with' macro (plain sequencing, `guard' only around menu-expand, whose
 ;; failures must not abort the whole run), and one extra task which types into
 ;; the 273-page user manual -- the large-document case where repaint, not
-;; dispatch, dominates (see HANDOFF.md section 18).
+;; dispatch, dominates (see docs/chez/README.md).
 
 (define (median3 l)
   (let ((a (car l)) (b (cadr l)) (c (caddr l)))

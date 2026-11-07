@@ -139,6 +139,19 @@
       (guard (e (else #f)) (procedure? (top-level-syntax name env)))
       (hashtable-ref *oracle-installed* name #f)))
 
+(define *ephemeral-syms* '())
+
+(define (unbound-marker)
+  (guard (e (else (void)))
+    (#%$unbound-object)))
+
+(define (unbind-symbol! entry env)
+  (let ((sym (car entry))
+        (orig-syntax (cdr entry)))
+    (when (top-level-bound? sym env)
+      (define-top-level-value sym (unbound-marker) env))
+    (define-top-level-syntax sym orig-syntax env)))
+
 (define (oracle-site-deps site)
   (let* ((top (vector-ref site 3))
          (inner (vector-ref site 2))
@@ -160,22 +173,25 @@
       ((hashtable-ref *oracle-installing* name #f) #f)   ; cycle: leave it
       ((not site) #f)
       (else
-       (hashtable-set! *oracle-installing* name #t)
-       (for-each oracle-install! (oracle-site-deps site))
-       (let ((form (if (eq? (vector-ref site 1) 'macro)
-                       (vector-ref site 3)
-                       (tm-strip-docstring (tm-maybe-uncurry (vector-ref site 2))))))
-         (let ((ok? (guard-eval 'ORACLE-INSTALL-FAIL (list name) #f
-                      (lambda ()
-                        ;; `tm-define' publishes through
-                        ;; `(interaction-environment)'; keep that inside the
-                        ;; module's environment, not the global one.
-                        (parameterize ((interaction-environment env))
-                          (eval form (interaction-environment)))
-                        #t))))
-           (hashtable-delete! *oracle-installing* name)
-           (when ok? (hashtable-set! *oracle-installed* name #t))
-           ok?))))))
+       (let* ((orig-syntax (top-level-syntax name env)))
+         (hashtable-set! *oracle-installing* name #t)
+         (for-each oracle-install! (oracle-site-deps site))
+         (let ((form (if (eq? (vector-ref site 1) 'macro)
+                         (vector-ref site 3)
+                         (tm-strip-docstring (tm-maybe-uncurry (vector-ref site 2))))))
+           (let ((ok? (guard-eval 'ORACLE-INSTALL-FAIL (list name) #f
+                        (lambda ()
+                          ;; `tm-define' publishes through
+                          ;; `(interaction-environment)'; keep that inside the
+                          ;; module's environment, not the global one.
+                          (parameterize ((interaction-environment env))
+                            (eval form (interaction-environment)))
+                          #t))))
+             (hashtable-delete! *oracle-installing* name)
+             (when ok?
+               (set! *ephemeral-syms* (cons (cons name orig-syntax) *ephemeral-syms*))
+               (hashtable-set! *oracle-installed* name #t))
+             ok?)))))))
 
 ;; A macro definer hides its body from `mc-free-names' (a template is not a
 ;; use), so its dependencies come from `mc-macro-deps' instead.
@@ -197,14 +213,14 @@
                           define-module-macro define-export-macro tm-define-macro
                           define-top-level-syntax define-state define-table
                           define-collection extend-table extend-collection
-                          smart-table define-group cas-define-test
+                          smart-table define-group
                           define-table-decls define-collection-decls))
              (and (eq? head 'ahash-set!) (pair? (cdr x))
                   (eq? (cadr x) 'define-option-table))))))
 
 (define *eager-gated?*
   (let ((v (getenv "TEXMACS_EAGER_GATE")))
-    (and v (not (string=? v "")) (not (string=? v "0")))))
+    (not (and v (string=? v "0")))))
 
 (oracle-index-tree! *oracle-defs* *progs-dir*)
 
@@ -494,18 +510,20 @@
 ;; The value is shared, not copied: its free variables keep resolving against the module's
 ;; own environment, which is exactly what keeps private definitions private.
 (define (publish-value! name message)
-  (guard-eval message (list name) #f
-    (lambda ()
-      (define-top-level-value name
+  (unless (eq? (compilation-environment) (interaction-environment))
+    (guard-eval message (list name) #f
+      (lambda ()
+        (define-top-level-value name
 			      (top-level-value name (compilation-environment))
-			      (interaction-environment)))))
+			      (interaction-environment))))))
 
 (define (publish-syntax! name message)
-  (guard-eval message (list name) #f
-    (lambda ()
-      (define-top-level-syntax name
+  (unless (eq? (compilation-environment) (interaction-environment))
+    (guard-eval message (list name) #f
+      (lambda ()
+        (define-top-level-syntax name
 			      (top-level-syntax name (compilation-environment))
-			      (interaction-environment)))))
+			      (interaction-environment))))))
 
 
 ;; The symbol a definition form introduces:
@@ -573,12 +591,7 @@
       ((memq head '(define define-public provide-public))
        (guard-eval #f '() #f
          (lambda ()
-           (eval (cond ((and (pair? x) (eq? (car x) 'define-public))
-                        (cons 'define (cdr x)))
-                       ((and (pair? x) (eq? (car x) 'provide-public))
-                        (cons 'define (cdr x)))
-                       (else x))
-                 (compilation-environment)))))
+           (eval x (compilation-environment)))))
 
       ((memq head '(define-macro define-public-macro))
        (guard-eval #f '() #f
@@ -589,9 +602,6 @@
        (guard-eval #f '() #f
          (lambda ()
            (eval x (compilation-environment)))))
-
-      ((eq? head 'cas-define-test)
-       (eval-in-compile x 'WARNING-CAS-DEFINE-TEST-FAIL))
 
       ((eq? head 'define-state)
        (guard-eval 'WARNING-DEFINE-STATE-EVAL-FAIL (list (cadr x)) #f
@@ -608,7 +618,7 @@
        (eval-install-group-env x 'WARNING-DEFINE-GROUP-EVAL-FAIL))
 
       ((memq head '(define-table define-collection extend-table extend-collection smart-table))
-       (eval-install-value-env x 'WARNING-TABLE-EVAL-FAIL))
+       (eval-install-value-env x #f))
 
       ((eq? head 'define-top-level-syntax)
        (eval-install-syntax-env x 'WARNING-TOP-LEVEL-SYNTAX-FAIL))
@@ -616,11 +626,9 @@
       ;; We do not evaluate it here at all: the form stays in the module body, Chez
       ;; expands it at compile time, and the emitted `(property-set! ...)` runs at load
       ;; time inside the module's own environment.
-      ;; `texmacs-modes` joins them: the predicates it generates (mode tests,
-      ;; `logic-rules` registrations, `set-symbol-procedure!` hooks) are runtime
-      ;; values only. No macro reads them at expand time, and evaluating them
-      ;; here needs `logic-rules` and friends bound before their module loads.
-      ((memq head '(tm-property define-preferences texmacs-modes)) #f)
+      ;; `texmacs-modes` and `cas-define-test` join them: they generate runtime
+      ;; values/tables only. No macro reads them at expand time.
+      ((memq head '(tm-property define-preferences texmacs-modes cas-define-test)) #f)
 
       ((memq head '(define-table-decls define-collection-decls))
        (guard-eval #f '() #f
@@ -947,8 +955,7 @@
                     mod-sym)))))))))
 
 (define (transpile-and-compile-module rel-path trans-scm out-so)
-  (parameterize ((compilation-environment (copy-environment (interaction-environment) #t)))
-   (let ((mod-sym (transpile-module rel-path trans-scm)))
+  (let ((mod-sym (transpile-module rel-path trans-scm)))
     (if mod-sym
         (begin
           ;; Emitted only once the module is known to be buildable, so a file
@@ -971,14 +978,26 @@
                         (when (syntax-violation? e)
                           (log-note (format "form: ~s" (syntax-violation-form e)))
                           (log-note (format "subform: ~s" (syntax-violation-subform e))))
+                        (when (top-level-bound? 'tm-backtrace)
+                          (tm-backtrace e))
                         (set! compile-errors (cons (cons rel-path e) compile-errors))
                         (k #f))
                       (void)))
                 (lambda ()
-                  (parameterize ((compile-export-mode? #t))
-                    (compile-file trans-scm out-so))
-                  mod-sym)))))
-        #f))))
+                  (dynamic-wind
+                    (lambda () #f)
+                    (lambda ()
+                      (parameterize ((compile-export-mode? #t))
+                        (compile-file trans-scm out-so))
+                      mod-sym)
+                    (lambda ()
+                      (for-each
+                        (lambda (entry)
+                          (unbind-symbol! entry (interaction-environment))
+                          (hashtable-delete! *oracle-installed* (car entry)))
+                        *ephemeral-syms*)
+                      (set! *ephemeral-syms* '()))))))))
+        #f)))
 
 (define compiled-count 0)
 (define cached-count 0)

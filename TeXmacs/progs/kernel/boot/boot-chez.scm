@@ -779,21 +779,50 @@
         (else (call-with-string-output-port
                 (lambda (p) (display e p))))))
 
-(define (recur-string->utf8 x)
-  (cond
-    ((string? x) (string->utf8 x))
-    ((pair? x)   (cons (recur-string->utf8 (car x))
-                       (recur-string->utf8 (cdr x))))
-    ((vector? x) (vector-map recur-string->utf8 x))
-    (else x)))
+(import (rnrs io ports))
 
-(define (recur-utf8->string x)
-  (cond
-    ((bytevector? x) (utf8->string x))
-    ((pair? x)       (cons (recur-utf8->string (car x))
-                           (recur-utf8->string (cdr x))))
-    ((vector? x)     (vector-map recur-utf8->string x))
-    (else x)))
+;;; ---------------------------------------------------------------------------
+;;; Cork Encoding & FFI Transcoding
+;;; Raw 8-bit Cork bytes (0x00-0xFF) are tunneled through Chez Scheme strings via
+;;; `latin-1-codec` with `(eol-style none)` to preserve Guile 1.8 compatibility
+;;; (`string-length`, `substring`, `string=?`) without EOL translation of 0x0D (‚).
+;;; Detailed rationale, traps, and bytevector roadmap: see docs/chez/README.md §5.9b.
+;;; ---------------------------------------------------------------------------
+
+(define *latin1-tc* (make-transcoder (latin-1-codec) (eol-style none)))
+
+(define (cork-bytes->string bv) (bytevector->string bv *latin1-tc*))
+(define (string->cork-bytes s)  (string->bytevector s *latin1-tc*))
+(define (utf8-bytes->string bv) (utf8->string bv))
+(define (string->utf8-bytes s)  (string->utf8 s))
+
+(define (recur-transcode-bytevector transform)
+  (lambda (x)
+    (let loop ((x x))
+      (cond
+        ((bytevector? x) (transform x))
+        ((pair? x)       (cons (loop (car x)) (loop (cdr x))))
+        ((vector? x)     (vector-map loop x))
+        (else x)))))
+
+(define (recur-transcode-string transform)
+  (lambda (x)
+    (let loop ((x x))
+      (cond
+        ((string? x) (transform x))
+        ((pair? x)   (cons (loop (car x)) (loop (cdr x))))
+        ((vector? x) (vector-map loop x))
+        (else x)))))
+
+(define recur-utf8->string (recur-transcode-bytevector utf8-bytes->string))
+(define recur-string->utf8 (recur-transcode-string     string->utf8-bytes))
+
+;; NOTE on Cork transcoders:
+;; The Scheme string handled by `recur-string->cork` and `recur-cork->string` does
+;; not store a semantic Unicode string, but raw 8-bit Cork encoding packed inside
+;; a 32-bit Unicode string (code points U+0000-U+00FF).
+(define recur-cork->string (recur-transcode-bytevector cork-bytes->string))
+(define recur-string->cork (recur-transcode-string     string->cork-bytes))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Native file loading
@@ -841,7 +870,8 @@
   (tm-load-bytes (tm-load-path u)))
 
 
-;; TODO: to review carefully.
+;; TODO: The current approach is load byte if failing utf8 loading.
+;; Change it to something smarter like looking at the file suffix.
 (define (string-load u)
   (let ((path (tm-load-path u)))
     (if (not path)
@@ -923,8 +953,21 @@
 ;; The C++ glue dispatcher.  Every procedure installed with
 ;; tmscm_install_procedure() is a closure over its own name that forwards the
 ;; argument list here, so the kernel never has to build Scheme source text.
-(define tm-call-by-name
+(define raw-tm-call-by-name
   (foreign-procedure "tm-call-by-name" (string scheme-object) scheme-object))
+
+(define (tm-call-by-name name args)
+  (let* ((in-trans
+          (cond
+            ((member name '("cork->utf8" "cork->sourcecode" "escape-to-ascii"))
+             recur-string->cork)
+            (else recur-string->utf8)))
+         (out-trans
+          (cond
+            ((member name '("utf8->cork" "sourcecode->cork"))
+             recur-cork->string)
+            (else recur-utf8->string))))
+    (out-trans (raw-tm-call-by-name name (in-trans args)))))
 
 ;; [C++] Called once per C++ glue function from chez_install_procedure().
 ;; Failure is loud and per-name rather than aborting the whole glue pass.
@@ -934,8 +977,7 @@
                    (newline)
                    #f)))
     (define-top-level-value (string->symbol name)
-      (lambda args
-        (recur-utf8->string (tm-call-by-name name (recur-string->utf8 args))))
+      (lambda args (tm-call-by-name name args))
       (interaction-environment))
     #t))
 

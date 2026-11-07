@@ -170,6 +170,45 @@
 (define-public (string-null? s)
   (string=? s ""))
 
+;;; String searching
+;;
+;; These used to be glue procedures over the C++ `search_forwards` and
+;; `search_backwards`, which count UTF-8 bytes. Chez strings count characters,
+;; so the two disagree as soon as a payload contains a character above U+00FF:
+;; the byte-oriented FFI bridge turns one UTF-8 byte into one Scheme character
+;; and truncates anything above U+00FF to its low byte. Searching the Chez
+;; string directly keeps the returned index in the units that `string-ref` and
+;; `substring` expect. The C++ glue installs these two names only for Guile
+;; (`#ifndef TEXMACS_ENGINE_CHEZ` in `src/Scheme/Glue/glue_basic.cpp`), where
+;; byte offsets are what strings index; `compile-texmacs.scm` does not shadow
+;; them, so the compiler and the editor share this implementation.
+
+(define (string-match-at? s in i k)
+  (let loop ((j 0))
+    (or (= j k)
+        (and (char=? (string-ref s j) (string-ref in (+ i j)))
+             (loop (+ j 1))))))
+
+(define-public (string-search-forwards s pos in)
+  "Search for @s in @in from character index @pos; return its index or -1."
+  (let ((k (string-length s)))
+    (if (zero? k)
+        pos
+        (let ((n (string-length in)))
+          (let loop ((i (max pos 0)))
+            (cond ((> (+ i k) n) -1)
+                  ((string-match-at? s in i k) i)
+                  (else (loop (+ i 1)))))))))
+
+(define-public (string-search-backwards s pos in)
+  "Search backwards for @s in @in from character index @pos; return its index or -1."
+  (let ((k (string-length s))
+        (n (string-length in)))
+    (let loop ((i (min pos (- n k))))
+      (cond ((< i 0) -1)
+            ((string-match-at? s in i k) i)
+            (else (loop (- i 1)))))))
+
 (define-public (sanitize-escapes str)
   (cond ((not (string? str)) str)
         ((string=? str "\\") "\\x5C;")

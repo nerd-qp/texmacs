@@ -4976,6 +4976,9 @@ tmg_string_count_occurrences (tmscm arg1, tmscm arg2) {
   return int_to_tmscm (out);
 }
 
+// Chez Scheme uses the native implementations in chez-compat.scm; see the
+// install site in initialize_glue_basic.  Guile keeps these byte-indexed ones.
+#ifndef TEXMACS_ENGINE_CHEZ
 tmscm
 tmg_string_search_forwards (tmscm arg1, tmscm arg2, tmscm arg3) {
   TMSCM_ASSERT_STRING (arg1, TMSCM_ARG1, "string-search-forwards");
@@ -5009,6 +5012,7 @@ tmg_string_search_backwards (tmscm arg1, tmscm arg2, tmscm arg3) {
 
   return int_to_tmscm (out);
 }
+#endif
 
 tmscm
 tmg_string_overlapping (tmscm arg1, tmscm arg2) {
@@ -11544,8 +11548,16 @@ initialize_glue_basic () {
   tmscm_install_procedure ("cpp-string-number?",  tmg_cpp_string_numberP, 1, 0, 0);
   tmscm_install_procedure ("string-occurs?",  tmg_string_occursP, 2, 0, 0);
   tmscm_install_procedure ("string-count-occurrences",  tmg_string_count_occurrences, 2, 0, 0);
+// Under Chez Scheme, `string-search-forwards' and `string-search-backwards' are
+// implemented natively in TeXmacs/progs/kernel/boot/chez-compat.scm.  The C++
+// versions return UTF-8 byte offsets, which is what Guile strings index (Guile
+// 1.8 strings are byte arrays) but not what Chez strings index: Chez counts
+// characters, and the byte-oriented FFI bridge truncates a code point above
+// U+00FF to one byte, so a byte offset is not a valid `string-ref' index there.
+#ifndef TEXMACS_ENGINE_CHEZ
   tmscm_install_procedure ("string-search-forwards",  tmg_string_search_forwards, 3, 0, 0);
   tmscm_install_procedure ("string-search-backwards",  tmg_string_search_backwards, 3, 0, 0);
+#endif
   tmscm_install_procedure ("string-overlapping",  tmg_string_overlapping, 2, 0, 0);
   tmscm_install_procedure ("string-replace",  tmg_string_replace, 3, 0, 0);
   tmscm_install_procedure ("string-find-non-alpha",  tmg_string_find_non_alpha, 3, 0, 0);

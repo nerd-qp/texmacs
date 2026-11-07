@@ -1,4 +1,4 @@
-# TeXmacs / Chez Scheme — Handoff (compact, verified 2026-11-05)
+# TeXmacs / Chez Scheme — Architecture & Developer Guide
 
 **Current tree:** `~/Documents/GitHub/texmacs`, branch `wip-chez`, HEAD `dc683be7e` (2026-11-06: `linter.scm` phase 4 installs the macro dependency closure proactively — see §4.1; the change is unstaged, together with the new `src/Scheme/Chez/macro-closure*.scm`). Chez Scheme **10.4.1**, Qt **6.12.0** (macOS arm64) / Qt **6.10.2** (Ubuntu 26.04 arm64). **453/453** Scheme modules transpile and compile to native `.so` with 0 failures. GUI launch verified: `texmacs-version` = 2.1.5, `(top-level-bound? 'current-buffer)` = `#t`, no `ERROR` / `LOAD-ERROR` / segfault in the log. Runtime suite: only the documented `regtest-tmhtml` fixture mismatch and the `regtest-xmltm` encoding mismatch (§5.9) remain.
 
@@ -64,7 +64,7 @@ TEXMACS_PATH="$PWD/TeXmacs" \
 build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -compile-modules
 ```
 
-Cold build measured here: 604/604 C++ targets in ~9 min; 453/453 modules in ~10 min, 0 failures.
+Cold build measured here: 604/604 C++ targets in ~9 min; 453/453 modules in ~10 min, 0 failures (pre-rework pipeline; the single-environment compiler rebuilds all 453 modules in ~30 s, §7.1).
 
 ## 3. Running, packaging, Linux
 
@@ -145,8 +145,40 @@ Per module `kernel/.../<name>.scm`:
 1. **Load deps** — `(load "build-texmacos/boot/path/depN.so")` then `(import path:depN)`.
 2. **Transform AST** — strip `(texmacs-module ...)`; `define-public` → export + plain `define`; `define-public-macro` → exported hygienic `define-syntax`; private `define-macro` → private `define-syntax`; evaluate top-level `if` tests in `(compilation-environment)` and unwrap the live branch; plain `define` stays private.
 3. **Pre-evaluate** definitions in `(compilation-environment)` so intra-file macros/tables are live, then emit `(module kernel:sub:name (<exports>) (import (for dep run expand)) ... <body>)` to `build-texmacos/boot/kernel/.../<name>.scm`.
-4. **Compile** with `(compile-file ".../<name>.scm" ".../<name>.so")`.
-5. **Verify in a fresh process**: load prereq + target `.so`, import both, call a public procedure, and assert `(top-level-bound? 'private-helper)` is `#f`; run via `.../TeXmacs -H -x '(load "verify_module.scm")'` with `SCHEMEHEAPDIRS`, `TEXMACS_PATH`, `TEXMACS_BOOT_PATH` set.
+4. **Compile** with `(compile-file ".../<name>.scm" ".../<name>.so")` within a `dynamic-wind` block that unbinds ephemeral helper definitions (`*ephemeral-syms*`).
+5. **Register loaded module** — load the compiled `.so` with `(parameterize ((compile-export-mode? #t)) ...)` so exports remain permanently bound in `(interaction-environment)`.
+
+### 4.1 Single Reusable Environment & Ephemeral Lifecycle Design
+
+The compilation pipeline in `src/Scheme/Chez/compile-texmacs.scm` operates entirely within a single reusable `(interaction-environment)`, completely eliminating the performance and RAM overhead of `(copy-environment ...)` while guaranteeing module exports and closures persist cleanly across all 453 modules:
+
+1. **Zero-Copy Reusable Environment**:
+   - `compile-texmacs.scm` runs `transpile-and-compile-module` directly against `(compilation-environment)` pointing to `(interaction-environment)`.
+   - `publish-value!` and `publish-syntax!` are guarded with `(unless (eq? (compilation-environment) (interaction-environment)) ...)` so loaded procedures are not redundantly published or clobbered.
+2. **Ephemeral Syms Scratch-off via `dynamic-wind`**:
+   - Helper procedures and expand-time forms brought in by `oracle-bring-in-form!` and gated helper evaluation are recorded in `*ephemeral-syms*`.
+   - `compile-file` is wrapped in `dynamic-wind` cleanup: immediately after compilation finishes (whether by normal completion or non-local exit/exception), all symbols in `*ephemeral-syms*` are unbound via `unbind-symbol!` and cleared from `*oracle-installed*`.
+   - Permanent exports from loaded `.so` files stay live in the environment; transient helpers introduced solely for the current module's macro expansion are scratched off.
+3. **Symmetric Syntax Capture & Native Unbound Object Restoration**:
+   - `oracle-install!` captures each symbol's native `orig-syntax = (top-level-syntax name env)` prior to evaluation and pairs them in `*ephemeral-syms*` as `(cons name orig-syntax)`.
+   - `unbind-symbol!` cleanly resets the value cell using Chez Scheme's internal unbound sentinel `(define-top-level-value sym (unbound-marker) env)` where `(unbound-marker)` returns `(#%$unbound-object)`. This ensures `top-level-bound?` returns `#f` and subsequent reads throw Chez's native `Exception: variable <sym> is not bound` rather than evaluating to `#!void`.
+   - It restores `(define-top-level-syntax sym orig-syntax env)` unconditionally: for macros, this demotes the macro back to its native identifier core-transformer; for values, it idempotently preserves the identifier core-transformer without creating foreign gensym alias redirections.
+4. **Gated Eager Helper Evaluation (`*eager-gated?*`) & Clean Separation of Runtime Forms**:
+   - Gated evaluation defaults to active (`TEXMACS_EAGER_GATE!=0`).
+   - Plain value definitions are deferred to `compile-file`, while macro definers and helpers needed for macro expansion are pulled in on demand via `macro-closure.scm`.
+   - This prevents syntax-rules keyword shadowing (such as `...` in `abbrevs.scm` being bound as a variable, which would break auxiliary ellipsis repetition matching in macros like `with-global`).
+   - Runtime table generators that do not provide expand-time syntax (such as `cas-define-test`) are excluded from `eager-skip?` and skipped in `eval-eager-form!`, allowing Chez Scheme's `compile-file` to compile them directly in source order.
+   - For `define-table`, `eval-install-value-env` passes `#f` to `guard-eval`, matching `define` and `define-public` so that any tables containing runtime-only unquoted procedures fail silently during pre-evaluation without noisy warnings.
+5. **AST Lexical Scope Integrity in `mc-free-names`**:
+   - `macro-closure.scm` requires binding forms (`let`, `let*`, `letrec`, `letrec*`) to have a body expression (`pair? (cddr x)`) before treating them as lexical binders.
+   - Prevents table entries like `(let ,gui-make-let)` in quasiquoted tables from being misparsed as Scheme `let` binders, ensuring unquoted helpers are accurately identified and installed by the oracle.
+6. **Preserving Raw `define-public` / `provide-public` Forms**:
+   - `eval-eager-form!` evaluates `define-public` and `provide-public` directly via `(eval x (compilation-environment))` without rewriting them to `define`.
+   - The macro definition of `define-public` checks `(compile-export-mode?)` dynamically: when false (during helper evaluation), it behaves as internal definitions; when true (upon loading `.so`), it publishes exports.
+7. **String search is Scheme under Chez**:
+   - `string-search-forwards` and `string-search-backwards` are `define-public`s in `kernel/boot/chez-compat.scm`. The generated glue installs the C++ versions only when `TEXMACS_ENGINE_CHEZ` is undefined (`glue_basic.cpp`, same guard as `string-load`), and `build-glue-basic.scm` still declares both, because Guile keeps the byte-indexed versions.
+   - Reason: C++ `search_forwards` / `search_backwards` return UTF-8 byte offsets, which is what Guile 1.8 strings index (byte arrays) but not what Chez strings index (characters); the byte-oriented bridge also truncates a code point above U+00FF to one byte. Searching the Chez string keeps the result in `string-ref` / `substring` units.
+   - `compile-texmacs.scm` no longer shadows the pair, so compiler and editor share one implementation. Verified headless: `(string-search-forwards "β" 0 "αβγ")` = 1, `(string-search-forwards "x" 0 "αβγ")` = -1, `(string-search-backwards "β" 3 "αβγ")` = 1, `(string-contains? "αβγ" "β")` = `#t`; the old glue returned the byte offset 2 for the first.
 
 Batch modes:
 
@@ -156,7 +188,7 @@ ninja -C build-texmacos                                                    # or:
 
 # 1. Module compiler invocation:
 build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -compile-modules          # incremental (default)
-build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -recompile-modules        # full clean rebuild (~8-10 min)
+build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -recompile-modules        # full clean rebuild (~30 s, §7.1)
 TEXMACS_RECOMPILE_ALL=1 build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -compile-modules
 ```
 
@@ -164,11 +196,11 @@ TEXMACS_RECOMPILE_ALL=1 build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -compi
 > **Always recompile the C++ binary when commits touch C++ code.** `boot-chez.scm` is loaded dynamically from source at runtime, whereas the C++ executable is compiled ahead-of-time. If commits touch `chez_tm.cpp`, `chez_tm.hpp`, or glue code (e.g. FFI string/bytevector bridges), running with a stale binary causes immediate FFI type signature mismatches (such as string vs. bytevector) that hang or crash the session. Run `ninja -C build-texmacos` before running `-compile-modules` or launching the editor.
 
 > [!WARNING]
-> **Incremental builds run, but there is no guarantee that the result compiles correctly.** `-compile-modules` compares mtimes, marks up-to-date `.so` files `UP-TO-DATE` and loads them directly. Cached `.so` files carry serialized FASL environment descriptors that can mismatch newly recompiled modules, producing unbound-variable errors (`make-soft-port`, `hash-ref`, `ahash-ref`). A successful exit is **not** evidence that the produced modules are correct. Use `-recompile-modules` (or `TEXMACS_RECOMPILE_ALL=1`) whenever running into trouble or certifying a release; however, use it **sparingly** during routine development since a full clean rebuild of 453 modules currently takes **~8–10 min** (efforts to optimize this via `macro-closure.scm` are in progress). For fast smoke testing, selectively delete target `.so` files in `build-texmacos/boot/` to force recompilation of only those modules.
+> **Incremental builds run, but there is no guarantee that the result compiles correctly.** `-compile-modules` compares mtimes, marks up-to-date `.so` files `UP-TO-DATE` and loads them directly. Cached `.so` files carry serialized FASL environment descriptors that can mismatch newly recompiled modules, producing unbound-variable errors (`make-soft-port`, `hash-ref`, `ahash-ref`). A successful exit is **not** evidence that the produced modules are correct. Use `-recompile-modules` (or `TEXMACS_RECOMPILE_ALL=1`) whenever running into trouble or certifying a release; at **~30 s** for the full 453-module rebuild (§7.1) it is now cheap enough to prefer over trusting mtimes. For fast smoke testing, selectively delete target `.so` files in `build-texmacos/boot/` to force recompilation of only those modules.
 
 Historical 181/186-module timings came from the retired workspace and are not comparable to this tree.
 
-### 4.1 Static analysis: `TeXmacs -lint`
+### 4.2 Static analysis: `TeXmacs -lint`
 
 `texmacs.cpp:819` sets `lint_mode`, which makes `tm_server` boot `progs/init-linter.scm` instead of `init-texmacs.scm` — kernel only, no GUI, no editor program. `init-linter.scm` loads `src/Scheme/Chez/linter.scm`, which runs five phases over the progs tree and writes four TSVs:
 
@@ -227,6 +259,18 @@ Phase 4's *outcome* is unchanged at 106/1 — the kernel already sufficed — so
    - **Measured 2026-11-05:** this failure is *pre-existing*, not a regression. Stashing every working-tree change and relinking only the C++ (`boot-chez.scm` is loaded from source, never compiled) reproduces it exactly: `Do not match!` ×1, `Regression failure` ×2. Verified healthy in the same state: `(string-save (string-load png) out)` is byte-identical (SHA-256 match on a 97 KB PNG).
    - **A UTF-8 bridge was tried and reverted.** Decoding UTF-8 on the way in and encoding on the way out, with bytes that fail UTF-8 validation mapped to `U+F0000+b` (Supplementary Private Use Area-A) and back, *is* a bijection — it made `regtest-xmltm` pass and kept the PNG round trip byte-identical. It was still rejected: any Scheme code that inspects a byte buffer numerically (magic sniffing, `string-ref` on loaded data) sees `0xF0089` instead of `0x89`, and nothing in the tree guarantees binary only ever travels load→save. Do not re-land it without auditing every binary consumer.
    - **Where the real fix belongs.** At the boundary that knows whether it holds text or bytes — an explicit byte-buffer type (R6RS `bytevector`) for the image/tmfs path, leaving text on a UTF-8 bridge — not inside these two functions, which cannot tell the two apart.
+   - **`tmfs-load` binary handling (RESOLVED):** `string-load` returns an R6RS bytevector for binary images (`welcome-videos.png`, artwork, thumbnails). Previously, `tmfs-load` in `tm-file-system.scm` checked `(if (string? r) r (object->tmstring r))`; because `(string? #vu8(...))` is `#f`, it fell back to `object->tmstring`, serializing the bytevector into the ASCII text string `"#vu8(137 80 78 71 ...)"` and saving corrupted text files to `/tmp/` that Qt could not render. Updated `tmfs-load` and `object->tmstring` to pass bytevectors directly.
+
+9b. **Cork encoding & FFI string/bytevector transcoding (RESOLVED in `boot-chez.scm`).**
+   TeXmacs uses Cork (TeX T1 font encoding) for font metrics, hyphenation, and spellchecking.
+   - **The Latin-1 Container Hack:** Chez Scheme strings are 32-bit Unicode scalar values (`uint32_t`). To preserve legacy Guile 1.8 compatibility (`(string? (utf8->cork ...))` returning `#t` and calls to `string-length`, `substring`, `string=?`), raw 8-bit Cork bytes (`0x00`–`0xFF`) are tunneled through Scheme strings using R6RS `(latin-1-codec)` via `*latin1-tc*`.
+   - **Memory & Semantic Trade-offs:**
+     - Memory efficiency is reduced: each 8-bit byte occupies a 32-bit box on the Scheme heap.
+     - Semantic/linguistic operations on Cork strings are broken: `char-upcase` on Cork `0xF7` (`œ`) maps to Unicode `U+00F7` (`÷`), not Cork `0xD7` (`Œ`); `char-alphabetic?` on Cork `0x80`–`0xBF` (carons/ogoneks) returns `#f` (Unicode C1 controls). Only structural byte operations (`string-length`, `string-ref`, `substring`, `string-append`, `string=?`) work.
+     - Real long-term fix: Migrate all Cork buffers to native R6RS bytevectors (`#vu8(...)`) and Scheme callers to `bytevector-*`.
+   - **Trap 1: End-of-Line (eol-style) Normalization:** `(make-transcoder (latin-1-codec))` defaults to platform-native EOL style (`crlf` on Windows, or normalizing `\r\n` / `\r` $\to$ `\n` on POSIX). This would silently delete or convert byte `0x0D` (`\r`), which in Cork encoding is the single low quote glyph (`‚`), shifting string indices and corrupting data. `*latin1-tc*` explicitly passes `(eol-style none)`.
+   - **Trap 2: Literal UTF-8 Characters in .scm Files / REPL:** `string->cork-bytes` expects Scheme characters in range `U+0000`–`U+00FF`. Passing literal multi-byte characters (e.g. `"你好"` or `"α"`) directly to Cork-expecting routines cannot fit in Latin-1 bytes. Non-ASCII characters must first be processed through `(utf8->cork s)` (which invokes C++ `utf8_to_cork` over UTF-8 bytes to generate ASCII escape sequences like `"<#4F60>"` or `"<alpha>"`).
+   - **Dispatch Architecture:** Centralized in `tm-call-by-name` wrapper in `boot-chez.scm` via `recur-transcode-bytevector` / `recur-transcode-string`, keeping `tm-install-procedure!` completely generic and `tm-apply` clean of Cork branching.
 
 
 10. **Glue installation is a Scheme procedure, not generated source.** `chez_install_procedure` no longer builds `(define <name> (lambda args (tm-call-by-name "<name>" args)))` as a string and `eval`s it. It registers the C++ pointer in `tm_proc_registry` and calls `(tm-install-procedure! "name")`, which `define-top-level-value`s a closure over its own name. Failure is reported per name as `INSTALL-FAILED` instead of aborting the whole glue pass. Two ordering traps:
@@ -246,9 +290,26 @@ Phase 4's *outcome* is unchanged at 106/1 — the kernel already sufficed — so
 
 ## 7. Measured performance
 
-### 7.1 Compilation cost (Chez 10.4.1, 453 modules, `-recompile-modules`)
+### 7.1 Compilation cost (453 modules, `-recompile-modules`)
 
-Full rebuild **8 m 6 s**; Tier 7 ≈ **70%** of total.
+**Single-environment compiler (measured 2026-11-07): 453/453 modules, 0 failures, median 29.7 s (5 runs, 22.6–35.6 s), peak RSS 292 MB (278 MiB).** That is ~65 ms per module, ~52 ms of it inside `compile-file`.
+
+Measured on macOS arm64 (8 cores, load average 2.2–3.3), branch `wip-chez` at `247394d40` with the working-tree compiler changes, binary linked against the local Chez **10.5.0-pre-release.1** (`SCHEMEHEAPDIRS=chez-macos/tarm64osx`). The phase split comes from a temporary timing-instrumented copy of `compile-texmacs.scm` (nanosecond timers per phase, repo untouched).
+
+| Phase | Time (median of 3 runs) | Share of wall |
+|---|---|---|
+| **Transpile** — read, rewrite, eager eval, emit `<name>.scm` | **3.37 s** (2.36–4.02) | **~11%** |
+| - read forms | 0.41 s | 1.4% |
+| - prepare/rewrite | 0.003 s | <0.1% |
+| - eager eval into `(compilation-environment)` | 2.54 s | 8.4% (75% of transpile) |
+| - emit `.scm` + import bookkeeping | 0.42 s | 1.4% |
+| **Compile** — `compile-file` → native `.so` | **23.8 s** (18.3–28.7) | **~82%** |
+| Load `.so` + register exports | 1.36 s (1.05–1.46) | ~4.7% |
+| Tier loop, manifest, `compiler-db` write | 0.68 s | ~2.3% |
+
+`compile-file` now dominates, so transpiler work can move at most the ~11% transpile share — and ~75% of that is still eager evaluation. Peak memory (`/usr/bin/time -l`): max RSS 283–292 MB across the 5 runs (median 291.9 MB = 278 MiB); macOS peak memory footprint 262–268 MB (250–256 MiB).
+
+**Previous pipeline (per-module `copy-environment`, eager evaluation ungated by default): full rebuild 8 m 6 s; Tier 7 ≈ 70% of total** (measured 2026-11-05, Chez 10.4.1, `~/texmacs` tree). Superseded above, kept as the baseline that motivated the redesign:
 
 | Tier | Time |
 |---|---|
@@ -261,6 +322,8 @@ Full rebuild **8 m 6 s**; Tier 7 ≈ **70%** of total.
 | Tier 7 (Extended Subsystems & Plugins) | 340.0 s |
 
 Cumulative: kernel+tier2 28.5 s, through tier3 39.5 s, tier4 59.1 s, tier5 93.2 s. Tier 7 isolated: 211 modules, transpile 16.7 s, compile 21.3 s, load 4.5 s, wall 131 s (slowest file 1.06 s) — many medium modules, not one outlier. Transpile subphases: `eval eager forms` 51,089 ms of ~52.0 s (**98%**); read forms 787 ms, bind keywords 112 ms, everything else < 30 ms. So `eval-eager-form!` — which evaluates every `tm-define` / `define-public` / `define-macro` / `define-state` / `define-table` into `compilation-environment` before `compile-file` compiles it again — is the cost. Optimizing `prepare-forms` or source generation will not move the needle; reducing duplicate work between eager `eval` and `compile-file` is the highest-leverage change. Caveat: these figures were measured on the 452-module census, so absolute totals are approximate for 453.
+
+That prediction held: gating the eager pass by default and dropping the per-module `copy-environment` took the total from 8 m 6 s to ~30 s between these two measurements (table above; different tree and Chez build, so indicative only).
 
 ### 7.2 Keystroke latency (measured 2026-11-05; macOS arm64, Qt 6.12.0, Chez 10.4.1, Release)
 
@@ -414,11 +477,11 @@ Not wired into `run-all-tests`: `regtest-tm-convert` (`kernel/texmacs/tm-convert
 4. Restore Guile introspection features by capturing source forms at definition time (§5.7).
 5. Reconcile `regtest-tmhtml`'s stale fixture with the modern runtime converter (§8).
 6. Do not trust `TODO_CHEZ.md` as a status source (see header note).
-7. Resolve the string encoding duality (§5.9). The bridge stays byte-oriented until binary data has its own type: introduce an R6RS `bytevector` (or an equivalent explicit marker) for the image / tmfs / `raw-data` path, then let text cross a UTF-8 bridge. A UTF-8 bridge over *all* strings was tried on 2026-11-05 and reverted — see §5.9 for why the `U+F0000+b` escape is not sufficient.
+7. Resolve the string encoding duality (§5.9). Phase 1 complete: `string-load` and `tmfs-load` now return R6RS `bytevector` for binary assets (PNG, JPEG, fonts), passing directly to C++ without string serialization. Next: migrate remaining `raw-data` paths to bytevectors before migrating text to a pure UTF-8 bridge. A UTF-8 bridge over *all* strings was tried on 2026-11-05 and reverted — see §5.9 for why the `U+F0000+b` escape is not sufficient.
 8. The bootstrap now hard-depends on `TEXMACS_PATH` being resolvable when `initialize_scheme()` runs. If the packaged `.app` or a future Windows build fails with `bootstrap file not found`, check `boot_scheme_path()` in `chez_tm.cpp` before anything else.
 9. **`func?` has the wrong arity in both bootstraps.** `init-texmacs-chez.scm:122` and `init-linter.scm:133` both declare `(define (func? p kind) (procedure? p))`, while `kernel/library/base.scm:273` is `(define-public (func? x f . opts) ...)`. Any `(func? x 'tag n)` — e.g. `convert/tools/tmconcat.scm:90` — raises `incorrect number of arguments` instead of returning `#f`. Fix the stubs to `(lambda (x f . opts) (procedure? x))`. Not urgent for the editor, but it costs the linter and every standalone harness a whole class of spurious failures.
 10. **Linter phase 4 leaves 8 install failures**, all `graphical-tag-list` / `graphical-group-tag-list`: they read `graphics-state`, which `-lint` never creates. Decide whether to model that state in the linter or to keep reporting them as expected.
-11. **The closure has no consumer yet.** Its only effect so far is a recorded TSV plus the removal of the retry loop — phase 4's outcome did not move. The natural consumer is `compile-texmacs.scm`'s eager-evaluation step, which spends 51 s of the 52 s transpile budget in `eval-eager-form!` (§7.1); installing a definition once, in closure order, instead of per-file on demand is the obvious thing to try there, and it must be measured against the §7.1 tier table before it is believed.
+11. **The closure has no consumer yet.** Its only effect so far is a recorded TSV plus the removal of the retry loop — phase 4's outcome did not move. The natural consumer is `compile-texmacs.scm`'s eager-evaluation step: gating it by default already took that step from 51 s of the 52 s transpile budget (§7.1) down to 2.5 s; installing a definition once, in closure order, instead of per-file on demand is the remaining thing to try there, and it must be measured against the §7.1 table before it is believed.
 12. **Do not quote numbers from the older exploratory scripts.** `macro-lazy-install.scm`, `macro-helpers.scm`, `macro-inventory.scm` and `macro-expand-inventory.scm` predate `macro-closure.scm` and re-implement a partial TeXmacs bootstrap by hand. That bootstrap is where their numbers come from, not the macro layer: they need the transpiler's three eval rewrites (uncurry, strip docstring, unwrap a top-level `if`) and still hit stub limits. `macro-lazy-install.scm` is worth keeping only as the record of what the reactive model did.
 13. **Animation frame cost is O(document).** `animate()` and `draw_text()` walk the entire box tree every frame via `anim_invalid()` / `anim_next()`, so Fig. 9.5's animations in the full manual run at a collapsing frame rate (§7.5). Track animated boxes per view instead of recursing from the root.
 

@@ -35,7 +35,10 @@
 
 (define-public tmfs-handler-table (make-ahash-table))
 
-(define-public (object->tmstring s) (unescape-guile (object->string s)))
+(define-public (object->tmstring s)
+  (if (bytevector? s)
+      s
+      (unescape-guile (object->string s))))
 (define (tmstring->object s) (string->object s))
 
 (define-public (tmfs-handler class action handle)
@@ -53,14 +56,18 @@
   "Load url @u on TeXmacs file system."
   (with (class name) (tmfs-decompose-name u)
     (lazy-tmfs-force class)
+    ;; Under Chez Scheme, `string-load' returns an R6RS bytevector for binary
+    ;; assets (PNG, JPEG, fonts). Without `bytevector?', tmfs-load treats it as
+    ;; an AST and calls `object->tmstring', corrupting the image into Scheme
+    ;; printed text "#vu8(...)". Both strings and bytevectors must pass through.
     (cond ((ahash-ref tmfs-handler-table (cons class 'load)) =>
            (lambda (handler)
              (with r (handler name)
-               (if (string? r) r (object->tmstring r)))))
+               (if (or (string? r) (bytevector? r)) r (object->tmstring r)))))
           ((ahash-ref tmfs-handler-table (cons #t 'load)) =>
            (lambda (handler)
              (with r (handler name)
-               (if (string? r) r (object->tmstring r)))))
+               (if (or (string? r) (bytevector? r)) r (object->tmstring r)))))
           (else ""))))
 
 (define-public (tmfs-save u what)
