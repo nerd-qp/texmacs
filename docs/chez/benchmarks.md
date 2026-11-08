@@ -91,6 +91,42 @@ export TEXMACS_DOC_PATH="$PWD/TeXmacs/doc"
 | **Total** | **6,549 ms** | **6,596.3 ms** ($\pm 206.9$ ms) | **6,970.7 ms** ($\pm 348.1$ ms) | **Chez warm matches Femtolisp & beats s7** |
 | **Pages** | **124** | **124** | **124** | **Exact match across all engines** |
 
+### C. Document Conversions Benchmark Suite (`docs/chez/bench/conversions.scm`, 10 Runs)
+
+Conversions suite adapted from Massimiliano Gubinelli's benchmark notes (`src/docs/s7/bench/conversions.scm`). Tests document loading, stree round-trip, LaTeX/HTML export compilers (`tmtex`, `tmhtml`), LaTeX/HTML parsers (`parse-latex`, `parse-html`), and recursive menu expansion across four real documents (`change-log.en.tm`, `env-page.en.tm`, `bigtable-test.tm`, `superscript-test-bis.tm`).
+
+Measured on Apple M2 Virtual Machine (`macOS-arm64`, `QT_QPA_PLATFORM=offscreen`, 10 full runs each):
+
+#### 1. Warm Execution Comparison (10-Run Mean $\pm$ Stdev)
+
+| Benchmark Task | Chez Scheme (10-Run Mean) | Femtolisp (10-Run Mean) | s7-11.9 (10-Run Mean) | Analysis |
+| :--- | :--- | :--- | :--- | :--- |
+| **`load-4-docs`** | **18.5 ms** ($\pm 1.1$ ms) <br> *(min 17, max 20)* | 18.9 ms ($\pm 0.6$ ms) <br> *(min 18, max 20)* | 19.7 ms ($\pm 1.2$ ms) <br> *(min 17, max 22)* | **Chez is fastest** |
+| **`tree->stree->tree`** | **14.8 ms** ($\pm 3.5$ ms) <br> *(min 13, max 24)* | 15.4 ms ($\pm 0.5$ ms) <br> *(min 15, max 16)* | **14.1 ms** ($\pm 1.6$ ms) <br> *(min 11, max 17)* | **Parity across all engines** (~14–15 ms) |
+| **`export-latex`** | **1,128.2 ms** ($\pm 47.8$ ms) <br> *(min 1,072, max 1,217)* | **808.4 ms** ($\pm 15.2$ ms) <br> *(min 788, max 838)* | **1,067.9 ms** ($\pm 25.0$ ms) <br> *(min 1,041, max 1,104)* | Femtolisp leads; Chez is within ~5% of s7 |
+| **`export-html`** | **4,356.8 ms** ($\pm 169.0$ ms) <br> *(min 4,241, max 4,825)* | 4,622.8 ms ($\pm 161.7$ ms) <br> *(min 4,518, max 5,072)* | 4,914.9 ms ($\pm 137.2$ ms) <br> *(min 4,796, max 5,268)* | **Chez is fastest** (266 ms faster than Femtolisp, 558 ms faster than s7) |
+| **`import-latex`** | **455.2 ms** ($\pm 29.2$ ms) <br> *(min 421, max 506)* | 486.1 ms ($\pm 33.1$ ms) <br> *(min 437, max 541)* | 469.2 ms ($\pm 33.5$ ms) <br> *(min 420, max 520)* | **Chez is fastest** (31 ms faster than Femtolisp, 14 ms faster than s7) |
+| **`import-html`** | **159.4 ms** ($\pm 13.9$ ms) <br> *(min 144, max 188)* | 324.6 ms ($\pm 17.1$ ms) <br> *(min 294, max 354)* | 608.9 ms ($\pm 22.2$ ms) <br> *(min 564, max 649)* | **Chez is 2.0× faster than Femtolisp, 3.8× faster than s7!** |
+| **`menu-expand-x10`** | **12.5 ms** ($\pm 0.7$ ms) <br> *(min 12, max 14)* | 15.7 ms ($\pm 1.4$ ms) <br> *(min 14, max 19)* | 12.9 ms ($\pm 1.0$ ms) <br> *(min 12, max 15)* | **Chez is fastest** (lowest variance $\pm 0.7$ ms) |
+
+#### 2. Cold Execution Comparison (First-Run / Startup Cold Caches)
+
+| Benchmark Task | Chez Scheme Cold Mean | Femtolisp Cold Mean | s7-11.9 Cold Mean | Speedup (Chez vs. Others) |
+| :--- | :--- | :--- | :--- | :--- |
+| **`load-4-docs`** | **36.5 ms** | 265.5 ms | 283.3 ms | **7.3× faster vs Femtolisp, 7.8× faster vs s7** |
+| **`tree->stree->tree`** | **16.9 ms** | 15.3 ms | 14.4 ms | Parity (~15–17 ms) |
+| **`export-latex`** | **1,678.8 ms** | 1,771.7 ms | 2,276.4 ms | **Chez is fastest cold** (600 ms faster than s7) |
+| **`export-html`** | **5,660.2 ms** | 5,945.4 ms | 6,189.2 ms | **Chez is fastest cold** (285 ms faster than Femto, 529 ms faster than s7) |
+| **`import-latex`** | **429.9 ms** | 664.7 ms | 822.1 ms | **Chez is 1.5× faster vs Femto, 1.9× faster vs s7** |
+| **`import-html`** | **175.7 ms** | 357.8 ms | 628.8 ms | **Chez is 2.0× faster vs Femto, 3.6× faster vs s7** |
+| **`menu-expand-x10`** | **15.5 ms** | 16.1 ms | 12.7 ms | Parity (~13–16 ms) |
+
+#### 3. Conversions Insights
+- **HTML Parsing (`import-html`)**: Chez Scheme is overwhelmingly superior, completing recursive character scanning and tokenization in **159.4 ms** vs. Femtolisp's **324.6 ms** ($2.0\times$) and s7's **608.9 ms** ($3.8\times$).
+- **HTML Export (`export-html`)**: Once missing Guile compatibility functions (`hash-map->list`, `string-prefix?`) were implemented, Chez Scheme took first place overall at **4,356.8 ms**, outperforming Femtolisp (4,622.8 ms) and s7 (4,914.9 ms).
+- **Cold Document Loading (`load-4-docs`)**: Chez Scheme's AOT module compilation yields a dramatic advantage on cold document parsing (**36.5 ms** vs **265.5 ms** in Femtolisp and **283.3 ms** in s7, a **$7.5\times$ speedup**).
+- **LaTeX Export (`export-latex`)**: Femtolisp leads on AST recursion for LaTeX emission (808.4 ms), while Chez Scheme (1,128.2 ms) and s7 (1,067.9 ms) are closely matched.
+
 ---
 
 ## 5. Raw Benchmark JSON Suites
@@ -528,6 +564,866 @@ Recorded on Apple M2 Virtual Machine (`macOS-arm64`, `QT_QPA_PLATFORM=offscreen`
     "cold_max": 1112,
     "raw_warm": [225, 290, 324, 255, 279, 224, 197, 188, 254, 343],
     "raw_cold": [726, 1112, 593, 598, 693, 594, 570, 504, 673, 775]
+  }
+}
+```
+
+
+### D. Document Conversions Multi-Engine Suite (10-Run Suite: Chez Scheme, Femtolisp, s7)
+
+Recorded on Apple M2 Virtual Machine (`macOS-arm64`, `QT_QPA_PLATFORM=offscreen`).
+Source: [`/Users/king-kong/Documents/GitHub/texmacs-max-repo/benchmark_conversions_results.json`](file:///Users/king-kong/Documents/GitHub/texmacs-max-repo/benchmark_conversions_results.json) and [`docs/chez/bench/conversions_chez_10x.json`](file:///Users/king-kong/Documents/GitHub/texmacs/docs/chez/bench/conversions_chez_10x.json).
+
+```json
+{
+  "benchmark": "docs/s7/bench/conversions.scm",
+  "iterations": 10,
+  "platform": "macOS-arm64 (offscreen)",
+  "chez": {
+    "load-4-docs": {
+      "warm": {
+        "mean_ms": 18.5,
+        "variance_ms2": 1.17,
+        "stdev_ms": 1.08,
+        "min_ms": 17,
+        "max_ms": 20,
+        "raw_runs_ms": [
+          19,
+          18,
+          19,
+          20,
+          17,
+          19,
+          20,
+          17,
+          18,
+          18
+        ]
+      },
+      "cold": {
+        "mean_ms": 36.5,
+        "variance_ms2": 12.94,
+        "stdev_ms": 3.6,
+        "min_ms": 33,
+        "max_ms": 45,
+        "raw_runs_ms": [
+          45,
+          37,
+          36,
+          39,
+          33,
+          35,
+          38,
+          33,
+          34,
+          35
+        ]
+      }
+    },
+    "tree->stree->tree": {
+      "warm": {
+        "mean_ms": 14.8,
+        "variance_ms2": 11.96,
+        "stdev_ms": 3.46,
+        "min_ms": 13,
+        "max_ms": 24,
+        "raw_runs_ms": [
+          14,
+          17,
+          14,
+          13,
+          14,
+          24,
+          13,
+          13,
+          13,
+          13
+        ]
+      },
+      "cold": {
+        "mean_ms": 16.9,
+        "variance_ms2": 1.43,
+        "stdev_ms": 1.2,
+        "min_ms": 15,
+        "max_ms": 19,
+        "raw_runs_ms": [
+          18,
+          19,
+          16,
+          16,
+          15,
+          18,
+          17,
+          16,
+          17,
+          17
+        ]
+      }
+    },
+    "export-latex": {
+      "warm": {
+        "mean_ms": 1128.2,
+        "variance_ms2": 2288.84,
+        "stdev_ms": 47.84,
+        "min_ms": 1072,
+        "max_ms": 1217,
+        "raw_runs_ms": [
+          1198,
+          1154,
+          1217,
+          1101,
+          1102,
+          1102,
+          1102,
+          1072,
+          1095,
+          1139
+        ]
+      },
+      "cold": {
+        "mean_ms": 1678.8,
+        "variance_ms2": 5083.73,
+        "stdev_ms": 71.3,
+        "min_ms": 1598,
+        "max_ms": 1825,
+        "raw_runs_ms": [
+          1825,
+          1770,
+          1695,
+          1703,
+          1654,
+          1622,
+          1650,
+          1624,
+          1598,
+          1647
+        ]
+      }
+    },
+    "export-html": {
+      "warm": {
+        "mean_ms": 4356.8,
+        "variance_ms2": 28562.18,
+        "stdev_ms": 169.0,
+        "min_ms": 4241,
+        "max_ms": 4825,
+        "raw_runs_ms": [
+          4362,
+          4825,
+          4306,
+          4339,
+          4241,
+          4297,
+          4315,
+          4284,
+          4253,
+          4346
+        ]
+      },
+      "cold": {
+        "mean_ms": 5660.2,
+        "variance_ms2": 54707.73,
+        "stdev_ms": 233.9,
+        "min_ms": 5453,
+        "max_ms": 6224,
+        "raw_runs_ms": [
+          5727,
+          5866,
+          6224,
+          5571,
+          5500,
+          5497,
+          5565,
+          5536,
+          5453,
+          5663
+        ]
+      }
+    },
+    "import-latex": {
+      "warm": {
+        "mean_ms": 455.2,
+        "variance_ms2": 851.96,
+        "stdev_ms": 29.19,
+        "min_ms": 421,
+        "max_ms": 506,
+        "raw_runs_ms": [
+          491,
+          476,
+          421,
+          434,
+          461,
+          461,
+          427,
+          426,
+          506,
+          449
+        ]
+      },
+      "cold": {
+        "mean_ms": 429.9,
+        "variance_ms2": 1020.32,
+        "stdev_ms": 31.94,
+        "min_ms": 395,
+        "max_ms": 507,
+        "raw_runs_ms": [
+          453,
+          507,
+          423,
+          436,
+          422,
+          395,
+          396,
+          425,
+          423,
+          419
+        ]
+      }
+    },
+    "import-html": {
+      "warm": {
+        "mean_ms": 159.4,
+        "variance_ms2": 192.04,
+        "stdev_ms": 13.86,
+        "min_ms": 144,
+        "max_ms": 188,
+        "raw_runs_ms": [
+          161,
+          188,
+          158,
+          179,
+          144,
+          149,
+          156,
+          154,
+          148,
+          157
+        ]
+      },
+      "cold": {
+        "mean_ms": 175.7,
+        "variance_ms2": 1198.01,
+        "stdev_ms": 34.61,
+        "min_ms": 129,
+        "max_ms": 259,
+        "raw_runs_ms": [
+          177,
+          259,
+          195,
+          169,
+          144,
+          162,
+          169,
+          129,
+          175,
+          178
+        ]
+      }
+    },
+    "menu-expand-x10": {
+      "warm": {
+        "mean_ms": 12.5,
+        "variance_ms2": 0.5,
+        "stdev_ms": 0.71,
+        "min_ms": 12,
+        "max_ms": 14,
+        "raw_runs_ms": [
+          12,
+          13,
+          13,
+          14,
+          12,
+          12,
+          13,
+          12,
+          12,
+          12
+        ]
+      },
+      "cold": {
+        "mean_ms": 15.5,
+        "variance_ms2": 3.17,
+        "stdev_ms": 1.78,
+        "min_ms": 13,
+        "max_ms": 18,
+        "raw_runs_ms": [
+          16,
+          17,
+          18,
+          18,
+          14,
+          14,
+          16,
+          15,
+          13,
+          14
+        ]
+      }
+    }
+  },
+  "femtolisp": {
+    "load-4-docs": {
+      "warm": {
+        "mean_ms": 18.9,
+        "variance_ms2": 0.32,
+        "stdev_ms": 0.57,
+        "min_ms": 18,
+        "max_ms": 20,
+        "raw_runs_ms": [
+          19,
+          19,
+          19,
+          18,
+          20,
+          19,
+          18,
+          19,
+          19,
+          19
+        ]
+      },
+      "cold": {
+        "mean_ms": 265.5,
+        "variance_ms2": 998.72,
+        "stdev_ms": 31.6,
+        "min_ms": 226,
+        "max_ms": 322,
+        "raw_runs_ms": [
+          322,
+          253,
+          234,
+          272,
+          262,
+          248,
+          226,
+          257,
+          264,
+          317
+        ]
+      }
+    },
+    "tree->stree->tree": {
+      "warm": {
+        "mean_ms": 15.4,
+        "variance_ms2": 0.27,
+        "stdev_ms": 0.52,
+        "min_ms": 15,
+        "max_ms": 16,
+        "raw_runs_ms": [
+          16,
+          15,
+          15,
+          15,
+          16,
+          15,
+          16,
+          15,
+          15,
+          16
+        ]
+      },
+      "cold": {
+        "mean_ms": 15.3,
+        "variance_ms2": 0.23,
+        "stdev_ms": 0.48,
+        "min_ms": 15,
+        "max_ms": 16,
+        "raw_runs_ms": [
+          16,
+          15,
+          15,
+          15,
+          16,
+          15,
+          15,
+          15,
+          15,
+          16
+        ]
+      }
+    },
+    "export-latex": {
+      "warm": {
+        "mean_ms": 808.4,
+        "variance_ms2": 232.04,
+        "stdev_ms": 15.23,
+        "min_ms": 788,
+        "max_ms": 838,
+        "raw_runs_ms": [
+          810,
+          838,
+          804,
+          799,
+          798,
+          788,
+          804,
+          800,
+          830,
+          813
+        ]
+      },
+      "cold": {
+        "mean_ms": 1771.7,
+        "variance_ms2": 4760.46,
+        "stdev_ms": 69.0,
+        "min_ms": 1691,
+        "max_ms": 1869,
+        "raw_runs_ms": [
+          1830,
+          1869,
+          1691,
+          1749,
+          1783,
+          1806,
+          1700,
+          1866,
+          1725,
+          1698
+        ]
+      }
+    },
+    "export-html": {
+      "warm": {
+        "mean_ms": 4622.8,
+        "variance_ms2": 26140.62,
+        "stdev_ms": 161.68,
+        "min_ms": 4518,
+        "max_ms": 5072,
+        "raw_runs_ms": [
+          4591,
+          4581,
+          4630,
+          4557,
+          5072,
+          4528,
+          4569,
+          4564,
+          4518,
+          4618
+        ]
+      },
+      "cold": {
+        "mean_ms": 5945.4,
+        "variance_ms2": 39969.38,
+        "stdev_ms": 199.92,
+        "min_ms": 5774,
+        "max_ms": 6475,
+        "raw_runs_ms": [
+          5981,
+          6008,
+          5900,
+          5896,
+          6475,
+          5774,
+          5784,
+          5901,
+          5871,
+          5864
+        ]
+      }
+    },
+    "import-latex": {
+      "warm": {
+        "mean_ms": 486.1,
+        "variance_ms2": 1093.43,
+        "stdev_ms": 33.07,
+        "min_ms": 437,
+        "max_ms": 541,
+        "raw_runs_ms": [
+          437,
+          541,
+          468,
+          508,
+          442,
+          461,
+          510,
+          503,
+          496,
+          495
+        ]
+      },
+      "cold": {
+        "mean_ms": 664.7,
+        "variance_ms2": 4260.23,
+        "stdev_ms": 65.27,
+        "min_ms": 571,
+        "max_ms": 810,
+        "raw_runs_ms": [
+          664,
+          810,
+          631,
+          640,
+          682,
+          678,
+          712,
+          657,
+          571,
+          602
+        ]
+      }
+    },
+    "import-html": {
+      "warm": {
+        "mean_ms": 324.6,
+        "variance_ms2": 291.16,
+        "stdev_ms": 17.06,
+        "min_ms": 294,
+        "max_ms": 354,
+        "raw_runs_ms": [
+          319,
+          315,
+          339,
+          354,
+          329,
+          321,
+          294,
+          339,
+          327,
+          309
+        ]
+      },
+      "cold": {
+        "mean_ms": 357.8,
+        "variance_ms2": 451.07,
+        "stdev_ms": 21.24,
+        "min_ms": 318,
+        "max_ms": 386,
+        "raw_runs_ms": [
+          381,
+          356,
+          318,
+          386,
+          365,
+          363,
+          366,
+          338,
+          369,
+          336
+        ]
+      }
+    },
+    "menu-expand-x10": {
+      "warm": {
+        "mean_ms": 15.7,
+        "variance_ms2": 2.01,
+        "stdev_ms": 1.42,
+        "min_ms": 14,
+        "max_ms": 19,
+        "raw_runs_ms": [
+          15,
+          16,
+          17,
+          19,
+          14,
+          15,
+          15,
+          16,
+          15,
+          15
+        ]
+      },
+      "cold": {
+        "mean_ms": 16.1,
+        "variance_ms2": 1.43,
+        "stdev_ms": 1.2,
+        "min_ms": 15,
+        "max_ms": 19,
+        "raw_runs_ms": [
+          15,
+          16,
+          17,
+          16,
+          15,
+          15,
+          16,
+          16,
+          19,
+          16
+        ]
+      }
+    }
+  },
+  "s7": {
+    "load-4-docs": {
+      "warm": {
+        "mean_ms": 19.7,
+        "variance_ms2": 1.57,
+        "stdev_ms": 1.25,
+        "min_ms": 17,
+        "max_ms": 22,
+        "raw_runs_ms": [
+          22,
+          20,
+          20,
+          17,
+          20,
+          19,
+          20,
+          19,
+          20,
+          20
+        ]
+      },
+      "cold": {
+        "mean_ms": 283.3,
+        "variance_ms2": 451.79,
+        "stdev_ms": 21.26,
+        "min_ms": 261,
+        "max_ms": 336,
+        "raw_runs_ms": [
+          281,
+          336,
+          275,
+          295,
+          270,
+          271,
+          261,
+          275,
+          294,
+          275
+        ]
+      }
+    },
+    "tree->stree->tree": {
+      "warm": {
+        "mean_ms": 14.1,
+        "variance_ms2": 2.54,
+        "stdev_ms": 1.6,
+        "min_ms": 11,
+        "max_ms": 17,
+        "raw_runs_ms": [
+          16,
+          17,
+          14,
+          11,
+          13,
+          14,
+          14,
+          14,
+          14,
+          14
+        ]
+      },
+      "cold": {
+        "mean_ms": 14.4,
+        "variance_ms2": 2.27,
+        "stdev_ms": 1.51,
+        "min_ms": 12,
+        "max_ms": 17,
+        "raw_runs_ms": [
+          17,
+          16,
+          13,
+          12,
+          16,
+          14,
+          14,
+          14,
+          14,
+          14
+        ]
+      }
+    },
+    "export-latex": {
+      "warm": {
+        "mean_ms": 1067.9,
+        "variance_ms2": 623.43,
+        "stdev_ms": 24.97,
+        "min_ms": 1041,
+        "max_ms": 1104,
+        "raw_runs_ms": [
+          1042,
+          1104,
+          1044,
+          1094,
+          1071,
+          1086,
+          1054,
+          1041,
+          1048,
+          1095
+        ]
+      },
+      "cold": {
+        "mean_ms": 2276.4,
+        "variance_ms2": 129899.38,
+        "stdev_ms": 360.42,
+        "min_ms": 2064,
+        "max_ms": 3282,
+        "raw_runs_ms": [
+          3282,
+          2122,
+          2276,
+          2110,
+          2119,
+          2113,
+          2229,
+          2257,
+          2192,
+          2064
+        ]
+      }
+    },
+    "export-html": {
+      "warm": {
+        "mean_ms": 4914.9,
+        "variance_ms2": 18819.21,
+        "stdev_ms": 137.18,
+        "min_ms": 4796,
+        "max_ms": 5268,
+        "raw_runs_ms": [
+          5007,
+          4864,
+          4906,
+          4917,
+          4837,
+          4823,
+          4867,
+          4864,
+          4796,
+          5268
+        ]
+      },
+      "cold": {
+        "mean_ms": 6189.2,
+        "variance_ms2": 19208.18,
+        "stdev_ms": 138.59,
+        "min_ms": 6035,
+        "max_ms": 6456,
+        "raw_runs_ms": [
+          6456,
+          6226,
+          6389,
+          6035,
+          6150,
+          6230,
+          6087,
+          6076,
+          6144,
+          6099
+        ]
+      }
+    },
+    "import-latex": {
+      "warm": {
+        "mean_ms": 469.2,
+        "variance_ms2": 1119.07,
+        "stdev_ms": 33.45,
+        "min_ms": 420,
+        "max_ms": 520,
+        "raw_runs_ms": [
+          420,
+          520,
+          488,
+          474,
+          470,
+          465,
+          420,
+          482,
+          445,
+          508
+        ]
+      },
+      "cold": {
+        "mean_ms": 822.1,
+        "variance_ms2": 3038.32,
+        "stdev_ms": 55.12,
+        "min_ms": 750,
+        "max_ms": 930,
+        "raw_runs_ms": [
+          824,
+          878,
+          750,
+          777,
+          779,
+          793,
+          815,
+          805,
+          930,
+          870
+        ]
+      }
+    },
+    "import-html": {
+      "warm": {
+        "mean_ms": 608.9,
+        "variance_ms2": 494.77,
+        "stdev_ms": 22.24,
+        "min_ms": 564,
+        "max_ms": 649,
+        "raw_runs_ms": [
+          649,
+          613,
+          597,
+          610,
+          624,
+          600,
+          564,
+          603,
+          603,
+          626
+        ]
+      },
+      "cold": {
+        "mean_ms": 628.8,
+        "variance_ms2": 2502.4,
+        "stdev_ms": 50.02,
+        "min_ms": 532,
+        "max_ms": 698,
+        "raw_runs_ms": [
+          676,
+          532,
+          600,
+          579,
+          643,
+          606,
+          669,
+          698,
+          635,
+          650
+        ]
+      }
+    },
+    "menu-expand-x10": {
+      "warm": {
+        "mean_ms": 12.9,
+        "variance_ms2": 0.99,
+        "stdev_ms": 0.99,
+        "min_ms": 12,
+        "max_ms": 15,
+        "raw_runs_ms": [
+          12,
+          12,
+          13,
+          14,
+          12,
+          12,
+          13,
+          13,
+          13,
+          15
+        ]
+      },
+      "cold": {
+        "mean_ms": 12.7,
+        "variance_ms2": 1.12,
+        "stdev_ms": 1.06,
+        "min_ms": 11,
+        "max_ms": 14,
+        "raw_runs_ms": [
+          12,
+          11,
+          13,
+          14,
+          13,
+          13,
+          13,
+          13,
+          14,
+          11
+        ]
+      }
+    }
   }
 }
 ```

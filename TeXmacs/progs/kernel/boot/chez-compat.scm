@@ -170,6 +170,19 @@
 (define-public (string-null? s)
   (string=? s ""))
 
+(define-public (string-prefix? prefix str)
+  (and (string? prefix) (string? str)
+       (let ((n (string-length prefix)))
+         (and (<= n (string-length str))
+              (string=? (substring str 0 n) prefix)))))
+
+(define-public (string-suffix? suffix str)
+  (and (string? suffix) (string? str)
+       (let ((n (string-length suffix))
+             (m (string-length str)))
+         (and (<= n m)
+              (string=? (substring str (- m n) m) suffix)))))
+
 ;;; String searching
 ;;
 ;; These used to be glue procedures over the C++ `search_forwards` and
@@ -259,6 +272,13 @@
       (if (= i (vector-length ks))
           acc
           (loop (+ i 1) (proc (vector-ref ks i) (vector-ref vs i) acc))))))
+
+(define-public (hash-map->list proc t)
+  (let-values (((ks vs) (hashtable-entries t)))
+    (let loop ((i (- (vector-length ks) 1)) (acc '()))
+      (if (< i 0)
+          acc
+          (loop (- i 1) (cons (proc (vector-ref ks i) (vector-ref vs i)) acc))))))
 
 ;;; Functions
 (define-public (non pred?)

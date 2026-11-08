@@ -73,9 +73,11 @@ public:
 
 bool
 tmscm_is_list (tmscm obj) {
-  if (tm_list_pred != 0)
-    return Sboolean_value (Scall1 (tm_list_pred, obj));
-  /* fallback before initialization: bounded walk */
+  /* Fast C-level cycle-detecting walk using Spairp/Scdr.
+     Do NOT call Scheme (Scall1 tm_list_pred) here: C++ traversal functions
+     like tmscm_to_scheme_tree call tmscm_is_list while holding unpinned tmscm
+     pointers on the C++ stack; entering Scheme can trigger a copying GC which
+     relocates the tree and causes a crash. */
   tmscm slow= obj, fast= obj;
   for (int i= 0; i < 1000000; i++) {
     if (Snullp (fast)) return true;

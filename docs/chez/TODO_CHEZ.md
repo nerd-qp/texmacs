@@ -774,6 +774,20 @@ This document tracks identified architectural improvements and performance bottl
   - Make `wrap-catch` (and `tm-catch-runtime` in `boot-chez.scm`) output explicit error diagnostics (`display-condition`, stack context) when catching conditions during menu building.
   - In `tm_frame.cpp:make_menu_widget`, log an explicit warning with the menu expression whenever `as_widget` returns nil instead of silently returning an empty 0-height menu.
 
+#### [ ] Item 34: Smart Downstream Invalidation via Interface Hash (`interface-hash` in `compiler-db`)
+- **Location**: [`src/Scheme/Chez/compile-texmacs.scm`](src/Scheme/Chez/compile-texmacs.scm), [`src/Scheme/Chez/compiler-db.scm`](src/Scheme/Chez/compiler-db.scm)
+- **Problem**:
+  - The incremental compilation system currently invalidates all downstream successors in `*compile-graph*` whenever any non-kernel module's source changes.
+  - Modifying a single mid-graph utility (like `bib-complete.scm` or `tree.scm`) forces recompilation of 150+ downstream modules, even if the change was purely an internal implementation fix or performance optimization that altered no public macros or exported signatures.
+- **Background & Available Infrastructure**:
+  - `compiler-db.scm` computes and stores `interface-hash` for each module via `(scan-interface-hash exports global-macros macro-impls)`.
+  - In Scheme / Chez Scheme, downstream modules compiling against module $M$ only depend on $M$'s expand-time definitions (macro transformers, expand-time helpers in `*oracle-defs*`, and exported public identifiers). Runtime value definitions (procedure bodies) are compiled as runtime references and do not affect the compilation or machine code of downstream modules.
+- **Action Plan**:
+  - In `compile-texmacs.scm:compute-dirty-modules!`, compare `(module-info-interface-hash old-info)` against `(module-info-interface-hash new-info)` when a module is directly changed:
+    1. *Interface Unchanged*: If `interface-hash` is identical (meaning only internal runtime function bodies, comments, or private values changed, without altering `exports`, `global-macros`, or `macro-impls`), mark only the changed module for recompilation. **Do not propagate dirty status to downstream successors**.
+    2. *Interface Changed*: If `interface-hash` differs (e.g. an export was added/removed, or a macro signature/transformer was modified), mark both the module and transitively invalidate all its dependents via `(compile-graph-dependents *compile-graph*)`.
+  - For kernel modules (`*kernel-files*`), sequential inheritance still applies: changes to kernel modules rebuild the cumulative snapshot `texmacs-user.so` and invalidate all tiers.
+
 ---
 
 ## 6. Boot File Loading & Foreign Symbol Initialization (Design Note)
