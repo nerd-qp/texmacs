@@ -969,16 +969,35 @@
             (else recur-utf8->string))))
     (out-trans (raw-tm-call-by-name name (in-trans args)))))
 
+(define *raw-ffi-table* (make-eq-hashtable))
+(let* ((tm-path (or (getenv "TEXMACS_PATH") "."))
+       (candidates
+        (list
+         (string-append tm-path "/progs/kernel/boot/raw-ffi-table.scm")
+         "TeXmacs/progs/kernel/boot/raw-ffi-table.scm"
+         "progs/kernel/boot/raw-ffi-table.scm")))
+  (let loop ((c candidates))
+    (cond
+     ((null? c) #f)
+     ((file-exists? (car c))
+      (load (car c)))
+     (else (loop (cdr c))))))
+
 ;; [C++] Called once per C++ glue function from chez_install_procedure().
 ;; Failure is loud and per-name rather than aborting the whole glue pass.
+;; Procedures with strictly non-string signatures are routed directly to
+;; raw-tm-call-by-name with zero string/bytevector transcoding overhead.
 (define (tm-install-procedure! name)
   (guard (e (else (begin
                    (display (list 'INSTALL-FAILED name (tm-error-message e)))
                    (newline)
                    #f)))
-    (define-top-level-value (string->symbol name)
-      (lambda args (tm-call-by-name name args))
-      (interaction-environment))
+    (let ((sym (string->symbol name)))
+      (define-top-level-value sym
+        (if (hashtable-ref *raw-ffi-table* sym #f)
+            (lambda args (raw-tm-call-by-name name args))
+            (lambda args (tm-call-by-name name args)))
+        (interaction-environment)))
     #t))
 
 ;; [C++] -compile-modules / -recompile-modules set this before any progs file

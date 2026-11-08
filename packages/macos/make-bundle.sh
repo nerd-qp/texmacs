@@ -192,6 +192,7 @@ else
            "$ROOT/TeXmacs/progs/tm-mode.el" "$SHARE/progs/"
   rsync -a "$ROOT/TeXmacs/progs/kernel/boot/boot-chez.scm" \
            "$ROOT/TeXmacs/progs/kernel/boot/chez-compat.scm" \
+           "$ROOT/TeXmacs/progs/kernel/boot/raw-ffi-table.scm" \
            "$SHARE/progs/kernel/boot/"
   for sub in forms client/forms server; do
     [ -d "$ROOT/TeXmacs/progs/$sub" ] || continue
