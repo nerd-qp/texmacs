@@ -169,7 +169,7 @@ The compilation pipeline in `src/Scheme/Chez/compile-texmacs.scm` operates entir
    - This prevents syntax-rules keyword shadowing (such as `...` in `abbrevs.scm` being bound as a variable, which would break auxiliary ellipsis repetition matching in macros like `with-global`).
    - Runtime table generators that do not provide expand-time syntax (such as `cas-define-test`) are excluded from `eager-skip?` and skipped in `eval-eager-form!`, allowing Chez Scheme's `compile-file` to compile them directly in source order.
    - For `define-table`, `eval-install-value-env` passes `#f` to `guard-eval`, matching `define` and `define-public` so that any tables containing runtime-only unquoted procedures fail silently during pre-evaluation without noisy warnings.
-5. **AST Lexical Scope Integrity in `mc-free-names`**:
+5. **AST Lexical Scope Integrity in `mc-free-references`**:
    - `macro-closure.scm` requires binding forms (`let`, `let*`, `letrec`, `letrec*`) to have a body expression (`pair? (cddr x)`) before treating them as lexical binders.
    - Prevents table entries like `(let ,gui-make-let)` in quasiquoted tables from being misparsed as Scheme `let` binders, ensuring unquoted helpers are accurately identified and installed by the oracle.
 6. **Preserving Raw `define-public` / `provide-public` Forms**:

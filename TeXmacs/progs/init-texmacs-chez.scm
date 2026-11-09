@@ -487,6 +487,8 @@
   (lazy-keyboard (doc apidoc-kbd) developer-mode?)
   (lazy-menu (doc tmdoc-menu) tmdoc-menu tmdoc-icons)
   (lazy-menu (doc help-menu) help-menu)
+  (lazy-define (doc help-funcs)
+    load-help-article load-help-book load-help-buffer url-exists-in-help? help-file-title)
   (lazy-define (doc tmdoc) tmdoc-expand-help tmdoc-expand-help-manual
                tmdoc-expand-this tmdoc-include)
   (lazy-define (doc docgrep) docgrep-in-doc docgrep-in-src

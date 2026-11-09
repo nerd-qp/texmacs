@@ -212,52 +212,57 @@
 ;; Definition of keyboard shortcuts
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+;; TODO: private before
 (define-public (kbd-add-condition conds opt)
   ;;(display* "Add condition " opt "\n")
   (cond ((== (car opt) :mode)
-         (ctx-add-condition conds 0 (cadr opt)))
-	((== (car opt) :require)
-         (ctx-add-condition conds 0 `(lambda () ,(cadr opt))))
-	(else (texmacs-error "kbd-add-condition"
-			     "Bad keyboard option ~S" opt))))
+          (ctx-add-condition conds 0 (cadr opt)))
+	  ((== (car opt) :require)
+      (ctx-add-condition conds 0 `(lambda () ,(cadr opt))))
+	  (else (texmacs-error "kbd-add-condition"
+			      "Bad keyboard option ~S" opt))))
 
+;; TODO: private before
 (define-public (kbd-map-one conds l)
   (if (not (and (pair? l) (string? (car l)) (pair? (cdr l))))
-      (texmacs-error "kbd-map-pre-one" "Bad keymap in: ~S" l))
+    (texmacs-error "kbd-map-pre-one" "Bad keymap in: ~S" l))
   (with (key action . opt) l
     (if (string? action)
-	(with help (if (null? opt) "" (car opt))
-	  `(kbd-binding (list ,@conds) ,key ,action ,help))
-	`(kbd-binding (list ,@conds) ,key
-		      (source-record! (lambda () ,action ,@opt)
-				      ',(cons* 'lambda '() action opt))
-		      ""))))
+	    (with help (if (null? opt) "" (car opt))
+	      `(kbd-binding (list ,@conds) ,key ,action ,help))
+	    `(kbd-binding (list ,@conds) ,key
+		     (source-record! (lambda () ,action ,@opt)
+				   ',(cons* 'lambda '() action opt))
+		     ""))))
 
+;; TODO: private before
 (define-public (kbd-map-body conds l)
   (cond ((null? l) '())
-	((symbol? (car l))
-	 (kbd-map-body (list 0 (car l)) (cdr l)))
-	((and (pair? (car l)) (== (caar l) :profile))
-	 (if (not (has-look-and-feel? (cdar l))) '((noop))
-	     (kbd-map-body conds (cdr l))))
-	((and (pair? (car l)) (keyword? (caar l)))
-	 (kbd-map-body (kbd-add-condition conds (car l)) (cdr l)))
-	(else (map (lambda (x) (kbd-map-one conds x)) l))))
+	  ((symbol? (car l))
+	    (kbd-map-body (list 0 (car l)) (cdr l)))
+	  ((and (pair? (car l)) (== (caar l) :profile))
+	    (if (not (has-look-and-feel? (cdar l))) '((noop))
+	      (kbd-map-body conds (cdr l))))
+	  ((and (pair? (car l)) (keyword? (caar l)))
+	    (kbd-map-body (kbd-add-condition conds (car l)) (cdr l)))
+	  (else (map (lambda (x) (kbd-map-one conds x)) l))))
 
 (tm-define-macro (kbd-map . l)
   (:synopsis "Add entries in @l to the keyboard mapping")
   `(begin ,@(kbd-map-body '() l)))
 
+;; TODO: private before
 (define-public (kbd-remove-one conds key)
   `(kbd-delete-key-binding2 (list ,@conds) ,key))
 
+;; TODO: private before
 (define-public (kbd-remove-body conds l)
   (cond ((null? l) '())
-	((symbol? (car l))
-	 (kbd-remove-body (list 0 (car l)) (cdr l)))
-	((and (pair? (car l)) (keyword? (caar l)))
-	 (kbd-remove-body (kbd-add-condition conds (car l)) (cdr l)))
-	(else (map (lambda (x) (kbd-remove-one conds x)) l))))
+	  ((symbol? (car l))
+	    (kbd-remove-body (list 0 (car l)) (cdr l)))
+	  ((and (pair? (car l)) (keyword? (caar l)))
+	    (kbd-remove-body (kbd-add-condition conds (car l)) (cdr l)))
+	  (else (map (lambda (x) (kbd-remove-one conds x)) l))))
 
 (tm-define-macro (kbd-unmap . l)
   (:synopsis "Remove entries in @l from keyboard mapping")

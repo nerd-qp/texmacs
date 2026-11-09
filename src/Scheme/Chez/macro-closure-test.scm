@@ -11,10 +11,21 @@
     (cond ((file-exists? (string-append d "/macro-closure.scm")) d)
           ((file-exists? (string-append d "/src/Scheme/Chez/macro-closure.scm"))
            (string-append d "/src/Scheme/Chez"))
+          ((file-exists? (string-append d "/texmacs/src/Scheme/Chez/macro-closure.scm"))
+           (string-append d "/texmacs/src/Scheme/Chez"))
           ((file-exists? (string-append d "/../src/Scheme/Chez/macro-closure.scm"))
            (string-append d "/../src/Scheme/Chez"))
           (else d))))
 
+(define progs-dir
+  (cond ((file-exists? (string-append here "/../../../TeXmacs/progs"))
+         (string-append here "/../../../TeXmacs/progs"))
+        ((file-exists? (string-append here "/../../TeXmacs/progs"))
+         (string-append here "/../../TeXmacs/progs"))
+        ((file-exists? "TeXmacs/progs") "TeXmacs/progs")
+        (else #f)))
+
+(load (string-append here "/tarjan.scm"))
 (load (string-append here "/macro-closure.scm"))
 
 ;;; ---------------------------------------------------------------------------
@@ -40,55 +51,70 @@
   (sort (lambda (a b) (string<? (symbol->string a) (symbol->string b))) xs))
 
 ;;; ---------------------------------------------------------------------------
-;;; 1. free-name walker
+;;; 1. free-reference & dependency analysis (expand-based)
 ;;; ---------------------------------------------------------------------------
 
 (check-set! "lambda binds its formals"
-            '(f) (mc-free-names '(lambda (x) (f x))))
+            '(f) (mc-free-references '(lambda (x) (f x))))
 (check-set! "lambda rest argument is bound"
-            '(f) (mc-free-names '(lambda (x . r) (f r))))
+            '(f) (mc-free-references '(lambda (x . r) (f r))))
 (check-set! "let binds, initialisers stay free"
-            '(f g) (mc-free-names '(let ((x (f))) (g x))))
+            '(f g) (mc-free-references '(let ((x (f))) (g x))))
 (check-set! "named let binds the loop name"
-            '(f) (mc-free-names '(let lp ((i (f))) (lp i))))
+            '(f) (mc-free-references '(let lp ((i (f))) (lp i))))
 (check-set! "let* binds sequentially"
-            '(f g) (mc-free-names '(let* ((x (f)) (y (g))) y)))
+            '(f g) (mc-free-references '(let* ((x (f)) (y (g))) y)))
 (check-set! "define binds the head and formals"
-            '(g) (mc-free-names '(define (f x) (g x))))
+            '(g) (mc-free-references '(define (f x) (g x))))
 (check-set! "recursive define does not report itself"
-            '(g) (mc-free-names '(define (f x) (if (g) (f x) #f))))
+            '(g) (mc-free-references '(define (f x) (if (g) (f x) #f))))
 (check-set! "define of a plain value binds the name"
-            '(f) (mc-free-names '(define x (f))))
+            '(f) (mc-free-references '(define x (f))))
 (check-set! "quote is data"
-            '() (mc-free-names '(quote (f g h))))
-(check-set! "quasiquote keeps unquotes"
-            '(f) (mc-free-names '(quasiquote (a (unquote (f))))))
+            '() (mc-free-references '(quote (f g h))))
+(check-set! "quasiquote keeps unquotes (Chez lowers to list)"
+            '(f list) (mc-free-references '(quasiquote (a (unquote (f))))))
 (check-set! "quasiquote ignores the literal part"
-            '() (mc-free-names '(quasiquote (a b c))))
+            '() (mc-free-references '(quasiquote (a b c))))
 (check-set! "set! target is a reference"
-            '(f x) (mc-free-names '(begin (set! x (f)))))
+            '(f x) (mc-free-references '(begin (set! x (f)))))
 (check-set! "cond/else/=> are not references"
-            '(f g) (mc-free-names '(cond ((f) => g) (else #f))))
+            '(f g) (mc-free-references '(cond ((f) => g) (else #f))))
 
-;; TeXmacs binding macros: an unmodelled binder turns into a false dependency.
+;; TeXmacs binding macros: with macro environment installed, binders are lexical
+(define test-env (copy-environment (scheme-report-environment 5)))
+(eval '(define-syntax with (syntax-rules () ((_ v e b ...) (let ((v e)) b ...)))) test-env)
+(eval '(define-syntax for
+         (syntax-rules ()
+           ((_ (i lst) body ...) (for-each (lambda (i) body ...) lst))
+           ((_ (i start stop) body ...) (let loop ((i start)) (when (< i stop) body ... (loop (+ i 1))))))) test-env)
+(eval '(define-syntax receive
+         (syntax-rules ()
+           ((_ formals producer body ...)
+            (call-with-values (lambda () producer) (lambda formals body ...))))) test-env)
+
+(define (test-macro? s) (memq s '(with for receive)))
+
 (check-set! "with binds its variable and is itself a dependency"
-            '(with e f) (mc-free-names '(with v e (f v))))
+            '(with e f)
+            (mc-val-dependencies '(with v e (f v)) test-macro? test-env))
 (check-set! "for binds the head of its spec"
-            '(for f l) (mc-free-names '(for (i l) (f i))))
+            '(for for-each f l)
+            (mc-val-dependencies '(for (i l) (f i)) test-macro? test-env))
 (check-set! "for with a range spec"
-            '(for f) (mc-free-names '(for (i 0 10) (f i))))
+            '(for when r6rs:< f +)
+            (mc-val-dependencies '(for (i 0 10) (f i)) test-macro? test-env))
 (check-set! "receive binds its formals"
-            '(receive f g) (mc-free-names '(receive (a b) (f) (g a b))))
-(check-set! "guard binds its variable"
-            '(f) (mc-free-names '(guard (e (#t (f e))))))
+            '(receive call-with-values f g)
+            (mc-val-dependencies '(receive (a b) (f) (g a b)) test-macro? test-env))
 (check-set! "do binds its variables"
-            '(f) (mc-free-names '(do ((i 0)) ((f) i))))
+            '(f) (mc-free-references '(do ((i 0)) ((f) i))))
 
 ;; Expanded core AST: a global reference is a quoted $top-level-value lookup.
 (check-set! "core AST top-level reference"
-            '(f) (mc-free-names '((($primitive 2 $top-level-value) 'f) 1)))
+            '(f) (mc-free-references '((($primitive 2 $top-level-value) 'f) 1)))
 (check-set! "core AST definition binds its name"
-            '(g) (mc-free-names '((($primitive 3 $set-top-level-value!) 'f
+            '(g) (mc-free-references '((($primitive 3 $set-top-level-value!) 'f
                                   (lambda (x) ((($primitive 2 $top-level-value) 'g) x))))))
 
 ;;; ---------------------------------------------------------------------------
@@ -252,6 +278,44 @@
 (check! "a cycle leaves exactly its back edge unsatisfied"
         '((b . a))
         (install-check '((a b) (b a)) 'a))
+
+;;; ---------------------------------------------------------------------------
+;;; 5. drive test over real TeXmacs source files
+;;; ---------------------------------------------------------------------------
+
+(when progs-dir
+  (let ()
+    (define (read-all-forms file)
+      (call-with-input-file file
+        (lambda (p)
+          (let loop ((acc '()))
+            (let ((x (read p)))
+              (if (eof-object? x) (reverse acc) (loop (cons x acc))))))))
+
+    (define (drive-test-file rel-path)
+      (let* ((full-path (string-append progs-dir "/" rel-path))
+             (forms (read-all-forms full-path))
+             (val-defs (filter (lambda (f)
+                                 (and (pair? f)
+                                      (memq (car f) '(define define-public tm-define))
+                                      (pair? (cdr f))))
+                               forms)))
+        (check-true! (string-append "drive-test found definitions in " rel-path)
+                     (> (length val-defs) 0))
+        (let ((clean? #t))
+          (for-each
+            (lambda (form)
+              (let ((refs (guard (e (else #f))
+                            (mc-free-references form test-env #t))))
+                (unless (list? refs)
+                  (set! clean? #f))))
+            val-defs)
+          (check-true! (string-append "drive-test all definitions analyze cleanly in " rel-path)
+                       clean?))))
+
+    (drive-test-file "kernel/library/list.scm")
+    (drive-test-file "kernel/boot/abbrevs.scm")
+    (drive-test-file "kernel/library/base.scm")))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Summary

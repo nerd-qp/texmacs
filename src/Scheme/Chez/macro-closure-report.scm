@@ -24,6 +24,7 @@
            (string-append d "/../src/Scheme/Chez"))
           (else d))))
 
+(load (string-append here "/tarjan.scm"))
 (load (string-append here "/macro-closure.scm"))
 
 ;;; ------------------------------------------------------------------- args
@@ -157,7 +158,7 @@
       (if (and (symbol? head) (hashtable-ref defs head #f)) (list head) '())
       (if (eq? kind 'macro)
           (or (mc-macro-deps inner) '())
-          (mc-free-names top)))))
+          (mc-free-references top)))))
 
 ;;; ------------------------------------------------------------------ main
 

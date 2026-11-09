@@ -45,6 +45,7 @@ while [ $# -gt 0 ]; do
     --sign)       shift; SIGN_ID="${1:-}" ;;
     --version)    shift; VERSION="${1:-}" ;;
     --build-dir)  shift; BUILD_DIR="${1:-}" ;;
+    --chez-heap|--chez-heap-dir) shift; CHEZ_HEAP_DIR="${1:-}" ;;
     -h|--help)    sed -n '2,30p' "$0"; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
@@ -272,6 +273,45 @@ fi
 # (src/Texmacs/Texmacs/texmacs.cpp, macOS bundle branch). Without this the boot
 # fails and init_texmacs() falls back to Guile -> "guile could not be found".
 CHEZ_HEAP="${CHEZ_HEAP_DIR:-}"
+
+# 1. Check CMakeCache.txt in the build directory for the exact Chez Scheme used to link
+if [ -z "$CHEZ_HEAP" ] && [ -f "$BUILD/CMakeCache.txt" ]; then
+  CACHE_CHEZ_ROOT="$(sed -n 's/^CHEZ_ROOT:STRING=//p' "$BUILD/CMakeCache.txt" | head -n 1)"
+  CACHE_CHEZ_MACHINE="$(sed -n 's/^CHEZ_MACHINE:STRING=//p' "$BUILD/CMakeCache.txt" | head -n 1)"
+  if [ -n "$CACHE_CHEZ_ROOT" ]; then
+    for candidate in "$CACHE_CHEZ_ROOT/$CACHE_CHEZ_MACHINE" \
+                     "$CACHE_CHEZ_ROOT/boot/$CACHE_CHEZ_MACHINE" \
+                     "$CACHE_CHEZ_ROOT"; do
+      if [ -f "$candidate/scheme.boot" ]; then
+        CHEZ_HEAP="$candidate"
+        break
+      fi
+    done
+  fi
+fi
+
+# 2. Check embedded paths or version from the binary itself
+if [ -z "$CHEZ_HEAP" ] && [ -x "$SRC_APP/Contents/MacOS/TeXmacs" ]; then
+  EMBEDDED_CSV="$(strings "$SRC_APP/Contents/MacOS/TeXmacs" 2>/dev/null | grep -m 1 "lib/csv" || true)"
+  if [ -n "$EMBEDDED_CSV" ] && [ -f "$EMBEDDED_CSV/scheme.boot" ]; then
+    CHEZ_HEAP="$EMBEDDED_CSV"
+  fi
+  if [ -z "$CHEZ_HEAP" ]; then
+    EXE_CHEZ_VER="$(strings "$SRC_APP/Contents/MacOS/TeXmacs" 2>/dev/null | grep -B 1 "error (Sscheme_init)" | head -n 1 || true)"
+    if [ -n "$EXE_CHEZ_VER" ]; then
+      for candidate in /opt/homebrew/Cellar/chezscheme/"$EXE_CHEZ_VER"/lib/csv*/tarm64osx \
+                       /opt/homebrew/opt/chezscheme/lib/csv"$EXE_CHEZ_VER"/tarm64osx \
+                       /opt/homebrew/opt/chezscheme/lib/csv*/tarm64osx; do
+        if [ -f "$candidate/scheme.boot" ]; then
+          CHEZ_HEAP="$candidate"
+          break
+        fi
+      done
+    fi
+  fi
+fi
+
+# 3. Fallback search
 if [ -z "$CHEZ_HEAP" ]; then
   for d in "$ROOT/../chez-macos/tarm64osx" \
            "$ROOT/chez-macos/tarm64osx" \

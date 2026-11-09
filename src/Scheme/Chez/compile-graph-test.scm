@@ -25,6 +25,8 @@
 (unless compiler-dir
   (error 'compile-graph-test "cannot find compiler-db.scm"))
 
+(load (string-append compiler-dir "/tarjan.scm"))
+(import (tarjan))
 (load (string-append compiler-dir "/compiler-db.scm"))
 (import (compiler-db))
 (load (string-append compiler-dir "/compiler-scan.scm"))

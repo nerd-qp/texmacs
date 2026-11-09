@@ -285,4 +285,29 @@
   "Return the negation of @pred?."
   (lambda args (not (apply pred? args))))
 
+;;; Keyword compatibility
+(define-public (keyword->string x)
+  (symbol->string (keyword->symbol x)))
+(define-public (string->keyword x)
+  (symbol->keyword (string->symbol x)))
+(define-public (keyword->number x)
+  (string->number (string-tail (symbol->string (keyword->symbol x)) 1)))
+(define-public (number->keyword x)
+  (symbol->keyword (string->symbol (string-append "%" (number->string x)))))
+
+;;; GUI file dialog
+(define-public (choose-file fun title type . opts)
+  (when (null? opts)
+    (with prompt (cond ((string-starts? title "Save") "Save as:")
+		       ((string-starts? title "Export") "Export as:")
+		       ((== title "Select database") "Selected database:")
+		       (else ""))
+      (set! opts (list prompt))))
+  (when (null? (cdr opts))
+    (with u (buffer-get-master (current-buffer))
+      (set! opts (list (car opts) u))))
+  (cpp-choose-file fun title type (car opts) (cadr opts)))
+
+
+
 

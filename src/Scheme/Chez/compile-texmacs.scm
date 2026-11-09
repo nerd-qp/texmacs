@@ -74,6 +74,8 @@
 
 ;; These libraries are loaded with `primitive-load', not `import': a TeXmacs
 ;; process has no library search path into src/Scheme/Chez.
+(primitive-load (string-append *compiler-dir* "/tarjan.scm"))
+(import (tarjan))
 (primitive-load (string-append *compiler-dir* "/compiler-db.scm"))
 (import (compiler-db))
 (primitive-load (string-append *compiler-dir* "/compiler-scan.scm"))
@@ -102,7 +104,7 @@
     define-export-macro tm-define-macro))
 
 (define *value-definers*
-  '(define define-public provide-public tm-define))
+  '(define define-public provide-public tm-define define-table))
 
 ;; (define ((f a) b) body) -> (define (f a) (lambda (b) body))
 (define (uncurry-def definer head body)
@@ -216,14 +218,32 @@
         (list head)
         '())))
 
+(define (oracle-macro? sym)
+  (let ((e (hashtable-ref *oracle-defs* sym #f)))
+    (and e (eq? (vector-ref e 1) 'macro))))
+
 (define (oracle-site-deps site)
   (append
     (oracle-head-dependency (vector-ref site 3))
     (if (eq? (vector-ref site 1) 'macro)
-        ;; A macro definer hides its body from `mc-free-names' (a template is
+        ;; A macro definer hides its body from `mc-free-references' (a template is
         ;; not a use), so its dependencies come from `mc-macro-deps' instead.
         (or (mc-macro-deps (vector-ref site 2)) '())
-        (mc-free-names (vector-ref site 3)))))
+        (mc-val-dependencies (vector-ref site 3) oracle-macro? (compilation-environment)))))
+
+;; Evaluate `thunk`, reporting any exception as one flat log line
+;;   (MESSAGE irritant ... <condition text>)
+;; and returning `default` instead of propagating it. A `message` of #f keeps
+;; the call silent. Every eager evaluation in the transpiler goes through here,
+;; so a failure is attributed to the form that caused it instead of aborting
+;; the module.
+(define (guard-eval message irritants default thunk)
+  (guard (e (else
+              (when message
+                (display (append (list message) irritants (list (condition-text e))))
+                (newline))
+              default))
+    (thunk)))
 
 ;; Install NAME into the current compilation environment, dependencies first.
 ;; The two rewrite steps matter: the sources contain curried definitions and
@@ -260,7 +280,7 @@
   (for-each oracle-install!
             (if (and (pair? form) (memq (car form) *macro-definers*))
                 (or (mc-macro-deps form) '())
-                (mc-free-names form))))
+                (mc-val-dependencies form oracle-macro? (compilation-environment)))))
 
 (define *eager-gated?*
   (let ((value (getenv "TEXMACS_EAGER_GATE")))
@@ -320,11 +340,6 @@
        (or (not (file-exists? f2))
            (time>? (file-modification-time f1)
                    (file-modification-time f2)))))
-
-(define (tm-macroify-cp head)
-  (if (pair? head)
-      (cons (tm-macroify-cp (car head)) (cdr head))
-      (string->symbol (string-append (symbol->string head) "$impl"))))
 
 (define *recompile-all?*
   (or (and (top-level-bound? '*recompile-all*) *recompile-all?*)
@@ -623,47 +638,12 @@
       (with-output-to-string (lambda () (display-condition condition)))
       condition))
 
-;; Evaluate `thunk`, reporting any exception as one flat log line
-;;   (MESSAGE irritant ... <condition text>)
-;; and returning `default` instead of propagating it. A `message` of #f keeps
-;; the call silent. Every eager evaluation in the transpiler goes through here,
-;; so a failure is attributed to the form that caused it instead of aborting
-;; the module.
-(define (guard-eval message irritants default thunk)
-  (guard (e (else
-              (when message
-                (display (append (list message) irritants (list (condition-text e))))
-                (newline))
-              default))
-    (thunk)))
-
-(define (eval-in-compile form message)
-  (guard-eval message (list form) #f
-    (lambda ()
-      (parameterize ((interaction-environment (compilation-environment)))
-        (eval form (interaction-environment))))))
-
-(define (silent-eval! form)
-  (guard-eval #f '() #f
-    (lambda () (eval form (compilation-environment)))))
-
-;; Publish a binding created in `(compilation-environment)` into the global
-;; environment. The value is shared, not copied: its free variables keep
-;; resolving against the module's own environment, which is exactly what keeps
-;; private definitions private.
-(define (publish-binding! name message read write)
-  (unless (eq? (compilation-environment) (interaction-environment))
-    (guard-eval message (list name) #f
+(define (eval-in-compile! form . opt-message)
+  (let ((message (if (pair? opt-message) (car opt-message) 'FAILED-EVAL)))
+    (guard-eval message (list form) #f
       (lambda ()
-        (write name
-               (read name (compilation-environment))
-               (interaction-environment))))))
-
-(define (publish-value! name message)
-  (publish-binding! name message top-level-value define-top-level-value))
-
-(define (publish-syntax! name message)
-  (publish-binding! name message top-level-syntax define-top-level-syntax))
+        (parameterize ((interaction-environment (compilation-environment)))
+          (eval form (interaction-environment)))))))
 
 ;; The symbol a definition form introduces:
 ;;   (tm-define (foo x) ...)              -> foo
@@ -676,76 +656,24 @@
         (cadr head)
         (mc-leftmost-symbol head))))
 
-;; These are global top-level values, supposed to be available to texmacs-user
-;; space. Evaluate `form` where the module's definitions live, then publish the
-;; binding it produced.
-(define (eval-install-value-env form message)
-  (eval-in-compile form message)
-  (publish-value! (defined-name form) message))
-
-(define (eval-install-syntax-env form message)
-  (eval-in-compile form message)
-  (publish-syntax! (defined-name form) message))
-
-(define (eval-install-tm-macro-env form message)
-  (let ((name (defined-name form)))
-    (eval-in-compile form message)
-    (publish-value! (tm-macroify-cp name) message)
-    (publish-syntax! name message)))
-
-(define (eval-install-group-env form message)
-  (let ((group (cadr form)))
-    (eval-in-compile form message)
-    (for-each (lambda (name) (publish-value! name message))
-              (list (symbol-append group '-list)
-                    (symbol-append group '?)
-                    (symbol-append 'inside- group '?)))))
-
 (define (eval-eager-form! form)
   (let ((head (and (pair? form) (car form))))
     (cond
-      ((memq head '(define define-public provide-public define-module-macro))
-       (silent-eval! form))
-
-      ((memq head '(define-macro define-public-macro))
-       (silent-eval! (cons 'define-macro (cdr form))))
-
-      ((eq? head 'define-state)
-       (guard-eval 'WARNING-DEFINE-STATE-EVAL-FAIL (list (cadr form)) #f
-         (lambda () (eval form (compilation-environment)))))
-
-      ((eq? head 'tm-define)
-       (eval-install-value-env form 'WARNING-TM-DEFINE-EVAL-FAIL))
-
-      ((eq? head 'tm-define-macro)
-       (eval-install-tm-macro-env form 'WARNING-TM-DEFINE-MACRO-EVAL-FAIL))
-
-      ((eq? head 'define-group)
-       (eval-install-group-env form 'WARNING-DEFINE-GROUP-EVAL-FAIL))
-
-      ((memq head '(define-table define-collection extend-table
-                    extend-collection smart-table))
-       (eval-install-value-env form #f))
-
-      ((eq? head 'define-top-level-syntax)
-       (eval-install-syntax-env form 'WARNING-TOP-LEVEL-SYNTAX-FAIL))
-
-      ;; Not evaluated here at all: the form stays in the module body, Chez
-      ;; expands it at compile time, and the emitted `(property-set! ...)` runs
-      ;; at load time inside the module's own environment. `texmacs-modes' and
-      ;; `cas-define-test' join them: they generate runtime values/tables only,
-      ;; and no macro reads them at expand time.
-      ((memq head '(tm-property define-preferences texmacs-modes cas-define-test))
-       #f)
-
-      ((memq head '(define-table-decls define-collection-decls))
-       (silent-eval! form))
+      ((memq head '(define define-public provide-public define-module-macro
+                    define-macro define-public-macro
+                    define-state tm-define tm-define-macro define-group
+                    define-table define-collection extend-table
+                    extend-collection smart-table
+                    define-table-decls define-collection-decls
+                    define-top-level-syntax))
+       (eval-in-compile! form))
 
       ((and (eq? head 'ahash-set!)
             (pair? (cdr form))
             (eq? (cadr form) 'define-option-table))
-       (guard-eval 'FAILED-EVAL-OPT-REG '() #f
-         (lambda () (eval form (compilation-environment))))))))
+       (eval-in-compile! form))
+
+      (else #f))))
 
 ;; ---- Form preparation -----------------------------------------------------
 
@@ -937,7 +865,7 @@
     (lambda (dependency)
       (let ((module (mod-name->symbol dependency)))
         (when (memq module compiled-modules)
-          (silent-eval! `(import (for ,module run expand))))))
+          (eval-in-compile! `(import (for ,module run expand))))))
     deps))
 
 (define (module-link-forms mod-name deps options public local)

@@ -14,13 +14,15 @@
           make-compile-graph-from-modules
           make-compile-graph-from-db
           compile-graph-subgraph
+          tarjan-scc
+          tarjan-scc/comp-of
           compile-graph-scc
           compile-graph-cycles
           compile-graph-topological-sort
           compile-graph-waves
           compile-graph-macro-nodes
           compile-graph-macro-free?)
-  (import (chezscheme) (compiler-db))
+  (import (chezscheme) (tarjan) (compiler-db))
 
   ;;; -------------------------------------------------------------------------
   ;;; Record
@@ -116,46 +118,9 @@
   ;; every component it depends on. That is already a valid build order, which
   ;; is why compile-graph-topological-sort can return it unchanged.
   (define (compile-graph-scc g)
-    (let ((prereqs (compile-graph-prereqs g))
-          (index (make-hashtable equal-hash equal?))
-          (low (make-hashtable equal-hash equal?))
-          (on-stack (make-hashtable equal-hash equal?))
-          (stack '())
-          (counter 0)
-          (components '()))
-
-      (define (visit v)
-        (hashtable-set! index v counter)
-        (hashtable-set! low v counter)
-        (set! counter (+ counter 1))
-        (set! stack (cons v stack))
-        (hashtable-set! on-stack v #t)
-        (for-each
-         (lambda (w)
-           (cond
-            ((not (hashtable-ref index w #f))
-             (visit w)
-             (hashtable-set! low v
-                            (min (hashtable-ref low v #f)
-                                 (hashtable-ref low w #f))))
-            ((hashtable-ref on-stack w #f)
-             (hashtable-set! low v
-                            (min (hashtable-ref low v #f)
-                                 (hashtable-ref index w #f))))))
-         (hashtable-ref prereqs v '()))
-        (when (= (hashtable-ref low v #f) (hashtable-ref index v #f))
-          (let pop ((acc '()))
-            (let ((w (car stack)))
-              (set! stack (cdr stack))
-              (hashtable-set! on-stack w #f)
-              (if (eq? w v)
-                  (set! components (cons (reverse (cons w acc)) components))
-                  (pop (cons w acc)))))))
-
-      (for-each
-       (lambda (v) (unless (hashtable-ref index v #f) (visit v)))
-       (compile-graph-nodes g))
-      (reverse components)))
+    (tarjan-scc (compile-graph-nodes g)
+                (lambda (v) (hashtable-ref (compile-graph-prereqs g) v '()))
+                equal-hash equal?))
 
   (define (compile-graph-cycles g)
     (let ((prereqs (compile-graph-prereqs g)))

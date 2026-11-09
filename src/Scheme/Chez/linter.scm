@@ -73,6 +73,7 @@
 (define tm-lint-primitive-load
   (if (top-level-bound? 'primitive-load) (top-level-value 'primitive-load) load))
 
+(tm-lint-primitive-load (string-append (tm-lint-script-dir) "/tarjan.scm"))
 (tm-lint-primitive-load (string-append (tm-lint-script-dir) "/macro-closure.scm"))
 
 (define (tm-lint-find pred xs)
@@ -120,7 +121,7 @@
 
 ;;; ------------------------------------------------------- free name walker
 ;;
-;; mc-free-names (macro-closure.scm) runs on two kinds of input.  On expanded
+;; mc-free-references (macro-closure.scm) runs on two kinds of input.  On expanded
 ;; core AST -- phases 3-4 -- every lexical and module-internal binding has been
 ;; renamed to a gensym, so a plain non-gensym symbol is a reference to a
 ;; top-level binding and no scope tracking is needed.  On source forms --
@@ -132,7 +133,7 @@
 ;; module graph wants: it may report a reference that never runs, but it
 ;; cannot miss one.
 
-(define (free-names x) (mc-free-names x))
+(define (free-names x) (mc-free-references x))
 
 ;; Subforms shaped (($primitive n define-top-level-syntax) 'name val).
 (define (syntax-defs core)
@@ -734,40 +735,9 @@
 ;; component: its members must be compiled together, but the condensation is
 ;; acyclic.
 (define (compute-sccs)
-  (let ((index    (make-hashtable equal-hash equal?))
-        (low      (make-hashtable equal-hash equal?))
-        (on-stack (make-hashtable equal-hash equal?))
-        (stack '())
-        (counter 0)
-        (comps '()))
-    (define (pop-until! v)
-      (let loop ((acc '()))
-        (let ((w (car stack)))
-          (set! stack (cdr stack))
-          (hashtable-set! on-stack w #f)
-          (if (equal? w v) (cons w acc) (loop (cons w acc))))))
-    (define (strongconnect! v)
-      (hashtable-set! index v counter)
-      (hashtable-set! low v counter)
-      (set! counter (+ counter 1))
-      (set! stack (cons v stack))
-      (hashtable-set! on-stack v #t)
-      (for-each
-        (lambda (w)
-          (cond
-            ((not (hashtable-ref index w #f))
-             (strongconnect! w)
-             (hashtable-set! low v (min (hashtable-ref low v 0)
-                                        (hashtable-ref low w 0))))
-            ((hashtable-ref on-stack w #f)
-             (hashtable-set! low v (min (hashtable-ref low v 0)
-                                        (hashtable-ref index w 0))))))
-        (hashtable-ref mod-edges v '()))
-      (when (= (hashtable-ref low v 0) (hashtable-ref index v 0))
-        (set! comps (cons (pop-until! v) comps))))
-    (for-each (lambda (v) (unless (hashtable-ref index v #f) (strongconnect! v)))
-              (vector->list (hashtable-keys mod-nodes)))
-    comps))
+  (tarjan-scc (vector->list (hashtable-keys mod-nodes))
+              (lambda (v) (hashtable-ref mod-edges v '()))
+              equal-hash equal?))
 
 ;; Waves over the condensation: component n may start once every component it
 ;; depends on is done.
