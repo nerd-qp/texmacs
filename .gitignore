@@ -35,6 +35,7 @@ build-guile
 build-chez
 build-texmacos
 fakehome
+dist
 
 TeXmacs/progs/ice-9
 src/Plugins/Qt/moc_*.cpp

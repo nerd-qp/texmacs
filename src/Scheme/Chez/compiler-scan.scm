@@ -161,6 +161,18 @@
   (define (scan-macro-impl-name name)
     (string->symbol (string-append (symbol->string name) "$impl")))
 
+  ;; `bib-define-style' does not name its export directly: the transpiler
+  ;; synthesises bib-<style>? from the style string (prepare-forms in
+  ;; compile-texmacs.scm). Mirror that here so the static index agrees with the
+  ;; emitted module header.
+  (define (scan-bib-predicate-name form)
+    (let ((style (and (pair? (cdr form)) (cadr form))))
+      (if (string? style)
+          (string->symbol (string-append "bib-" style "?"))
+          (error 'compiler-scan
+                 "bib-define-style has no valid style name"
+                 form))))
+
   (define (scan-flatten-begins forms)
     (let loop ((rest forms) (acc '()))
       (cond ((null? rest) (reverse acc))
@@ -188,9 +200,18 @@
                  (head (and (pair? form) (car form)))
                  (arg (and (pair? form) (pair? (cdr form)) (cadr form))))
             (case head
-              ((define-public provide-public define-public-macro)
+              ;; define-module-macro and define-export-macro are public macro
+              ;; definers too. prepare-forms counts the former as public and
+              ;; rewrites the latter into define-public-macro, so the static
+              ;; index must record the same names as exports.
+              ((define-public provide-public define-public-macro
+                define-module-macro define-export-macro)
                (loop (cdr rest)
                      (cons (scan-defined-name form arg) exports)
+                     globals macros impls))
+              ((bib-define-style)
+               (loop (cdr rest)
+                     (cons (scan-bib-predicate-name form) exports)
                      globals macros impls))
               ((export)
                (loop (cdr rest)
