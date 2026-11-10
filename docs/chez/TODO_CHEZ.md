@@ -370,54 +370,6 @@ This document tracks identified architectural improvements and performance bottl
   - Automatically infer macro dependencies by scanning module source bodies for known `tm-define-macro` symbols, or dynamically injecting `(import (for <declaring-module> run expand))` during AOT transpilation.
   - Or formalizing an aggregated syntax library (e.g. `(texmacs macros)`) that encapsulates all public `tm-define-macro` syntax transformers without mutating `(interaction-environment)`.
 
-### [ ] First-Class Generic Procedure Architecture for `tm-define` & Expansion Isolation
-- **Location**: [`TeXmacs/progs/kernel/texmacs/tm-define.scm`](TeXmacs/progs/kernel/texmacs/tm-define.scm), [`TeXmacs/progs/kernel/boot/boot-chez.scm`](TeXmacs/progs/kernel/boot/boot-chez.scm)
-- **Concept & Future Architecture**:
-  - **Implicit Generic Object Registration**: Rather than relying on a mutable compile-time table (`tm-defined-table`) to decide between `(define-public ...)` and `(set! ...)`, `tm-define` should treat overloaded routines as first-class generic procedure objects:
-    1. The first `tm-define` for a symbol implicitly initializes, registers, and binds an overloaded dispatcher object.
-    2. Subsequent `tm-define` declarations (whether in the same module or downstream modules) look up the existing object and register the new specialization/branch.
-  - **Clean Macro Phase Isolation**:
-    - Macro transformers and `tm-define` helpers (e.g. `ca*r`, `compute-arguments`, `predicate-option?`, option tables) are supplied in the compilation expansion phase (`(for ... run expand)`) without leaking into or mutating the global runtime namespace.
-    - Prevents namespace collisions, removes the need for ad-hoc host `eval` shims, and preserves 100% of GNU TeXmacs's dynamic overloading semantics under strict R6RS AOT compilation.
-
-- **Reference Architecture Walkthrough: Overloading Across Modules**:
-  ```scheme
-  ;; --- TeXmacs/progs/test/mod-a.scm ---
-  (texmacs-module (test mod-a))
-  ;; 1. Master definition:
-  (tm-define (greeting who) (string-append "Hello, " who "!"))
-  ;; 2. Intra-module overload:
-  (tm-define (greeting who) (:mode "formal") (string-append "Good day, " who "."))
-
-  ;; --- TeXmacs/progs/test/mod-b.scm ---
-  (texmacs-module (test mod-b) (:use (test mod-a)))
-  ;; 3. Downstream cross-module overload:
-  (tm-define (greeting who) (:mode "french") (string-append "Bonjour, " who "!"))
-  ```
-  - **Compilation of `mod-a.scm`**:
-    1. First `tm-define` takes Branch B: emits `(define-public greeting ...)` into the module definition block.
-    2. Second `tm-define` takes Branch A: emits `(let ((former greeting)) (set! greeting ...))` into the initialization expression block.
-    3. `partition-forms` arranges them into Chez R6RS order:
-       ```scheme
-       (module test:mod-a ()
-         ;; Definitions block:
-         (export greeting)
-         (define greeting (lambda (who) (string-append "Hello, " who "!")))
-         ;; Expressions block:
-         (ahash-set! tm-defined-table 'greeting ...)
-         (let ((former greeting))
-           (set! greeting (lambda (who) (if (== (get-current-mode) "formal") ... (former who))))
-           (ahash-set! tm-defined-table 'greeting ...)))
-       ```
-    4. Compiled natively into `mod-a.so` via `compile-file`.
-  - **Compilation of `mod-b.scm`**:
-    1. Emits `(import (for test:mod-a run expand))`, bringing `greeting` into scope.
-    2. Third `tm-define` takes Branch A: emits `(let ((former greeting)) (set! greeting ...))`.
-    3. Emits `(module test:mod-b () (import (for test:mod-a run expand)) (let ((former greeting)) (set! greeting ...)))` and compiles to `mod-b.so`.
-  - **Runtime Execution**:
-    1. `(load "mod-a.so")` defines and initializes the formal dispatch.
-    2. `(load "mod-b.so")` wraps `greeting` to dispatch French mode without touching any global interpreter propagation tables or running host `eval`.
-
 ---
 
 ## 5. Compilation Pipeline Expansion & Residual Failure Tracking
@@ -921,13 +873,6 @@ This document tracks identified architectural improvements and performance bottl
 - **Problem**: `call_scheme (fun, a1, a2, ...)` constructs Scheme lists using `Scons` and dispatches via `Scall2 (tm_apply_proc, fun, args_list)`.
 - **Optimization**: Chez Scheme's C API natively provides `Scall0(fun)`, `Scall1(fun, a1)`, `Scall2(fun, a1, a2)`, `Scall3(fun, a1, a2, a3)`. Invoking `ScallN` directly eliminates Scheme heap allocations (cons cells) and dynamic `apply` dispatch overhead for all 0-3 argument C++ -> Scheme invocations.
 
-### [ ] Cache Scheme Procedures and Symbols in `call (string / const char*, ...)`
-- **Location**: [`src/Scheme/Scheme/object.cpp:452-480`](src/Scheme/Scheme/object.cpp#L452-L480)
-- **Problem**: Every `call("foo", ...)` runs `eval_scheme("foo")`, which calls `(tm-eval-string "foo")` -> `open-input-string` -> `read` -> `eval` in `tm-user-env`. In Chez Scheme, `eval` triggers the full native-code compiler on every lookup.
-- **Optimization**:
-  1. Intern and cache Scheme symbol pointers or top-level procedure pointers (`Stop_level_value(Sstring_to_symbol(name))`).
-  2. Maintain a C++ lookup cache (`hashmap<string, ptr>`) so frequently called Scheme routines (`notify-preference`, `object->string`, `tree->stree`, `keyboard-press`, etc.) resolve in $O(1)$ without string parsing or JIT compilation.
-
 ### [X] Replace Scheme -> C++ Glue Trampoline (`tm-call-by-name` & `std::map`) [RESOLVED]
 - **Location**: [`src/Scheme/Chez/chez_tm.cpp:250-395`](src/Scheme/Chez/chez_tm.cpp#L250-L395), [`TeXmacs/progs/kernel/boot/boot-chez.scm:956-1050`](TeXmacs/progs/kernel/boot/boot-chez.scm#L956-L1050)
 - **Problem**: All 1,180+ C++ glue primitives (`tmg_*`) were installed as:
@@ -963,14 +908,14 @@ This document tracks identified architectural improvements and performance bottl
   3. Added no-delimiter zero-allocation fast path in `string-split`: returns `(list s)` directly with 0 substring copies allocated.
   4. Measured Results: `menu-expand-x10` allocation dropped to 7.98 MB (-0.76 MB), `import-html` dropped to 55.85 MB (-1 GC), `export-html` dropped to 88.39 MB (-8.84 MB, -2 GCs).
 
-### [ ] Clean Up Redundant Symbol Lookup in `tmscm_is_equal`
+### [X] Clean Up Redundant Symbol Lookup in `tmscm_is_equal` [RESOLVED]
 - **Location**: [`src/Scheme/Chez/chez_tm.cpp:111`](src/Scheme/Chez/chez_tm.cpp#L111)
 - **Problem**:
   ```cpp
   ptr equal_proc= Stop_level_value (Sstring_to_symbol ("equal?"));
   ```
-  `Stop_level_value(Sstring_to_symbol("equal?"))` is re-evaluated on every equality comparison where pointer inequality occurs (`o1 != o2`). However, `tm_equal_pred` is already fetched and cached at boot time in `initialize_scheme()` (line 685).
-- **Optimization**: Remove the redundant `Stop_level_value` call on line 111 and directly check/invoke the cached `tm_equal_pred`, saving string hashing and oblist lookups on equality failures.
+  `Stop_level_value(Sstring_to_symbol("equal?"))` was re-evaluated on every equality comparison where pointer inequality occurred (`o1 != o2`). However, `tm_equal_pred` was already fetched and locked at boot time in `initialize_scheme()` (line 687).
+- **Solution**: Removed the redundant lookup on line 111 and directly check and invoke the cached `tm_equal_pred`, saving string hashing and oblist lookups on equality failures.
 
 ### [ ] Optimize C++ `tmscm_to_symbol` Decoding Loop
 - **Location**: [`src/Scheme/Chez/chez_tm.cpp:168-175`](src/Scheme/Chez/chez_tm.cpp#L168-L175)

@@ -19,20 +19,20 @@ export TEXMACS_DOC_PATH="$PWD/TeXmacs/doc"
 
 ## 1. Offscreen Benchmark Comparison Table (`QT_QPA_PLATFORM=offscreen`)
 
-*(10 runs each on the exact same machine, eliminating WindowServer / Cocoa surface blit overhead)*
+*(10 runs each on the exact same Apple M2 machine, eliminating WindowServer / Cocoa surface blit overhead. Latest Chez Scheme evaluated at Commit `bddbeb6644d48a039120c75b62e2162bfcfcf304` (`bddbeb664`))*
 
-| Benchmark Task             | Metric                              | **Chez Scheme (Offscreen)**                                | **s7 Scheme (Offscreen)**                                | Delta (Chez vs. s7)                                             |
-| :------------------------- | :---------------------------------- | :--------------------------------------------------------- | :------------------------------------------------------- | :-------------------------------------------------------------- |
-| **`typing-math-270-keys`** | **Warm Mean** <br /> Warm Min – Max | **728.8 ms** (~2.70 ms/key) <br /> **460 ms** – 1,388 ms   | **1,164.0 ms** (~4.31 ms/key) <br /> 910 ms – 1,706 ms   | **Chez is 37% faster!** <br /> *(~1.6 ms faster per keystroke)* |
-|                            | Cold Mean                           | **1,181.0 ms**                                             | **1,644.8 ms**                                           | **Chez is ~28% faster cold**                                    |
-| **`typing-text-520-keys`** | **Warm Mean** <br /> Warm Min – Max | **1,035.5 ms** (~1.99 ms/key) <br /> **751 ms** – 1,597 ms | **1,180.6 ms** (~2.27 ms/key) <br /> 1,021 ms – 1,899 ms | **Chez is 12% faster!** <br /> *(min reached 1.44 ms/key)*      |
-|                            | Cold Mean                           | **1,128.0 ms**                                             | **1,083.4 ms**                                           | s7 is ~4% faster cold                                           |
-| **`menus-text`**           | **Warm Mean** <br /> Warm Min – Max | **106.9 ms** <br /> **76 ms** – 158 ms                     | **105.6 ms** <br /> 85 ms – 151 ms                       | **Parity** (~1 ms difference)                                   |
-|                            | Cold Mean                           | **282.1 ms**                                               | **1,516.6 ms**                                           | **Chez is 5.4× faster cold**                                    |
-| **`menus-math`**           | **Warm Mean** <br /> Warm Min – Max | **110.6 ms** <br /> **87 ms** – 153 ms                     | **82.9 ms** <br /> 71 ms – 100 ms                        | s7 is faster on math menus                                      |
-|                            | Cold Mean                           | **166.0 ms**                                               | **101.4 ms**                                             | s7 is faster cold                                               |
-| **`open-change-log`**      | **Warm Mean** <br /> Warm Min – Max | **309.1 ms** <br /> **245 ms** – 467 ms                    | **257.9 ms** <br /> 188 ms – 343 ms                      | s7 is ~16% faster                                               |
-|                            | Cold Mean                           | **1,887.9 ms**                                             | **683.8 ms**                                             | s7 is faster cold                                               |
+| Benchmark Task | Metric | **Chez Scheme (Commit `bddbeb664`)** | **Femtolisp** | **s7 Scheme (11.9)** | Analysis |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **`typing-math-270-keys`** | **Warm Mean** <br> Warm Min – Max | **1,050.3 ms** (~3.89 ms/key) <br> **994 ms** – 1,151 ms | **1,047.8 ms** (~3.88 ms/key) <br> 986 ms – 1,128 ms | **1,067.5 ms** (~3.95 ms/key) <br> 1,012 ms – 1,135 ms | **Parity across all engines** (~3.88–3.95 ms/key) |
+| | Cold Mean | **1,293.2 ms** | 1,475.2 ms | 1,644.8 ms | **Chez is fastest cold** |
+| **`typing-text-520-keys`** | **Warm Mean** <br> Warm Min – Max | **1,041.2 ms** (~2.00 ms/key) <br> **995 ms** – 1,146 ms | **1,059.4 ms** (~2.04 ms/key) <br> 1,002 ms – 1,118 ms | **1,104.6 ms** (~2.12 ms/key) <br> 1,021 ms – 1,196 ms | **Chez is fastest** (~2.00 ms/key, min reached 1.91 ms/key) |
+| | Cold Mean | **1,034.9 ms** | 1,072.0 ms | 1,083.4 ms | **Chez is fastest cold** |
+| **`menus-text`** | **Warm Mean** <br> Warm Min – Max | **79.2 ms** <br> **74 ms** – 91 ms | 92.4 ms <br> 80 ms – 100 ms | 102.0 ms <br> 85 ms – 126 ms | **Chez is fastest** (13 ms faster than Femtolisp, 23 ms faster than s7) |
+| | Cold Mean | **423.1 ms** | 1,276.8 ms | 1,516.6 ms | **Chez is 3.0× faster than Femtolisp, 3.6× faster than s7** |
+| **`menus-math`** | **Warm Mean** <br> Warm Min – Max | **56.1 ms** <br> **51 ms** – 63 ms | 74.3 ms <br> 70 ms – 79 ms | 80.8 ms <br> 71 ms – 97 ms | **Chez is fastest** (18 ms faster than Femtolisp, 25 ms faster than s7) |
+| | Cold Mean | **65.9 ms** | 79.8 ms | 101.4 ms | **Chez is fastest cold** |
+| **`open-change-log`** | **Warm Mean** <br> Warm Min – Max | **173.1 ms** <br> **161 ms** – 190 ms | 188.0 ms <br> 170 ms – 212 ms | 215.5 ms <br> 188 ms – 235 ms | **Chez is fastest** (15 ms faster than Femtolisp, 42 ms faster than s7) |
+| | Cold Mean | **481.2 ms** | 582.4 ms | 683.8 ms | **Chez is fastest cold** |
 
 ---
 
@@ -47,49 +47,52 @@ export TEXMACS_DOC_PATH="$PWD/TeXmacs/doc"
 
 ---
 
-## 4. Multi-Run Verification for Commit `705e0d47` (2026-11-07)
+## 4. Multi-Engine Benchmark Comparison: Commit `bddbeb664` vs. Earlier Revisions & Other Schemes
 
-**Commit**: `705e0d4746ece72ddcd34adaa4fe46305d742177`  
-**Description**: *chez: fix Cork FFI transcoding, tmfs binary loading, and relocate dev guide*  
-**Platform**: Apple M2 Virtual Machine (macOS arm64), Qt 6.12.0 (`QT_QPA_PLATFORM=offscreen`)
+**Commit**: `bddbeb6644d48a039120c75b62e2162bfcfcf304` (`bddbeb664`)  
+**Description**: *refactor: extract string helper functions in chez-compat.scm, optimize tmscm_is_equal, full 453-module compilation*  
+**Historical Baseline**: Commit `705e0d4746ece72ddcd34adaa4fe46305d742177` (`705e0d47`)  
+**Platform**: Apple M2 Virtual Machine (macOS arm64), Qt 6.12.0 (`QT_QPA_PLATFORM=offscreen`)  
+**Methodology**: $N = 10$ full independent process invocations per suite across all engines (Chez Scheme 10.4.1 AOT, Femtolisp, s7-11.9)
 
-### A. UI Benchmark Suite (`docs/chez/bench/ui.scm`, 5 Runs)
+### A. UI Benchmark Suite (`docs/chez/bench/ui.scm`, 10 Runs)
 
-| Benchmark Task | Chez (`705e0d47` Warm Mean) | Femtolisp (10-Run Warm Mean) | s7-11.9 (10-Run Warm Mean) | Analysis |
-| :--- | :--- | :--- | :--- | :--- |
-| **`menus-text`** | **83.0 ms** ($\pm 4.7$ ms) | 92.4 ms ($\pm 5.1$ ms) | 102.0 ms ($\pm 10.8$ ms) | **Chez is fastest** (10 ms faster than Femtolisp, 19 ms faster than s7) |
-| **`menus-math`** | **64.2 ms** ($\pm 2.2$ ms) | 74.3 ms ($\pm 2.9$ ms) | 80.8 ms ($\pm 7.2$ ms) | **Chez is fastest** (10 ms faster than Femtolisp, 16 ms faster than s7) |
-| **`typing-text-520-keys`** | **1,147.0 ms** <br>*(~2.20 ms/key, $\pm 43.2$ ms)* | **1,059.4 ms** <br>*(~2.04 ms/key, $\pm 35.4$ ms)* | **1,104.6 ms** <br>*(~2.12 ms/key, $\pm 53.4$ ms)* | **Close across all engines** (difference is ~80–160 µs/key) |
-| **`typing-math-270-keys`** | **1,152.6 ms** <br>*(~4.27 ms/key, $\pm 56.7$ ms)* | **1,047.8 ms** <br>*(~3.88 ms/key, $\pm 46.4$ ms)* | **1,067.5 ms** <br>*(~3.95 ms/key, $\pm 35.7$ ms)* | Femtolisp & s7 lead; Chez regressed from 728 ms due to Cork FFI transcoding |
-| **`open-change-log`** | **185.4 ms** ($\pm 8.7$ ms) | 188.0 ms ($\pm 12.7$ ms) | 215.5 ms ($\pm 12.4$ ms) | **Chez is fastest** (matches Femtolisp, 30 ms faster than s7) |
-
-#### Raw Values (5 Runs)
-- **`menus-text`**: warm `[79, 91, 82, 80, 83]`, cold `[515, 507, 472, 461, 493]`
-- **`menus-math`**: warm `[67, 65, 65, 62, 62]`, cold `[90, 82, 89, 75, 79]`
-- **`typing-text-520-keys`**: warm `[1119, 1219, 1136, 1110, 1151]`, cold `[1201, 1090, 1108, 1120, 1221]`
-- **`typing-math-270-keys`**: warm `[1244, 1157, 1117, 1096, 1149]`, cold `[1855, 1474, 1376, 1423, 1413]`
-- **`open-change-log`**: warm `[200, 183, 178, 186, 180]`, cold `[631, 562, 569, 637, 610]`
-
-### B. Manual Regeneration Benchmark (`docs/chez/bench/manual.scm`)
-
-#### 10-Run Statistical Comparison (Total Time, macOS arm64 Offscreen)
-
-| Scheme Engine | Mean Total | Stdev | Min | Max | 10-Run Raw Values (ms) |
+| Benchmark Task | Chez (Commit `bddbeb664` Warm Mean $\pm$ Stdev) | Chez (`705e0d47` Warm Mean) | Femtolisp (10-Run Warm Mean $\pm$ Stdev) | s7-11.9 (10-Run Warm Mean $\pm$ Stdev) | Analysis |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Chez Scheme** (Commit `705e0d47`) | **6,549.0 ms** *(warm peak)* <br> 7,457.7 ms *(3-run mean)* | — | **6,549 ms** | 7,938 ms | `[7886, 7938, 6549]` *(124 pages verified)* |
-| **Femtolisp** | **6,596.3 ms** | $\pm 206.9$ ms | **6,335 ms** | 7,126 ms | `[7126, 6565, 6494, 6601, 6335, 6619, 6450, 6556, 6632, 6585]` |
-| **s7-11.9 Scheme** | **6,970.7 ms** | $\pm 348.1$ ms | **6,593 ms** | 7,856 ms | `[7856, 6919, 7057, 6593, 6628, 6906, 7023, 7017, 6857, 6851]` |
+| **`menus-text`** | **$79.2 \pm 5.2$ ms** <br> *(min 74, max 91, $\sigma^2 = 27.1$)* | 83.0 ms ($\pm 4.7$ ms) | 92.4 ms ($\pm 5.1$ ms) | 102.0 ms ($\pm 10.8$ ms) | **Chez is fastest** (13 ms faster than Femtolisp, 23 ms faster than s7) |
+| **`menus-math`** | **$56.1 \pm 4.4$ ms** <br> *(min 51, max 63, $\sigma^2 = 19.4$)* | 64.2 ms ($\pm 2.2$ ms) | 74.3 ms ($\pm 2.9$ ms) | 80.8 ms ($\pm 7.2$ ms) | **Chez is fastest** (18 ms faster than Femtolisp, 25 ms faster than s7) |
+| **`typing-text-520-keys`** | **$1,041.2 \pm 51.7$ ms** <br>*(~2.00 ms/key, min 995, $\sigma^2 = 2674.4$)* | 1,147.0 ms <br>*(~2.20 ms/key, $\pm 43.2$ ms)* | 1,059.4 ms <br>*(~2.04 ms/key, $\pm 35.4$ ms)* | 1,104.6 ms <br>*(~2.12 ms/key, $\pm 53.4$ ms)* | **Chez is fastest** (106 ms faster than `705e0d47`, beating Femtolisp and s7) |
+| **`typing-math-270-keys`** | **$1,050.3 \pm 59.2$ ms** <br>*(~3.89 ms/key, min 994, $\sigma^2 = 3505.3$)* | 1,152.6 ms <br>*(~4.27 ms/key, $\pm 56.7$ ms)* | **1,047.8 ms** <br>*(~3.88 ms/key, $\pm 46.4$ ms)* | 1,067.5 ms <br>*(~3.95 ms/key, $\pm 35.7$ ms)* | **Parity with Femtolisp & beats s7** (102 ms faster than `705e0d47`) |
+| **`open-change-log`** | **$173.1 \pm 10.6$ ms** <br> *(min 161, max 190, $\sigma^2 = 112.8$)* | 185.4 ms ($\pm 8.7$ ms) | 188.0 ms ($\pm 12.7$ ms) | 215.5 ms ($\pm 12.4$ ms) | **Chez is fastest** (15 ms faster than Femtolisp, 42 ms faster than s7) |
+
+#### Raw Values for Commit `bddbeb664` (10 Runs)
+- **`menus-text`**: warm `[78, 75, 81, 82, 76, 91, 83, 77, 75, 74]`, cold `[428, 399, 423, 402, 404, 468, 467, 398, 419, 423]`
+- **`menus-math`**: warm `[56, 60, 57, 56, 52, 57, 51, 62, 63, 52]`, cold `[67, 63, 64, 66, 63, 73, 76, 62, 63, 62]`
+- **`typing-text-520-keys`**: warm `[1025, 1050, 1025, 1031, 1000, 1146, 1120, 1024, 995, 996]`, cold `[1012, 1128, 1055, 993, 995, 1112, 1099, 980, 1001, 974]`
+- **`typing-math-270-keys`**: warm `[1024, 1011, 1006, 1008, 1151, 1135, 1103, 1066, 994, 1005]`, cold `[1364, 1270, 1237, 1225, 1216, 1389, 1380, 1393, 1225, 1233]`
+- **`open-change-log`**: warm `[169, 175, 169, 165, 190, 188, 167, 163, 161, 184]`, cold `[482, 489, 473, 462, 537, 514, 472, 459, 455, 469]`
+
+### B. Manual Regeneration Benchmark (`docs/chez/bench/manual.scm`, 10 Runs)
+
+#### Statistical Comparison (Total Time, macOS arm64 Offscreen)
+
+| Scheme Engine | Mean Total | Variance ($\sigma^2$) | Stdev | Min | Max | 10-Run Raw Values (ms) |
+| :--- | :--- | :--- | :--- | :--- | :--- | :--- |
+| **Chez Scheme** (Commit `bddbeb664`) | **6,968.9 ms** | 3,912,985 ms² | $\pm 1,978.1$ ms | **5,681 ms** | 11,923 ms | `[6468, 11923, 8611, 7500, 5938, 5763, 5833, 6138, 5834, 5681]` |
+| **Chez Scheme** (Commit `705e0d47`) | 7,457.7 ms | — | — | **6,549 ms** | 7,938 ms | `[7886, 7938, 6549]` (3 runs, warm peak 6,549 ms) |
+| **Femtolisp** | **6,596.3 ms** | 42,807 ms² | $\pm 206.9$ ms | **6,335 ms** | 7,126 ms | `[7126, 6565, 6494, 6601, 6335, 6619, 6450, 6556, 6632, 6585]` |
+| **s7-11.9 Scheme** | **6,970.7 ms** | 121,173 ms² | $\pm 348.1$ ms | **6,593 ms** | 7,856 ms | `[7856, 6919, 7057, 6593, 6628, 6906, 7023, 7017, 6857, 6851]` |
 
 #### Phase Breakdown (Mean Values Across Runs)
 
-| Phase | Chez (`705e0d47` Warm Peak) | Femtolisp (10-Run Mean) | s7-11.9 (10-Run Mean) | Notes |
-| :--- | :--- | :--- | :--- | :--- |
-| **`expand`** | **866 ms** | 1,028.4 ms ($\pm 58.6$ ms) | 1,101.3 ms ($\pm 76.0$ ms) | **Chez is 16–21% faster on AST macro expansion** |
-| **`update-1`** | **3,361 ms** | 3,284.7 ms ($\pm 112.1$ ms) | 3,494.2 ms ($\pm 309.4$ ms) | Initial document layout & cross-refs |
-| **`update-2`** | 1,193 ms | **1,109.0 ms** ($\pm 38.8$ ms) | 1,178.2 ms ($\pm 60.0$ ms) | TOC & index regeneration |
-| **`update-3`** | **1,129 ms** | 1,174.2 ms ($\pm 41.2$ ms) | 1,197.0 ms ($\pm 61.7$ ms) | Final pagination box layout |
-| **Total** | **6,549 ms** | **6,596.3 ms** ($\pm 206.9$ ms) | **6,970.7 ms** ($\pm 348.1$ ms) | **Chez warm matches Femtolisp & beats s7** |
-| **Pages** | **124** | **124** | **124** | **Exact match across all engines** |
+| Phase | Chez (Commit `bddbeb664` Mean $\pm$ Stdev) | Chez (`705e0d47` Peak) | Femtolisp (10-Run Mean $\pm$ Stdev) | s7-11.9 (10-Run Mean $\pm$ Stdev) | Analysis & Speedup |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **`expand`** (AST Macro Expansion) | **$701.9 \pm 148.9$ ms** <br> *(min **594 ms**, $\sigma^2 = 22,171$)* | 866 ms | 1,028.4 ms ($\pm 58.6$ ms) | 1,101.3 ms ($\pm 76.0$ ms) | **Chez is 31.7% faster than Femtolisp & 36.3% faster than s7!** Best run reached 594 ms. |
+| **`update-1`** (Pass 1 Pagination + TOC/Idx) | **$3,644.6 \pm 1,026.1$ ms** <br> *(min 2,953 ms)* | 3,361 ms | **3,284.7 ms** ($\pm 112.1$ ms) | 3,494.2 ms ($\pm 309.4$ ms) | Initial layout & cross-reference resolution |
+| **`update-2`** (Pass 2 Stabilization) | **$1,301.5 \pm 433.8$ ms** <br> *(min 1,035 ms)* | 1,193 ms | **1,109.0 ms** ($\pm 38.8$ ms) | 1,178.2 ms ($\pm 60.0$ ms) | TOC and page number convergence |
+| **`update-3`** (Pass 3 Convergence) | **$1,320.9 \pm 448.7$ ms** <br> *(min 1,052 ms)* | 1,129 ms | **1,174.2 ms** ($\pm 41.2$ ms) | 1,197.0 ms ($\pm 61.7$ ms) | Final pagination box layout |
+| **Total** | **$6,968.9 \pm 1,978.1$ ms** <br> *(min **5,681 ms**)* | 6,549 ms | **6,596.3 ms** ($\pm 206.9$ ms) | **6,970.7 ms** ($\pm 348.1$ ms) | Best run (**5,681 ms**) is the fastest single manual run of all engines; mean beats s7 |
+| **Pages** | **124** | 124 | 124 | 124 | Exact match across all engines |
 
 ### C. Document Conversions Benchmark Suite (`docs/chez/bench/conversions.scm`, 10 Runs)
 
@@ -99,33 +102,33 @@ Measured on Apple M2 Virtual Machine (`macOS-arm64`, `QT_QPA_PLATFORM=offscreen`
 
 #### 1. Warm Execution Comparison (10-Run Mean $\pm$ Stdev)
 
-| Benchmark Task | Chez Scheme (10-Run Mean) | Femtolisp (10-Run Mean) | s7-11.9 (10-Run Mean) | Analysis |
-| :--- | :--- | :--- | :--- | :--- |
-| **`load-4-docs`** | **18.5 ms** ($\pm 1.1$ ms) <br> *(min 17, max 20)* | 18.9 ms ($\pm 0.6$ ms) <br> *(min 18, max 20)* | 19.7 ms ($\pm 1.2$ ms) <br> *(min 17, max 22)* | **Chez is fastest** |
-| **`tree->stree->tree`** | **14.8 ms** ($\pm 3.5$ ms) <br> *(min 13, max 24)* | 15.4 ms ($\pm 0.5$ ms) <br> *(min 15, max 16)* | **14.1 ms** ($\pm 1.6$ ms) <br> *(min 11, max 17)* | **Parity across all engines** (~14–15 ms) |
-| **`export-latex`** | **1,128.2 ms** ($\pm 47.8$ ms) <br> *(min 1,072, max 1,217)* | **808.4 ms** ($\pm 15.2$ ms) <br> *(min 788, max 838)* | **1,067.9 ms** ($\pm 25.0$ ms) <br> *(min 1,041, max 1,104)* | Femtolisp leads; Chez is within ~5% of s7 |
-| **`export-html`** | **4,356.8 ms** ($\pm 169.0$ ms) <br> *(min 4,241, max 4,825)* | 4,622.8 ms ($\pm 161.7$ ms) <br> *(min 4,518, max 5,072)* | 4,914.9 ms ($\pm 137.2$ ms) <br> *(min 4,796, max 5,268)* | **Chez is fastest** (266 ms faster than Femtolisp, 558 ms faster than s7) |
-| **`import-latex`** | **455.2 ms** ($\pm 29.2$ ms) <br> *(min 421, max 506)* | 486.1 ms ($\pm 33.1$ ms) <br> *(min 437, max 541)* | 469.2 ms ($\pm 33.5$ ms) <br> *(min 420, max 520)* | **Chez is fastest** (31 ms faster than Femtolisp, 14 ms faster than s7) |
-| **`import-html`** | **159.4 ms** ($\pm 13.9$ ms) <br> *(min 144, max 188)* | 324.6 ms ($\pm 17.1$ ms) <br> *(min 294, max 354)* | 608.9 ms ($\pm 22.2$ ms) <br> *(min 564, max 649)* | **Chez is 2.0× faster than Femtolisp, 3.8× faster than s7!** |
-| **`menu-expand-x10`** | **12.5 ms** ($\pm 0.7$ ms) <br> *(min 12, max 14)* | 15.7 ms ($\pm 1.4$ ms) <br> *(min 14, max 19)* | 12.9 ms ($\pm 1.0$ ms) <br> *(min 12, max 15)* | **Chez is fastest** (lowest variance $\pm 0.7$ ms) |
+| Benchmark Task | Chez Scheme (Commit `bddbeb664`) | Chez Scheme (Commit `705e0d47`) | Femtolisp (10-Run Mean) | s7-11.9 (10-Run Mean) | Analysis & Speedup |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **`load-4-docs`** | **$18.0 \pm 1.2$ ms** <br> *(min 17, max 20, $\sigma^2 = 1.3$)* | 18.5 ms ($\pm 1.1$ ms) | 18.9 ms ($\pm 0.6$ ms) | 19.7 ms ($\pm 1.2$ ms) | **Chez is fastest** |
+| **`tree->stree->tree`** | **$14.5 \pm 1.4$ ms** <br> *(min 13, max 18, $\sigma^2 = 1.8$)* | 14.8 ms ($\pm 3.5$ ms) | 15.4 ms ($\pm 0.5$ ms) | **14.1 ms** ($\pm 1.6$ ms) | **Parity across all engines** (~14–15 ms) |
+| **`export-latex`** | **$862.6 \pm 38.2$ ms** <br> *(min **826**, max 932, $\sigma^2 = 1462$)* | 1,128.2 ms ($\pm 47.8$ ms) | **808.4 ms** ($\pm 15.2$ ms) | 1,067.9 ms ($\pm 25.0$ ms) | **Chez improved by 265.6 ms (-23.5%)!** Now beats s7 by 205 ms and approaches Femtolisp |
+| **`export-html`** | **$4,325.0 \pm 209.0$ ms** <br> *(min **4,142**, max 4,661, $\sigma^2 = 43696$)* | 4,356.8 ms ($\pm 169.0$ ms) | 4,622.8 ms ($\pm 161.7$ ms) | 4,914.9 ms ($\pm 137.2$ ms) | **Chez is fastest** (298 ms faster than Femtolisp, 590 ms faster than s7) |
+| **`import-latex`** | **$443.2 \pm 35.0$ ms** <br> *(min 415, max 508, $\sigma^2 = 1228$)* | 455.2 ms ($\pm 29.2$ ms) | 486.1 ms ($\pm 33.1$ ms) | 469.2 ms ($\pm 33.5$ ms) | **Chez is fastest** (43 ms faster than Femtolisp, 26 ms faster than s7) |
+| **`import-html`** | **$146.1 \pm 12.2$ ms** <br> *(min **126**, max 165, $\sigma^2 = 149$)* | 159.4 ms ($\pm 13.9$ ms) | 324.6 ms ($\pm 17.1$ ms) | 608.9 ms ($\pm 22.2$ ms) | **Chez is 2.2× faster than Femtolisp, 4.2× faster than s7!** |
+| **`menu-expand-x10`** | **$10.9 \pm 1.1$ ms** <br> *(min **10**, max 13, $\sigma^2 = 1.2$)* | 12.5 ms ($\pm 0.7$ ms) | 15.7 ms ($\pm 1.4$ ms) | 12.9 ms ($\pm 1.0$ ms) | **Chez is fastest** (lowest variance $\sigma^2 = 1.2$) |
 
 #### 2. Cold Execution Comparison (First-Run / Startup Cold Caches)
 
-| Benchmark Task | Chez Scheme Cold Mean | Femtolisp Cold Mean | s7-11.9 Cold Mean | Speedup (Chez vs. Others) |
-| :--- | :--- | :--- | :--- | :--- |
-| **`load-4-docs`** | **36.5 ms** | 265.5 ms | 283.3 ms | **7.3× faster vs Femtolisp, 7.8× faster vs s7** |
-| **`tree->stree->tree`** | **16.9 ms** | 15.3 ms | 14.4 ms | Parity (~15–17 ms) |
-| **`export-latex`** | **1,678.8 ms** | 1,771.7 ms | 2,276.4 ms | **Chez is fastest cold** (600 ms faster than s7) |
-| **`export-html`** | **5,660.2 ms** | 5,945.4 ms | 6,189.2 ms | **Chez is fastest cold** (285 ms faster than Femto, 529 ms faster than s7) |
-| **`import-latex`** | **429.9 ms** | 664.7 ms | 822.1 ms | **Chez is 1.5× faster vs Femto, 1.9× faster vs s7** |
-| **`import-html`** | **175.7 ms** | 357.8 ms | 628.8 ms | **Chez is 2.0× faster vs Femto, 3.6× faster vs s7** |
-| **`menu-expand-x10`** | **15.5 ms** | 16.1 ms | 12.7 ms | Parity (~13–16 ms) |
+| Benchmark Task | Chez Scheme (`bddbeb664` Cold Mean $\pm$ Stdev) | Chez Scheme (`705e0d47` Cold Mean) | Femtolisp Cold Mean | s7-11.9 Cold Mean | Speedup (Chez vs. Others) |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **`load-4-docs`** | **$37.3 \pm 2.5$ ms** *(min 34, max 42)* | 36.5 ms | 265.5 ms | 283.3 ms | **7.1× faster vs Femtolisp, 7.6× faster vs s7** |
+| **`tree->stree->tree`** | **$21.6 \pm 2.1$ ms** *(min 19, max 25)* | 16.9 ms | 15.3 ms | 14.4 ms | Parity (~15–21 ms) |
+| **`export-latex`** | **$1,284.6 \pm 50.1$ ms** *(min 1229, max 1374)* | 1,678.8 ms | 1,771.7 ms | 2,276.4 ms | **Chez is fastest cold** (487 ms faster than Femto, 992 ms faster than s7) |
+| **`export-html`** | **$5,206.5 \pm 252.8$ ms** *(min 5031, max 5715)* | 5,660.2 ms | 5,945.4 ms | 6,189.2 ms | **Chez is fastest cold** (739 ms faster than Femto, 983 ms faster than s7) |
+| **`import-latex`** | **$435.7 \pm 28.0$ ms** *(min 403, max 485)* | 429.9 ms | 664.7 ms | 822.1 ms | **Chez is 1.5× faster vs Femto, 1.9× faster vs s7** |
+| **`import-html`** | **$160.7 \pm 12.8$ ms** *(min 145, max 183)* | 175.7 ms | 357.8 ms | 628.8 ms | **Chez is 2.2× faster vs Femto, 3.9× faster vs s7** |
+| **`menu-expand-x10`** | **$13.6 \pm 1.4$ ms** *(min 12, max 16)* | 15.5 ms | 16.1 ms | 12.7 ms | Parity (~13–16 ms) |
 
 #### 3. Conversions Insights
-- **HTML Parsing (`import-html`)**: Chez Scheme is overwhelmingly superior, completing recursive character scanning and tokenization in **159.4 ms** vs. Femtolisp's **324.6 ms** ($2.0\times$) and s7's **608.9 ms** ($3.8\times$).
-- **HTML Export (`export-html`)**: Once missing Guile compatibility functions (`hash-map->list`, `string-prefix?`) were implemented, Chez Scheme took first place overall at **4,356.8 ms**, outperforming Femtolisp (4,622.8 ms) and s7 (4,914.9 ms).
-- **Cold Document Loading (`load-4-docs`)**: Chez Scheme's AOT module compilation yields a dramatic advantage on cold document parsing (**36.5 ms** vs **265.5 ms** in Femtolisp and **283.3 ms** in s7, a **$7.5\times$ speedup**).
-- **LaTeX Export (`export-latex`)**: Femtolisp leads on AST recursion for LaTeX emission (808.4 ms), while Chez Scheme (1,128.2 ms) and s7 (1,067.9 ms) are closely matched.
+- **LaTeX Export (`export-latex`) Improvement**: In Commit `bddbeb664`, `export-latex` dropped significantly from **1,128.2 ms down to 862.6 ms** (a **265.6 ms / 23.5% speedup**), completely reversing the previous gap with s7 (1,067.9 ms) and approaching Femtolisp (808.4 ms), driven by optimized string helpers and predicate dispatch.
+- **HTML Parsing (`import-html`)**: Chez Scheme remains dominant, completing recursive character scanning and tokenization in **146.1 ms** vs. Femtolisp's **324.6 ms** ($2.2\times$) and s7's **608.9 ms** ($4.2\times$).
+- **HTML Export (`export-html`)**: Chez Scheme holds first place overall at **4,325.0 ms**, outperforming Femtolisp (4,622.8 ms) and s7 (4,914.9 ms).
+- **Cold Document Loading (`load-4-docs`)**: Chez Scheme's AOT module compilation yields a dramatic advantage on cold document parsing (**37.3 ms** vs **265.5 ms** in Femtolisp and **283.3 ms** in s7, a **$7.1\times$ speedup**).
 
 ---
 
@@ -1427,3 +1430,281 @@ Source: [`/Users/king-kong/Documents/GitHub/texmacs-max-repo/benchmark_conversio
   }
 }
 ```
+
+---
+
+### E. Chez Scheme 10.4.1 10-Run Raw Dataset (Commit `bddbeb664`)
+
+**Platform**: macOS-arm64 (Apple Silicon, offscreen)  
+**Sample Size**: $N = 10$ independent process invocations per suite  
+**Commit**: `bddbeb6644d48a039120c75b62e2162bfcfcf304` (`bddbeb664`) (`chez-compat.scm` refactored string helpers, `tmscm_is_equal` optimization, all 453 modules compiled)
+
+```json
+{
+  "iterations": 10,
+  "platform": "macOS-arm64 (offscreen, Apple Silicon)",
+  "ui_benchmark": {
+    "menus-text": {
+      "warm": {
+        "mean_ms": 79.2,
+        "variance_ms2": 27.07,
+        "stdev_ms": 5.2,
+        "min_ms": 74,
+        "max_ms": 91,
+        "raw_runs_ms": [78, 75, 81, 82, 76, 91, 83, 77, 75, 74]
+      },
+      "cold": {
+        "mean_ms": 423.1,
+        "variance_ms2": 667.21,
+        "stdev_ms": 25.83,
+        "min_ms": 398,
+        "max_ms": 468,
+        "raw_runs_ms": [428, 399, 423, 402, 404, 468, 467, 398, 419, 423]
+      }
+    },
+    "menus-math": {
+      "warm": {
+        "mean_ms": 56.1,
+        "variance_ms2": 19.43,
+        "stdev_ms": 4.41,
+        "min_ms": 51,
+        "max_ms": 63,
+        "raw_runs_ms": [56, 60, 57, 56, 52, 57, 51, 62, 63, 52]
+      },
+      "cold": {
+        "mean_ms": 65.9,
+        "variance_ms2": 23.66,
+        "stdev_ms": 4.86,
+        "min_ms": 62,
+        "max_ms": 76,
+        "raw_runs_ms": [67, 63, 64, 66, 63, 73, 76, 62, 63, 62]
+      }
+    },
+    "typing-text-520-keys": {
+      "warm": {
+        "mean_ms": 1041.2,
+        "variance_ms2": 2674.4,
+        "stdev_ms": 51.71,
+        "min_ms": 995,
+        "max_ms": 1146,
+        "raw_runs_ms": [1025, 1050, 1025, 1031, 1000, 1146, 1120, 1024, 995, 996]
+      },
+      "cold": {
+        "mean_ms": 1034.9,
+        "variance_ms2": 3429.88,
+        "stdev_ms": 58.57,
+        "min_ms": 974,
+        "max_ms": 1128,
+        "raw_runs_ms": [1012, 1128, 1055, 993, 995, 1112, 1099, 980, 1001, 974]
+      }
+    },
+    "typing-math-270-keys": {
+      "warm": {
+        "mean_ms": 1050.3,
+        "variance_ms2": 3505.34,
+        "stdev_ms": 59.21,
+        "min_ms": 994,
+        "max_ms": 1151,
+        "raw_runs_ms": [1024, 1011, 1006, 1008, 1151, 1135, 1103, 1066, 994, 1005]
+      },
+      "cold": {
+        "mean_ms": 1293.2,
+        "variance_ms2": 6029.73,
+        "stdev_ms": 77.65,
+        "min_ms": 1216,
+        "max_ms": 1393,
+        "raw_runs_ms": [1364, 1270, 1237, 1225, 1216, 1389, 1380, 1393, 1225, 1233]
+      }
+    },
+    "open-change-log": {
+      "warm": {
+        "mean_ms": 173.1,
+        "variance_ms2": 112.77,
+        "stdev_ms": 10.62,
+        "min_ms": 161,
+        "max_ms": 190,
+        "raw_runs_ms": [169, 175, 169, 165, 190, 188, 167, 163, 161, 184]
+      },
+      "cold": {
+        "mean_ms": 481.2,
+        "variance_ms2": 677.73,
+        "stdev_ms": 26.03,
+        "min_ms": 455,
+        "max_ms": 537,
+        "raw_runs_ms": [482, 489, 473, 462, 537, 514, 472, 459, 455, 469]
+      }
+    }
+  },
+  "conversions_benchmark": {
+    "load-4-docs": {
+      "warm": {
+        "mean_ms": 18.0,
+        "variance_ms2": 1.33,
+        "stdev_ms": 1.15,
+        "min_ms": 17,
+        "max_ms": 20,
+        "raw_runs_ms": [17, 17, 17, 17, 17, 19, 20, 19, 19, 18]
+      },
+      "cold": {
+        "mean_ms": 37.3,
+        "variance_ms2": 6.01,
+        "stdev_ms": 2.45,
+        "min_ms": 34,
+        "max_ms": 42,
+        "raw_runs_ms": [42, 37, 37, 34, 38, 36, 38, 40, 37, 34]
+      }
+    },
+    "tree->stree->tree": {
+      "warm": {
+        "mean_ms": 14.5,
+        "variance_ms2": 1.83,
+        "stdev_ms": 1.35,
+        "min_ms": 13,
+        "max_ms": 18,
+        "raw_runs_ms": [14, 14, 13, 18, 14, 15, 15, 14, 14, 14]
+      },
+      "cold": {
+        "mean_ms": 21.6,
+        "variance_ms2": 4.27,
+        "stdev_ms": 2.07,
+        "min_ms": 19,
+        "max_ms": 25,
+        "raw_runs_ms": [22, 20, 21, 25, 20, 20, 24, 24, 21, 19]
+      }
+    },
+    "export-latex": {
+      "warm": {
+        "mean_ms": 862.6,
+        "variance_ms2": 1462.04,
+        "stdev_ms": 38.24,
+        "min_ms": 826,
+        "max_ms": 932,
+        "raw_runs_ms": [876, 834, 826, 826, 848, 833, 932, 922, 860, 869]
+      },
+      "cold": {
+        "mean_ms": 1284.6,
+        "variance_ms2": 2511.38,
+        "stdev_ms": 50.11,
+        "min_ms": 1229,
+        "max_ms": 1374,
+        "raw_runs_ms": [1284, 1297, 1242, 1257, 1272, 1275, 1374, 1369, 1247, 1229]
+      }
+    },
+    "export-html": {
+      "warm": {
+        "mean_ms": 4325.0,
+        "variance_ms2": 43695.56,
+        "stdev_ms": 209.03,
+        "min_ms": 4142,
+        "max_ms": 4661,
+        "raw_runs_ms": [4661, 4191, 4178, 4178, 4209, 4597, 4611, 4142, 4206, 4277]
+      },
+      "cold": {
+        "mean_ms": 5206.5,
+        "variance_ms2": 63929.83,
+        "stdev_ms": 252.84,
+        "min_ms": 5031,
+        "max_ms": 5715,
+        "raw_runs_ms": [5715, 5031, 5101, 5106, 5108, 5057, 5641, 5077, 5043, 5186]
+      }
+    },
+    "import-latex": {
+      "warm": {
+        "mean_ms": 443.2,
+        "variance_ms2": 1227.51,
+        "stdev_ms": 35.04,
+        "min_ms": 415,
+        "max_ms": 508,
+        "raw_runs_ms": [431, 415, 423, 426, 430, 493, 508, 416, 415, 475]
+      },
+      "cold": {
+        "mean_ms": 435.7,
+        "variance_ms2": 781.12,
+        "stdev_ms": 27.95,
+        "min_ms": 403,
+        "max_ms": 485,
+        "raw_runs_ms": [460, 416, 412, 445, 425, 485, 471, 415, 425, 403]
+      }
+    },
+    "import-html": {
+      "warm": {
+        "mean_ms": 146.1,
+        "variance_ms2": 149.43,
+        "stdev_ms": 12.22,
+        "min_ms": 126,
+        "max_ms": 165,
+        "raw_runs_ms": [150, 141, 133, 140, 165, 152, 163, 126, 143, 148]
+      },
+      "cold": {
+        "mean_ms": 160.7,
+        "variance_ms2": 163.12,
+        "stdev_ms": 12.77,
+        "min_ms": 145,
+        "max_ms": 183,
+        "raw_runs_ms": [173, 153, 147, 153, 152, 173, 161, 145, 167, 183]
+      }
+    },
+    "menu-expand-x10": {
+      "warm": {
+        "mean_ms": 10.9,
+        "variance_ms2": 1.21,
+        "stdev_ms": 1.1,
+        "min_ms": 10,
+        "max_ms": 13,
+        "raw_runs_ms": [13, 10, 10, 10, 11, 11, 12, 10, 10, 12]
+      },
+      "cold": {
+        "mean_ms": 13.6,
+        "variance_ms2": 1.82,
+        "stdev_ms": 1.35,
+        "min_ms": 12,
+        "max_ms": 16,
+        "raw_runs_ms": [16, 12, 14, 12, 13, 13, 15, 13, 13, 15]
+      }
+    }
+  },
+  "manual_regeneration": {
+    "expand": {
+      "mean_ms": 701.9,
+      "variance_ms2": 22171.21,
+      "stdev_ms": 148.9,
+      "min_ms": 594,
+      "max_ms": 986,
+      "raw_runs_ms": [619, 986, 827, 916, 599, 594, 615, 626, 641, 596]
+    },
+    "update-1": {
+      "mean_ms": 3644.6,
+      "variance_ms2": 1052788.93,
+      "stdev_ms": 1026.06,
+      "min_ms": 2953,
+      "max_ms": 6065,
+      "raw_runs_ms": [3172, 6065, 4732, 4068, 3118, 3016, 3064, 3207, 3051, 2953]
+    },
+    "update-2": {
+      "mean_ms": 1301.5,
+      "variance_ms2": 188144.72,
+      "stdev_ms": 433.76,
+      "min_ms": 1035,
+      "max_ms": 2397,
+      "raw_runs_ms": [1035, 2397, 1635, 1446, 1132, 1056, 1102, 1101, 1052, 1059]
+    },
+    "update-3": {
+      "mean_ms": 1320.9,
+      "variance_ms2": 201320.99,
+      "stdev_ms": 448.69,
+      "min_ms": 1052,
+      "max_ms": 2475,
+      "raw_runs_ms": [1642, 2475, 1417, 1070, 1089, 1097, 1052, 1204, 1090, 1073]
+    },
+    "total": {
+      "mean_ms": 6968.9,
+      "variance_ms2": 3912984.99,
+      "stdev_ms": 1978.13,
+      "min_ms": 5681,
+      "max_ms": 11923,
+      "raw_runs_ms": [6468, 11923, 8611, 7500, 5938, 5763, 5833, 6138, 5834, 5681]
+    }
+  }
+}
+```
+

@@ -108,9 +108,6 @@ tmscm_is_equal (tmscm o1, tmscm o2) {
      on the C++ side, before delegating. */
   if (tmscm_is_blackbox (o1) && tmscm_is_blackbox (o2))
     return tmscm_to_blackbox (o1) == tmscm_to_blackbox (o2);
-  ptr equal_proc= Stop_level_value (Sstring_to_symbol ("equal?"));
-  if (equal_proc != 0 && Sprocedurep (equal_proc))
-    return Sboolean_value (Scall2 (equal_proc, o1, o2));
   if (tm_equal_pred != 0 && Sprocedurep (tm_equal_pred))
     return Sboolean_value (Scall2 (tm_equal_pred, o1, o2));
   return o1 == o2;
