@@ -993,11 +993,41 @@
 
 ;; ---- Compilation ----------------------------------------------------------
 
+;; Profiling instrumentation for compile-file.  Chez accepts #f, #t, 'source,
+;; or 'block; #t is a synonym for 'source.  The value is normalized here so an
+;; unset variable leaves the production build byte-identical.  Source profiling
+;; records execution counts only (there is no byte/allocation mode); the HTML
+;; annotates the generated module under the boot directory.
+(define *compile-profile-mode*
+  (let ((value (getenv "TEXMACS_COMPILE_PROFILE")))
+    (cond ((not value) #f)
+          ((string=? value "") #f)
+          ((member value '("0" "false" "no")) #f)
+          ((member value '("source" "block")) (string->symbol value))
+          ((member value '("1" "t" "#t" "true")) #t)
+          (else (error 'compile-texmacs
+                       "TEXMACS_COMPILE_PROFILE must be source, block, or #t"
+                       value)))))
+
+;; Optional module filter: only paths with this prefix are instrumented.  It
+;; keeps profiling off the kernel (where source annotations can leak into
+;; lazily evaluated forms) and on the subsystem under study.
+(define *compile-profile-filter*
+  (let ((value (getenv "TEXMACS_COMPILE_PROFILE_FILTER")))
+    (and value (not (string=? value "")) value)))
+
+(define (compile-profile-mode-for rel-path)
+  (and *compile-profile-mode*
+       (or (not *compile-profile-filter*)
+           (string-prefix? *compile-profile-filter* rel-path))
+       *compile-profile-mode*))
+
 (define (compile-transpiled-module! rel-path trans-scm out-so mod-sym)
   (dynamic-wind
     void
     (lambda ()
-      (parameterize ((compile-export-mode? #t))
+      (parameterize ((compile-export-mode? #t)
+                     (compile-profile (compile-profile-mode-for rel-path)))
         (compile-file trans-scm out-so))
       (let ((hash (compute-file-hash out-so)))
         (when hash
@@ -1178,7 +1208,10 @@
           (log-progress-pct "Building"
                             "aggregate kernel snapshot texmacs-user.so")
           (write-kernel-snapshot! user-scm)
-          (compile-file user-scm user-so)
+          (parameterize ((compile-profile
+                          (and (not *compile-profile-filter*)
+                               *compile-profile-mode*)))
+            (compile-file user-scm user-so))
           (load user-so)
           (log-progress-pct "Verified" "texmacs-user.so")))))
 

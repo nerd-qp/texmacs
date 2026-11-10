@@ -34,6 +34,7 @@ misc/benchmark/gbench
 build-guile
 build-chez
 build-texmacos
+build-profile
 fakehome
 dist
 

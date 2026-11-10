@@ -119,7 +119,6 @@
               (caddr source)))))
 
 (define (procedure-documentation p) #f)
-(define (func? p kind) (procedure? p))
 
 (define (procedure-arity p)
   (if (procedure? p)

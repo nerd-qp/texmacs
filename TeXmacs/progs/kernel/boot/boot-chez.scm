@@ -801,8 +801,24 @@
     (let loop ((x x))
       (cond
         ((bytevector? x) (transform x))
-        ((pair? x)       (cons (loop (car x)) (loop (cdr x))))
-        ((vector? x)     (vector-map loop x))
+        ((pair? x)
+         (let ((a (loop (car x)))
+               (d (loop (cdr x))))
+           (if (and (eq? a (car x)) (eq? d (cdr x)))
+               x
+               (cons a d))))
+        ((vector? x)
+         (let* ((n (vector-length x))
+                (v2 (make-vector n))
+                (changed? #f))
+           (let vloop ((i 0))
+             (if (= i n)
+                 (if changed? v2 x)
+                 (let ((val (loop (vector-ref x i))))
+                   (unless (eq? val (vector-ref x i))
+                     (set! changed? #t))
+                   (vector-set! v2 i val)
+                   (vloop (+ i 1)))))))
         (else x)))))
 
 (define (recur-transcode-string transform)
@@ -810,8 +826,24 @@
     (let loop ((x x))
       (cond
         ((string? x) (transform x))
-        ((pair? x)   (cons (loop (car x)) (loop (cdr x))))
-        ((vector? x) (vector-map loop x))
+        ((pair? x)
+         (let ((a (loop (car x)))
+               (d (loop (cdr x))))
+           (if (and (eq? a (car x)) (eq? d (cdr x)))
+               x
+               (cons a d))))
+        ((vector? x)
+         (let* ((n (vector-length x))
+                (v2 (make-vector n))
+                (changed? #f))
+           (let vloop ((i 0))
+             (if (= i n)
+                 (if changed? v2 x)
+                 (let ((val (loop (vector-ref x i))))
+                   (unless (eq? val (vector-ref x i))
+                     (set! changed? #t))
+                   (vector-set! v2 i val)
+                   (vloop (+ i 1)))))))
         (else x)))))
 
 (define recur-utf8->string (recur-transcode-bytevector utf8-bytes->string))
@@ -956,6 +988,19 @@
 (define raw-tm-call-by-name
   (foreign-procedure "tm-call-by-name" (string scheme-object) scheme-object))
 
+;; Fast fixed-arity trampolines into C++ glue array table
+(define tm-fast-call-0  (foreign-procedure "tm_fast_call_0"  (int) scheme-object))
+(define tm-fast-call-1  (foreign-procedure "tm_fast_call_1"  (int scheme-object) scheme-object))
+(define tm-fast-call-2  (foreign-procedure "tm_fast_call_2"  (int scheme-object scheme-object) scheme-object))
+(define tm-fast-call-3  (foreign-procedure "tm_fast_call_3"  (int scheme-object scheme-object scheme-object) scheme-object))
+(define tm-fast-call-4  (foreign-procedure "tm_fast_call_4"  (int scheme-object scheme-object scheme-object scheme-object) scheme-object))
+(define tm-fast-call-5  (foreign-procedure "tm_fast_call_5"  (int scheme-object scheme-object scheme-object scheme-object scheme-object) scheme-object))
+(define tm-fast-call-6  (foreign-procedure "tm_fast_call_6"  (int scheme-object scheme-object scheme-object scheme-object scheme-object scheme-object) scheme-object))
+(define tm-fast-call-7  (foreign-procedure "tm_fast_call_7"  (int scheme-object scheme-object scheme-object scheme-object scheme-object scheme-object scheme-object) scheme-object))
+(define tm-fast-call-8  (foreign-procedure "tm_fast_call_8"  (int scheme-object scheme-object scheme-object scheme-object scheme-object scheme-object scheme-object scheme-object) scheme-object))
+(define tm-fast-call-9  (foreign-procedure "tm_fast_call_9"  (int scheme-object scheme-object scheme-object scheme-object scheme-object scheme-object scheme-object scheme-object scheme-object) scheme-object))
+(define tm-fast-call-10 (foreign-procedure "tm_fast_call_10" (int scheme-object scheme-object scheme-object scheme-object scheme-object scheme-object scheme-object scheme-object scheme-object scheme-object) scheme-object))
+
 (define (tm-call-by-name name args)
   (let* ((in-trans
           (cond
@@ -986,17 +1031,59 @@
 ;; [C++] Called once per C++ glue function from chez_install_procedure().
 ;; Failure is loud and per-name rather than aborting the whole glue pass.
 ;; Procedures with strictly non-string signatures are routed directly to
-;; raw-tm-call-by-name with zero string/bytevector transcoding overhead.
-(define (tm-install-procedure! name)
+;; fixed-arity tm_fast_call_N with zero string/bytevector transcoding and zero
+;; rest-arg list allocation overhead.
+(define (tm-install-procedure! name . rest)
   (guard (e (else (begin
                    (display (list 'INSTALL-FAILED name (tm-error-message e)))
                    (newline)
                    #f)))
-    (let ((sym (string->symbol name)))
+    (let ((sym (string->symbol name))
+          (id (and (not (getenv "TEXMACS_NO_FAST_FFI")) (pair? rest) (car rest)))
+          (arity (and (pair? rest) (pair? (cdr rest)) (cadr rest))))
       (define-top-level-value sym
         (if (hashtable-ref *raw-ffi-table* sym #f)
-            (lambda args (raw-tm-call-by-name name args))
-            (lambda args (tm-call-by-name name args)))
+            (if id
+                (case arity
+                  ((0) (lambda () (tm-fast-call-0 id)))
+                  ((1) (lambda (a1) (tm-fast-call-1 id a1)))
+                  ((2) (lambda (a1 a2) (tm-fast-call-2 id a1 a2)))
+                  ((3) (lambda (a1 a2 a3) (tm-fast-call-3 id a1 a2 a3)))
+                  ((4) (lambda (a1 a2 a3 a4) (tm-fast-call-4 id a1 a2 a3 a4)))
+                  ((5) (lambda (a1 a2 a3 a4 a5) (tm-fast-call-5 id a1 a2 a3 a4 a5)))
+                  ((6) (lambda (a1 a2 a3 a4 a5 a6) (tm-fast-call-6 id a1 a2 a3 a4 a5 a6)))
+                  ((7) (lambda (a1 a2 a3 a4 a5 a6 a7) (tm-fast-call-7 id a1 a2 a3 a4 a5 a6 a7)))
+                  ((8) (lambda (a1 a2 a3 a4 a5 a6 a7 a8) (tm-fast-call-8 id a1 a2 a3 a4 a5 a6 a7 a8)))
+                  ((9) (lambda (a1 a2 a3 a4 a5 a6 a7 a8 a9) (tm-fast-call-9 id a1 a2 a3 a4 a5 a6 a7 a8 a9)))
+                  ((10) (lambda (a1 a2 a3 a4 a5 a6 a7 a8 a9 a10) (tm-fast-call-10 id a1 a2 a3 a4 a5 a6 a7 a8 a9 a10)))
+                  (else (lambda args (raw-tm-call-by-name name args))))
+                (lambda args (raw-tm-call-by-name name args)))
+            ;; For non-raw procedures, also use fast fixed-arity call where applicable
+            (if id
+                (let* ((in-trans
+                        (cond
+                          ((member name '("cork->utf8" "cork->sourcecode" "escape-to-ascii"))
+                           recur-string->cork)
+                          (else recur-string->utf8)))
+                       (out-trans
+                        (cond
+                          ((member name '("utf8->cork" "sourcecode->cork"))
+                           recur-cork->string)
+                          (else recur-utf8->string))))
+                  (case arity
+                    ((0) (lambda () (out-trans (tm-fast-call-0 id))))
+                    ((1) (lambda (a1) (out-trans (tm-fast-call-1 id (in-trans a1)))))
+                    ((2) (lambda (a1 a2) (out-trans (tm-fast-call-2 id (in-trans a1) (in-trans a2)))))
+                    ((3) (lambda (a1 a2 a3) (out-trans (tm-fast-call-3 id (in-trans a1) (in-trans a2) (in-trans a3)))))
+                    ((4) (lambda (a1 a2 a3 a4) (out-trans (tm-fast-call-4 id (in-trans a1) (in-trans a2) (in-trans a3) (in-trans a4)))))
+                    ((5) (lambda (a1 a2 a3 a4 a5) (out-trans (tm-fast-call-5 id (in-trans a1) (in-trans a2) (in-trans a3) (in-trans a4) (in-trans a5)))))
+                    ((6) (lambda (a1 a2 a3 a4 a5 a6) (out-trans (tm-fast-call-6 id (in-trans a1) (in-trans a2) (in-trans a3) (in-trans a4) (in-trans a5) (in-trans a6)))))
+                    ((7) (lambda (a1 a2 a3 a4 a5 a6 a7) (out-trans (tm-fast-call-7 id (in-trans a1) (in-trans a2) (in-trans a3) (in-trans a4) (in-trans a5) (in-trans a6) (in-trans a7)))))
+                    ((8) (lambda (a1 a2 a3 a4 a5 a6 a7 a8) (out-trans (tm-fast-call-8 id (in-trans a1) (in-trans a2) (in-trans a3) (in-trans a4) (in-trans a5) (in-trans a6) (in-trans a7) (in-trans a8)))))
+                    ((9) (lambda (a1 a2 a3 a4 a5 a6 a7 a8 a9) (out-trans (tm-fast-call-9 id (in-trans a1) (in-trans a2) (in-trans a3) (in-trans a4) (in-trans a5) (in-trans a6) (in-trans a7) (in-trans a8) (in-trans a9)))))
+                    ((10) (lambda (a1 a2 a3 a4 a5 a6 a7 a8 a9 a10) (out-trans (tm-fast-call-10 id (in-trans a1) (in-trans a2) (in-trans a3) (in-trans a4) (in-trans a5) (in-trans a6) (in-trans a7) (in-trans a8) (in-trans a9) (in-trans a10)))))
+                    (else (lambda args (tm-call-by-name name args)))))
+                (lambda args (tm-call-by-name name args))))
         (interaction-environment)))
     #t))
 

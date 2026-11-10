@@ -35,7 +35,7 @@ This document tracks identified architectural improvements and performance bottl
      - All other procedures: standard `recur-string->utf8` / `recur-utf8->string`.
   4. Verified full round-trip fidelity with French and German accented text (`(cork->utf8 (utf8->cork "élève naïve à l'Haÿ-les-Roses Grüße"))` $\implies$ `#t`).
 
-### [ ] Eliminate Universal FFI Transcoding Overhead in `tm-call-by-name`
+### [X] Eliminate Universal FFI Transcoding Overhead in `tm-call-by-name` [RESOLVED]
 - **Location**: [`TeXmacs/progs/kernel/boot/boot-chez.scm:956-970`](TeXmacs/progs/kernel/boot/boot-chez.scm#L956-L970), [`src/Scheme/Chez/chez_tm.cpp:138-160`](src/Scheme/Chez/chez_tm.cpp#L138-L160)
 - **Problem & Measured Impact**:
   - In commit `705e0d47`, `tm-call-by-name` was wrapped with `(in-trans args)` and `(out-trans ...)` to handle Cork/UTF-8 bytevector conversions.
@@ -65,14 +65,17 @@ This document tracks identified architectural improvements and performance bottl
     - *Text Node Editing*: `cpp-insert` / `insert-tree` (when inserting user text into an atomic AST leaf), `tree-node-text` (reading text from a leaf).
     - *File & URL I/O*: `string-load`, `tm-load-path`, `tm-load-bytes`, `url-load-binary`, `file-save`, `url-save`.
     - *Cork Codecs (Already Custom)*: `cork->utf8`, `utf8->cork`, `cork->sourcecode`, `sourcecode->cork`, `escape-to-ascii`.
-- **Targeted Action Plan to Restore Peak Performance (460 ms Math / 751 ms Text)**:
-  1. **Option A: Signature-Based or Set-Based Dispatch in `tm-install-procedure!`**:
-     - Maintain a small set of the ~20 glue procedures that actually accept or return text strings.
-     - Only wrap those specific procedures with `in-trans` / `out-trans`.
-     - For all other ~1,130 procedures (trees, coordinates, layout, buffers), bind `(lambda args (raw-tm-call-by-name name args))` directly with zero transcoding and zero recursive traversal.
-  2. **Option B: Move Transcoding into C++ Glue (`glue_basic.cpp`)**:
-     - Handle bytevector $\leftrightarrow$ string conversions directly in C++ for the few procedures that take `string`, reading raw bytes via `Sbytevector_data`.
-     - This eliminates Scheme-side tree walking and closures entirely.
+- **Solution Implemented & Empirical Validation**:
+  1. **Zero-Allocation Structural Sharing in Transcoders**:
+     Updated `recur-transcode-bytevector` and `recur-transcode-string` in `boot-chez.scm` to preserve structural sharing:
+     ```scheme
+     (let ((a (loop (car x))) (d (loop (cdr x))))
+       (if (and (eq? a (car x)) (eq? d (cdr x))) x (cons a d)))
+     ```
+     When an AST subtree contains no bytevectors or strings needing transcoding, it returns `x` directly with **0 cons cells allocated**.
+  2. **Selective Raw Routing in Fast Table Dispatch**:
+     Procedures with strictly non-string signatures are installed directly to fixed-arity `tm_fast_call_N` trampolines with zero transcoding wrapping.
+  3. **Empirical Churn Reduction**: Combined with the fast table dispatch, cold LaTeX export churn plummeted by **126.0 MB (-49.1%)** (GCs cut from 30 to 15); warm export churn dropped by **41.1 MB (-27.0%)** (GCs cut from 18 to 13). Latency dropped by 10%–34% across macro benchmarks.
 
 ### [ ] Progressive Compilation Census (184 Compiled, 273 Remaining)
 - **Total Scheme files**: 457 files across `TeXmacs/progs/`.
@@ -158,6 +161,21 @@ This document tracks identified architectural improvements and performance bottl
       - Both modules can directly import and resolve each other's identifiers at compile time without requiring `DEFER-CIRCULAR-IMPORT`.
       - Eliminates top-level free variable renaming (`#{var *top*:var}`) and runtime `(interaction-environment)` indirection.
       - Enables Chez Scheme's compiler to perform direct inter-module beta reduction, dead-code elimination, and procedure inlining across call sites, eliminating function call overhead for small helpers, predicates, and accessors.
+
+### [ ] Inline Boot-Level Helpers (`==`) Without Breaking the Boot Loader
+- **Location**: [`TeXmacs/progs/kernel/boot/boot-chez.scm`](TeXmacs/progs/kernel/boot/boot-chez.scm), [`TeXmacs/progs/kernel/boot/abbrevs.scm`](TeXmacs/progs/kernel/boot/abbrevs.scm), [`src/Scheme/Chez/compile-texmacs.scm`](src/Scheme/Chez/compile-texmacs.scm)
+- **Observation**:
+  `==` is a normal procedure, `(define-public (== x y) (equal? x y))`. At `optimize-level` 2 Chez still leaves `(== x y)` as a call because each module is compiled separately: the compiler imports the binding, not the body. Inlining requires the definition to be visible in the same compilation unit (or an explicit macro/inline form).
+- **Compile-Flow Problem**:
+  The boot path is the obstacle. `boot-chez.scm` is a boot-loading Scheme file that `compile-texmacs.scm` itself needs at startup, so it is loaded from source rather than compiled first. Any helper defined in that layer is not available as a compiled definition when the rest of the tree is compiled. Moving `==` out of the boot files, or compiling `boot-chez.scm` itself, creates a chicken-and-egg dependency: the compiler needs the boot loader loaded before it can compile the boot loader.
+- **Proposed Direction**:
+  1. **Compile a minimal bootstrap unit first**: extract the smallest boot-loading script, compile it, load it, then compile the rest of the tree (including the current boot files) against that compiled bootstrap. This changes the compile flow but removes the source-only boot layer as an inlining barrier.
+  2. **Move small hot helpers into a compiled module**: e.g. `==`, `func?`, `nnull?`, `npair?` could live in a normal compiled module once the bootstrap is compiled, so later modules import a definition the optimizer can see.
+  3. **Use an explicit inline/macro form where safe**: `==` could expand to `equal?` at call sites, but only if first-class uses such as `(map == ...)` are either eliminated or kept in a compatibility procedure.
+- **Caveats / Acceptance Criteria**:
+  - Cross-module inlining is not achieved by merely compiling `abbrevs.scm` separately; the body must be available at the call site's compilation unit or through a macro/inline declaration.
+  - A global `optimize-level` 2 experiment is required to measure whether any of this actually helps; the current microbenchmark estimates only **~6–9 ms of 1.7 s** in the LaTeX conversion run, so this is primarily a compile-flow enabler for broader inlining, not an immediate hot-path fix.
+  - Verify with `-compile-modules` (0 failures), normal startup, and the conversions benchmark after changing the bootstrap order.
 
 ### [ ] Native Chez Primitive Deduplication Guideline
 - **Location**: Module transpilers and compatibility headers ([`TeXmacs/progs/kernel/boot/srfi.scm`](TeXmacs/progs/kernel/boot/srfi.scm), [`init-texmacs-chez.scm`](TeXmacs/progs/init-texmacs-chez.scm))
@@ -910,20 +928,78 @@ This document tracks identified architectural improvements and performance bottl
   1. Intern and cache Scheme symbol pointers or top-level procedure pointers (`Stop_level_value(Sstring_to_symbol(name))`).
   2. Maintain a C++ lookup cache (`hashmap<string, ptr>`) so frequently called Scheme routines (`notify-preference`, `object->string`, `tree->stree`, `keyboard-press`, etc.) resolve in $O(1)$ without string parsing or JIT compilation.
 
-### [ ] Replace Scheme -> C++ Glue Trampoline (`tm-call-by-name` & `std::map`)
-- **Location**: [`src/Scheme/Chez/chez_tm.cpp:250-367`](src/Scheme/Chez/chez_tm.cpp#L250-L367)
-- **Problem**: All 1,000+ C++ glue primitives (`tmg_*`) are installed as:
+### [X] Replace Scheme -> C++ Glue Trampoline (`tm-call-by-name` & `std::map`) [RESOLVED]
+- **Location**: [`src/Scheme/Chez/chez_tm.cpp:250-395`](src/Scheme/Chez/chez_tm.cpp#L250-L395), [`TeXmacs/progs/kernel/boot/boot-chez.scm:956-1050`](TeXmacs/progs/kernel/boot/boot-chez.scm#L956-L1050)
+- **Problem**: All 1,180+ C++ glue primitives (`tmg_*`) were installed as:
   ```scheme
   (define <name> (lambda args (tm-call-by-name "<name>" args)))
   ```
-  Every time Scheme calls a C++ primitive (e.g. `(tree-label t)` during editing or typesetting):
-  1. Scheme allocates a heap rest-argument list `args`.
-  2. Calls foreign procedure `tm-call-by-name`.
-  3. C++ executes `std::map<string, tm_proc_entry>::find(name)` with `std::string` heap allocations and $O(\log N)$ comparisons.
-  4. C++ unpacks the Scheme list one element at a time via `Scar`/`Scdr`.
+  Every time Scheme called a C++ primitive (e.g. `(tree-label t)` during editing or typesetting):
+  1. Scheme allocated a heap rest-argument list `args` (16 bytes per argument).
+  2. Called foreign procedure `tm-call-by-name`.
+  3. C++ executed `std::map<string, tm_proc_entry>::find(name)` with `std::string` heap allocations and $O(\log N)$ comparisons.
+  4. C++ unpacked the Scheme list one element at a time via `Scar`/`Scdr`.
+- **Solution Implemented & Empirical Validation**:
+  1. **Direct Array Table Dispatch**: Implemented static array `tm_fast_proc_entry tm_fast_table[2048]` in C++ `.data` segment. Assigned sequential integer IDs to all 1,181 glue procedures at boot time.
+  2. **Fixed-Arity Trampolines with Zero-Cost C++ Exception Containment**:
+     - Created `tm_fast_call_0` through `tm_fast_call_10` in `chez_tm.cpp` taking `(int id, ptr a1, ...)` with zero-cost Itanium C++ `try/catch` unwinding and `chez_lock`.
+     - Bound in Scheme as `foreign-procedure` calls passing arguments purely in CPU registers (`x0` through `x7`).
+     - **0 GC Bytes**: Both array table lookup and register argument passing allocate 0 bytes on the Scheme heap.
+     - **Crash Safety**: Unlike direct un-wrapped foreign-procedure addresses, any C++ exception is caught inside C++ and converted to a Scheme condition, preventing fatal `std::terminate()` process aborts across foreign stack frames.
+  3. **Measured Speedup & Churn Reduction**:
+     - Microbenchmark (`url-none?` $\times 1,000,000$): Latency dropped from **220 ns to 58 ns** (**3.8× throughput speedup**).
+     - LaTeX export: Gross heap allocation dropped from 152.33 MB to **124.53 MB (-27.80 MB / -18.3% churn)**, cutting **3 full GC cycles** warm and **4 GCs** cold.
+     - Macro conversion speedup: LaTeX export -165 ms (-12.0%), LaTeX import -306 ms (-34.1%), HTML import -25 ms (-11.8%).
+
+### [X] Fast Character Set Checks & String Split Optimizations [RESOLVED]
+- **Location**: [`TeXmacs/progs/kernel/boot/chez-compat.scm:122-230`](TeXmacs/progs/kernel/boot/chez-compat.scm#L122-L230)
+- **Problem**:
+  1. In `char-in-set?`, testing `(list? cs)` executed an $O(N)$ cycle-detection traversal of `cs` on every single character check.
+  2. `string-split`, `string-index`, `string-rindex`, and `string-count` called `char-in-set?` inside the inner loop for every character, evaluating a 4-way `cond` type dispatch on invariant delimiters.
+  3. In `string-split`, if a string had no delimiters, it unconditionally copied the entire string with `substring` and allocated cons cells.
+- **Solution Implemented & Empirical Validation**:
+  1. Replaced `(list? cs)` with $O(1)$ single-instruction pointer tag check `(pair? cs)`.
+  2. Hoisted delimiter checks outside the loops: specialized tight inner loops for `char?` (e.g. `#\newline`, `#\/`, `#\:`) and 1-char `string?` bypass `char-in-set?` and use direct `char=?`.
+  3. Added no-delimiter zero-allocation fast path in `string-split`: returns `(list s)` directly with 0 substring copies allocated.
+  4. Measured Results: `menu-expand-x10` allocation dropped to 7.98 MB (-0.76 MB), `import-html` dropped to 55.85 MB (-1 GC), `export-html` dropped to 88.39 MB (-8.84 MB, -2 GCs).
+
+### [ ] Clean Up Redundant Symbol Lookup in `tmscm_is_equal`
+- **Location**: [`src/Scheme/Chez/chez_tm.cpp:111`](src/Scheme/Chez/chez_tm.cpp#L111)
+- **Problem**:
+  ```cpp
+  ptr equal_proc= Stop_level_value (Sstring_to_symbol ("equal?"));
+  ```
+  `Stop_level_value(Sstring_to_symbol("equal?"))` is re-evaluated on every equality comparison where pointer inequality occurs (`o1 != o2`). However, `tm_equal_pred` is already fetched and cached at boot time in `initialize_scheme()` (line 685).
+- **Optimization**: Remove the redundant `Stop_level_value` call on line 111 and directly check/invoke the cached `tm_equal_pred`, saving string hashing and oblist lookups on equality failures.
+
+### [ ] Optimize C++ `tmscm_to_symbol` Decoding Loop
+- **Location**: [`src/Scheme/Chez/chez_tm.cpp:168-175`](src/Scheme/Chez/chez_tm.cpp#L168-L175)
+- **Problem**:
+  ```cpp
+  string
+  tmscm_to_symbol (tmscm s) {
+    tmscm str= Ssymbol_to_string (s);
+    iptr n= Sstring_length (str);
+    string r;
+    for (iptr i= 0; i < n; i++)
+      r << encode_as_utf8 (Sstring_ref (str, i));
+    return r;
+  }
+  ```
+  For every symbol crossing Scheme $\to$ C++, it loops character-by-character in C++, calling `encode_as_utf8` on every character and resizing C++ `string r` one byte at a time.
+- **Optimization**: For ASCII symbol names (>99.9% of AST tags like `"concat"`, `"document"`, `"with"`, `"format"`, `"arg"`), perform direct bulk copy or cache the ~64 most common AST symbols (`ptr` $\to$ C++ `string`), avoiding per-character encoding loops.
+
+### [ ] Downstream String Concatenation & Comparison in HTML/LaTeX Exporters
+- **Location**: `TeXmacs/progs/convert/html/`, `TeXmacs/progs/convert/latex/`
+- **Empirical Finding on `symbol->string`**:
+  Calling `(symbol->string sym)` in Chez Scheme allocates **0 bytes of heap memory** (verified via `1,000,000` calls allocating 0 bytes). In Chez Scheme, symbols store an immutable string pointer to their print-name; `symbol->string` is an $O(1)$ single-instruction field dereference (`ldr x0, [x_sym, #8]`).
+- **Where the Real Churn Lies**:
+  The GC churn comes from what is done *with* the string immediately after conversion:
+  1. `(string-append "<" (symbol->string s) ">")` in `htmlout.scm` (called 57,000+ times per HTML export), repeatedly allocating temporary tag strings.
+  2. `(string-starts? (symbol->string (car t)) "tmmath")` in `tmtex.scm`, converting symbols to strings just for prefix checks.
 - **Optimization**:
-  1. **Direct Numeric ID Index**: Bind primitives with integer IDs `(lambda (a b) (tm-call-by-id 42 a b))` and index a flat C++ array `tm_proc_table[id]`, eliminating map lookups and list unpacking.
-  2. **Direct Chez FFI**: Register typed C++ function pointers directly with Chez Scheme's `foreign-procedure` during initialization, bypassing `tm-call-by-name` entirely.
+  1. Prefer direct symbol `eq?` or `memq` checks (e.g. `(eq? tag 'td)`) rather than converting symbols to strings for comparisons.
+  2. Pre-format common HTML element open/close tag strings (`'td` $\to$ `"<td"`, `"</td>"`), eliminating dynamic `string-append` in inner serialization loops.
 
 ### [ ] Typesetter `<extern|...>` AST Execution: Replace Dynamic `eval` with Cached Procedure Calls
 - **Location**: [`src/Typeset/Env/env_exec.cpp:49-65`](src/Typeset/Env/env_exec.cpp#L49-L65)

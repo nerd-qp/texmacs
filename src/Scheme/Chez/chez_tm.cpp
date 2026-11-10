@@ -270,6 +270,63 @@ struct tm_proc_entry {
 static std::map<string, tm_proc_entry> tm_proc_registry;
 const char* current_glue_proc = NULL;
 
+struct tm_fast_proc_entry {
+  const char* name;
+  void*       fn;
+  int         arity;
+};
+
+static tm_fast_proc_entry tm_fast_table[2048];
+static int tm_fast_proc_count = 0;
+
+#define TM_FAST_CALL_BODY(call_expr) \
+  if (__builtin_expect (id < 0 || id >= tm_fast_proc_count, 0)) return Sboolean (0); \
+  chez_lock lock; \
+  current_glue_proc = tm_fast_table[id].name; \
+  try { \
+    return (call_expr); \
+  } catch (const std::string& e) { \
+    return Scons (Sboolean (1), \
+                  Scons (Sstring_of_length (e.c_str (), (iptr) e.size ()), tm_null)); \
+  } catch (...) { \
+    return Scons (Sboolean (1), \
+                  Scons (Sstring_of_length ("<exception>", 11), tm_null)); \
+  }
+
+extern "C" ptr tm_fast_call_0 (int id) {
+  TM_FAST_CALL_BODY (((tmscm (*)()) tm_fast_table[id].fn) ())
+}
+extern "C" ptr tm_fast_call_1 (int id, ptr a1) {
+  TM_FAST_CALL_BODY (((tmscm (*)(tmscm)) tm_fast_table[id].fn) (a1))
+}
+extern "C" ptr tm_fast_call_2 (int id, ptr a1, ptr a2) {
+  TM_FAST_CALL_BODY (((tmscm (*)(tmscm, tmscm)) tm_fast_table[id].fn) (a1, a2))
+}
+extern "C" ptr tm_fast_call_3 (int id, ptr a1, ptr a2, ptr a3) {
+  TM_FAST_CALL_BODY (((tmscm (*)(tmscm, tmscm, tmscm)) tm_fast_table[id].fn) (a1, a2, a3))
+}
+extern "C" ptr tm_fast_call_4 (int id, ptr a1, ptr a2, ptr a3, ptr a4) {
+  TM_FAST_CALL_BODY (((tmscm (*)(tmscm, tmscm, tmscm, tmscm)) tm_fast_table[id].fn) (a1, a2, a3, a4))
+}
+extern "C" ptr tm_fast_call_5 (int id, ptr a1, ptr a2, ptr a3, ptr a4, ptr a5) {
+  TM_FAST_CALL_BODY (((tmscm (*)(tmscm, tmscm, tmscm, tmscm, tmscm)) tm_fast_table[id].fn) (a1, a2, a3, a4, a5))
+}
+extern "C" ptr tm_fast_call_6 (int id, ptr a1, ptr a2, ptr a3, ptr a4, ptr a5, ptr a6) {
+  TM_FAST_CALL_BODY (((tmscm (*)(tmscm, tmscm, tmscm, tmscm, tmscm, tmscm)) tm_fast_table[id].fn) (a1, a2, a3, a4, a5, a6))
+}
+extern "C" ptr tm_fast_call_7 (int id, ptr a1, ptr a2, ptr a3, ptr a4, ptr a5, ptr a6, ptr a7) {
+  TM_FAST_CALL_BODY (((tmscm (*)(tmscm, tmscm, tmscm, tmscm, tmscm, tmscm, tmscm)) tm_fast_table[id].fn) (a1, a2, a3, a4, a5, a6, a7))
+}
+extern "C" ptr tm_fast_call_8 (int id, ptr a1, ptr a2, ptr a3, ptr a4, ptr a5, ptr a6, ptr a7, ptr a8) {
+  TM_FAST_CALL_BODY (((tmscm (*)(tmscm, tmscm, tmscm, tmscm, tmscm, tmscm, tmscm, tmscm)) tm_fast_table[id].fn) (a1, a2, a3, a4, a5, a6, a7, a8))
+}
+extern "C" ptr tm_fast_call_9 (int id, ptr a1, ptr a2, ptr a3, ptr a4, ptr a5, ptr a6, ptr a7, ptr a8, ptr a9) {
+  TM_FAST_CALL_BODY (((tmscm (*)(tmscm, tmscm, tmscm, tmscm, tmscm, tmscm, tmscm, tmscm, tmscm)) tm_fast_table[id].fn) (a1, a2, a3, a4, a5, a6, a7, a8, a9))
+}
+extern "C" ptr tm_fast_call_10 (int id, ptr a1, ptr a2, ptr a3, ptr a4, ptr a5, ptr a6, ptr a7, ptr a8, ptr a9, ptr a10) {
+  TM_FAST_CALL_BODY (((tmscm (*)(tmscm, tmscm, tmscm, tmscm, tmscm, tmscm, tmscm, tmscm, tmscm, tmscm)) tm_fast_table[id].fn) (a1, a2, a3, a4, a5, a6, a7, a8, a9, a10))
+}
+
 extern "C" ptr
 tm_call_by_name (const char* name, ptr args) {
   /* Threaded kernel: this callback may run on a thread whose activation
@@ -413,12 +470,19 @@ call_boot_proc (const char* name, ptr arg) {
 void
 chez_install_procedure (const char* name, void* fn, int arity) {
   chez_lock lock;
+  int id = tm_fast_proc_count++;
+  if (id >= 2048)
+    FAILED ("Chez Scheme: tm_fast_table overflow");
+  tm_fast_table[id]= tm_fast_proc_entry { name, fn, arity };
   tm_proc_registry[name]= tm_proc_entry { fn, arity };
-  /* (tm-install-procedure! "name") defines the Scheme wrapper that forwards
-     its argument list to tm_call_by_name below. */
+  /* (tm-install-procedure! "name" id arity) defines the Scheme wrapper that forwards
+     its arguments directly to tm_fast_call_N. */
   if (tm_install_proc == 0)
     FAILED ("Chez Scheme: tm-install-procedure! is not available");
-  Scall1 (tm_install_proc, Sstring_of_length (name, (iptr) strlen (name)));
+  Scall3 (tm_install_proc,
+          Sstring_of_length (name, (iptr) strlen (name)),
+          Sinteger (id),
+          Sinteger (arity));
 }
 
 /* ------------------------------------------------------------------------
@@ -579,6 +643,17 @@ initialize_scheme () {
      foreign-procedure while it is being loaded, and Chez resolves the symbol
      at that point. */
   Sforeign_symbol ("tm-call-by-name", (void*) tm_call_by_name);
+  Sforeign_symbol ("tm_fast_call_0", (void*) tm_fast_call_0);
+  Sforeign_symbol ("tm_fast_call_1", (void*) tm_fast_call_1);
+  Sforeign_symbol ("tm_fast_call_2", (void*) tm_fast_call_2);
+  Sforeign_symbol ("tm_fast_call_3", (void*) tm_fast_call_3);
+  Sforeign_symbol ("tm_fast_call_4", (void*) tm_fast_call_4);
+  Sforeign_symbol ("tm_fast_call_5", (void*) tm_fast_call_5);
+  Sforeign_symbol ("tm_fast_call_6", (void*) tm_fast_call_6);
+  Sforeign_symbol ("tm_fast_call_7", (void*) tm_fast_call_7);
+  Sforeign_symbol ("tm_fast_call_8", (void*) tm_fast_call_8);
+  Sforeign_symbol ("tm_fast_call_9", (void*) tm_fast_call_9);
+  Sforeign_symbol ("tm_fast_call_10", (void*) tm_fast_call_10);
   Sforeign_symbol ("tmscm_delete_blackbox", (void*) tmscm_delete_blackbox);
   Sforeign_symbol ("tmscm_blackbox_equal", (void*) tmscm_blackbox_equal);
   Sforeign_symbol ("tmscm_blackbox_hash", (void*) tmscm_blackbox_hash);
