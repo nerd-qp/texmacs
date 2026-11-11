@@ -39,6 +39,12 @@ extern tmscm tm_blackbox_guardian;  /* Guardian procedure for blackboxes      */
 extern tmscm tm_eval_string_proc;  /* (tm-eval-string s)                      */
 extern tmscm tm_load_file_proc;    /* (tm-load-file file)                     */
 extern tmscm tm_apply_proc;        /* (tm-apply fun args-list)                */
+extern tmscm tm_call_0_proc;       /* (tm-call-0 fun)                         */
+extern tmscm tm_call_1_proc;       /* (tm-call-1 fun a1)                      */
+extern tmscm tm_call_2_proc;       /* (tm-call-2 fun a1 a2)                   */
+extern tmscm tm_call_3_proc;       /* (tm-call-3 fun a1 a2 a3)                */
+extern tmscm tm_call_4_proc;       /* (tm-call-4 fun a1 a2 a3 a4)             */
+extern tmscm tm_call_n_proc;       /* (tm-call-n fun args)                    */
 extern tmscm tm_list_pred;         /* list?                                    */
 extern tmscm tm_equal_pred;        /* equal?                                   */
 

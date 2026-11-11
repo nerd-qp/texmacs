@@ -972,15 +972,49 @@
                 (when (< i 25) (loop (+ i 1)))))))
         (display "no continuation in condition\n"))))
 
-;; [C++] (tm-apply fun args): the engine's call entry point.  A symbol is
-;; resolved in the top-level environment, so call("name", ...) can pass a
-;; symbol instead of an evaluated expression.
+;; [C++] Fixed-arity entry points for call_scheme.
+;; Resolves symbols to top-level procedures and contains exceptions without
+;; allocating Scheme argument lists or performing redundant full-tree transcodings.
+(define (tm-handle-call-error e fun args)
+  (display (list 'TM-CALL-ERROR (tm-error-message e) 'FUN: fun 'ARGS: args))
+  (newline)
+  (display-condition e)
+  (newline)
+  (tm-backtrace e)
+  (cons #t (list (tm-error-message e))))
+
+(define (tm-call-0 fun)
+  (guard (e (else (tm-handle-call-error e fun '())))
+    (let ((proc (if (symbol? fun) (top-level-value fun (interaction-environment)) fun)))
+      (proc))))
+
+(define (tm-call-1 fun a1)
+  (guard (e (else (tm-handle-call-error e fun (list a1))))
+    (let ((proc (if (symbol? fun) (top-level-value fun (interaction-environment)) fun)))
+      (proc a1))))
+
+(define (tm-call-2 fun a1 a2)
+  (guard (e (else (tm-handle-call-error e fun (list a1 a2))))
+    (let ((proc (if (symbol? fun) (top-level-value fun (interaction-environment)) fun)))
+      (proc a1 a2))))
+
+(define (tm-call-3 fun a1 a2 a3)
+  (guard (e (else (tm-handle-call-error e fun (list a1 a2 a3))))
+    (let ((proc (if (symbol? fun) (top-level-value fun (interaction-environment)) fun)))
+      (proc a1 a2 a3))))
+
+(define (tm-call-4 fun a1 a2 a3 a4)
+  (guard (e (else (tm-handle-call-error e fun (list a1 a2 a3 a4))))
+    (let ((proc (if (symbol? fun) (top-level-value fun (interaction-environment)) fun)))
+      (proc a1 a2 a3 a4))))
+
+(define (tm-call-n fun args)
+  (guard (e (else (tm-handle-call-error e fun args)))
+    (let ((proc (if (symbol? fun) (top-level-value fun (interaction-environment)) fun)))
+      (apply proc args))))
+
 (define (tm-apply fun args)
-  (guard (e (else (begin (display (list 'TM-APPLY-ERROR (tm-error-message e) 'FUN: fun 'ARGS: args)) (newline) (display-condition e) (newline) (tm-backtrace e) (cons #t (list (tm-error-message e))))))
-    (let ((proc (if (symbol? fun)
-                    (top-level-value fun (interaction-environment))
-                    fun)))
-      (recur-string->utf8 (apply proc (recur-utf8->string args))))))
+  (tm-call-n fun args))
 
 ;; The C++ glue dispatcher.  Every procedure installed with
 ;; tmscm_install_procedure() is a closure over its own name that forwards the

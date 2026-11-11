@@ -33,8 +33,15 @@ static ptr tm_install_proc= 0;      /* (tm-install-procedure! name)           */
 tmscm tm_eval_string_proc= 0;
 tmscm tm_load_file_proc= 0;
 tmscm tm_apply_proc= 0;
+tmscm tm_call_0_proc= 0;
+tmscm tm_call_1_proc= 0;
+tmscm tm_call_2_proc= 0;
+tmscm tm_call_3_proc= 0;
+tmscm tm_call_4_proc= 0;
+tmscm tm_call_n_proc= 0;
 tmscm tm_list_pred= 0;
 tmscm tm_equal_pred= 0;
+tmscm tm_string_to_utf8_proc= 0;
 tmscm object_stack= 0;
 
 /* ------------------------------------------------------------------------
@@ -469,38 +476,223 @@ eval_scheme (string s) {
   return Scall1 (tm_eval_string_proc, Sstring_utf8 (_s, (iptr) N (s)));
 }
 
+/* ------------------------------------------------------------------------
+ * UTF-8 and Tree Transcoding for Scheme Procedure Calls
+ *
+ * In TeXmacs, C++ strings are overloaded: they carry UTF-8 text, 8-bit Cork
+ * font encodings, and raw binary blobs (PNG images, TrueType font tables).
+ * To prevent corruption of binary assets, the generic FFI bridges
+ * (string_to_tmscm / tmscm_to_string) treat strings as raw bytevectors.
+ *
+ * However, high-level Scheme procedures expect native Scheme strings
+ * (32-bit UCS-4 characters) for textual operations.
+ *
+ *   to_scheme_arg(a):       Prepares arguments before calling Scheme.
+ *                           Recursively converts Scheme bytevectors -> Scheme strings.
+ *
+ *   from_scheme_result(r):  Prepares return values coming back to C++.
+ *                           Recursively converts Scheme strings -> Scheme bytevectors.
+ *
+ * Both functions follow a two-phase strategy:
+ *   1. Zero-Allocation Fast Path (Structural Sharing):
+ *      Probe the spine and subtrees without allocating any memory. If no
+ *      leaf elements require transcoding, return the original object untouched.
+ *   2. Iterative Spine Traversal (Stack Safety):
+ *      When rebuilding a list, iterate along the cdr spine with head/tail
+ *      pointers instead of recursing on cdr. This guarantees O(depth) C++
+ *      stack depth, making it immune to stack overflow on arbitrarily long lists.
+ * ---------------------------------------------------------------------- */
+
+static inline ptr
+bytevector_to_sstring (ptr bv) {
+  return Sstring_utf8 ((const char*) Sbytevector_data (bv),
+                       Sbytevector_length (bv));
+}
+
+static ptr to_scheme_arg (ptr a);
+static ptr from_scheme_result (ptr r);
+
+static ptr
+to_scheme_arg (ptr a) {
+  // Leaf: convert UTF-8 bytevector into Chez 32-bit UCS-4 Scheme string
+  if (Sbytevectorp (a)) {
+    return bytevector_to_sstring (a);
+  }
+  if (Spairp (a)) {
+    // Phase 1: Probe the spine. If no element needs transcoding, return `a` untouched.
+    ptr p = a;
+    bool modified = false;
+    while (Spairp (p)) {
+      ptr elem = Scar (p);
+      ptr elem_new = to_scheme_arg (elem);
+      if (elem_new != elem) {
+        modified = true;
+        break;
+      }
+      p = Scdr (p);
+    }
+    // Check terminal cdr of improper/dotted lists. If neither the elements nor
+    // the terminal tail `p` can be converted (i.e. p is not a bytevector or vector),
+    // we can safely share the original list structure with zero allocations.
+    if (!modified && !Sbytevectorp (p) && !Svectorp (p)) {
+      return a;
+    }
+    // Phase 2: Iteratively rebuild the list spine with stack safety.
+    p = a;
+    ptr head = Snil;
+    ptr tail = Snil;
+    while (Spairp (p)) {
+      ptr elem = to_scheme_arg (Scar (p));
+      ptr cell = Scons (elem, Snil);
+      if (head == Snil) head = cell;
+      else Sset_cdr (tail, cell);
+      tail = cell;
+      p = Scdr (p);
+    }
+    // If this was an improper list (p != '()), transcode the terminal tail atom
+    if (p != Snil) {
+      Sset_cdr (tail, to_scheme_arg (p));
+    }
+    return head;
+  }
+  if (Svectorp (a)) {
+    iptr n = Svector_length (a);
+    bool modified = false;
+    for (iptr i = 0; i < n; i++) {
+      ptr elem = Svector_ref (a, i);
+      if (to_scheme_arg (elem) != elem) {
+        modified = true;
+        break;
+      }
+    }
+    if (!modified) return a;
+    ptr v = Smake_vector (n, Sboolean (0));
+    for (iptr i = 0; i < n; i++) {
+      Svector_set (v, i, to_scheme_arg (Svector_ref (a, i)));
+    }
+    return v;
+  }
+  return a;
+}
+
+static inline ptr
+sstring_to_bytevector (ptr str) {
+  return Scall1 (tm_string_to_utf8_proc, str);
+}
+
+static ptr
+from_scheme_result (ptr r) {
+  // Leaf: convert Chez Scheme string into UTF-8 bytevector via native string->utf8
+  if (Sstringp (r)) {
+    return sstring_to_bytevector (r);
+  }
+  if (Spairp (r)) {
+    // Phase 1: Probe the spine for structural sharing
+    ptr p = r;
+    bool modified = false;
+    while (Spairp (p)) {
+      ptr a = Scar (p);
+      ptr a_new = from_scheme_result (a);
+      if (a_new != a) {
+        modified = true;
+        break;
+      }
+      p = Scdr (p);
+    }
+    // Check terminal cdr: if neither elements nor terminal tail need conversion, share r
+    if (!modified && !Sstringp (p) && !Svectorp (p)) {
+      return r;
+    }
+    // Phase 2: Iteratively rebuild the list spine with stack safety.
+    p = r;
+    ptr head = Snil;
+    ptr tail = Snil;
+    while (Spairp (p)) {
+      ptr a = from_scheme_result (Scar (p));
+      ptr cell = Scons (a, Snil);
+      if (head == Snil) head = cell;
+      else Sset_cdr (tail, cell);
+      tail = cell;
+      p = Scdr (p);
+    }
+    // If this was an improper list (p != '()), transcode the terminal tail atom
+    if (p != Snil) {
+      Sset_cdr (tail, from_scheme_result (p));
+    }
+    return head;
+  }
+  if (Svectorp (r)) {
+    iptr n = Svector_length (r);
+    bool modified = false;
+    for (iptr i = 0; i < n; i++) {
+      ptr a = Svector_ref (r, i);
+      if (from_scheme_result (a) != a) {
+        modified = true;
+        break;
+      }
+    }
+    if (!modified) return r;
+    ptr v = Smake_vector (n, Sboolean (0));
+    for (iptr i = 0; i < n; i++) {
+      Svector_set (v, i, from_scheme_result (Svector_ref (r, i)));
+    }
+    return v;
+  }
+  return r;
+}
+
+static inline ptr
+scall4 (ptr proc, ptr a1, ptr a2, ptr a3, ptr a4) {
+  Sinitframe (4);
+  Sput_arg (1, a1);
+  Sput_arg (2, a2);
+  Sput_arg (3, a3);
+  Sput_arg (4, a4);
+  return Scall (proc, 4);
+}
+
+static inline ptr
+scall5 (ptr proc, ptr a1, ptr a2, ptr a3, ptr a4, ptr a5) {
+  Sinitframe (5);
+  Sput_arg (1, a1);
+  Sput_arg (2, a2);
+  Sput_arg (3, a3);
+  Sput_arg (4, a4);
+  Sput_arg (5, a5);
+  return Scall (proc, 5);
+}
+
 tmscm
 call_scheme (tmscm fun) {
-  return Scall2 (tm_apply_proc, fun, tmscm_null ());
+  return from_scheme_result (Scall1 (tm_call_0_proc, fun));
 }
 
 tmscm
 call_scheme (tmscm fun, tmscm a1) {
-  return Scall2 (tm_apply_proc, fun, Scons (a1, tmscm_null ()));
+  return from_scheme_result (Scall2 (tm_call_1_proc, fun, to_scheme_arg (a1)));
 }
 
 tmscm
 call_scheme (tmscm fun, tmscm a1, tmscm a2) {
-  return Scall2 (tm_apply_proc, fun, Scons (a1, Scons (a2, tmscm_null ())));
+  return from_scheme_result (Scall3 (tm_call_2_proc, fun, to_scheme_arg (a1), to_scheme_arg (a2)));
 }
 
 tmscm
 call_scheme (tmscm fun, tmscm a1, tmscm a2, tmscm a3) {
-  return Scall2 (tm_apply_proc, fun,
-                 Scons (a1, Scons (a2, Scons (a3, tmscm_null ()))));
+  return from_scheme_result (scall4 (tm_call_3_proc, fun, to_scheme_arg (a1), to_scheme_arg (a2), to_scheme_arg (a3)));
 }
 
 tmscm
 call_scheme (tmscm fun, tmscm a1, tmscm a2, tmscm a3, tmscm a4) {
-  return Scall2 (tm_apply_proc, fun,
-                 Scons (a1, Scons (a2, Scons (a3, Scons (a4, tmscm_null ())))));
+  return from_scheme_result (scall5 (tm_call_4_proc, fun, to_scheme_arg (a1), to_scheme_arg (a2), to_scheme_arg (a3), to_scheme_arg (a4)));
 }
 
 tmscm
 call_scheme (tmscm fun, array<tmscm> a) {
   tmscm l= tmscm_null ();
-  for (int i= N (a) - 1; i >= 0; i--) l= Scons (a[i], l);
-  return Scall2 (tm_apply_proc, fun, l);
+  for (int i= N (a) - 1; i >= 0; i--)
+    l= Scons (to_scheme_arg (a[i]), l);
+  return from_scheme_result (Scall2 (tm_call_n_proc, fun, l));
 }
 
 /* ------------------------------------------------------------------------
@@ -633,10 +825,24 @@ initialize_scheme () {
   Slock_object (tm_load_file_proc);
   tm_apply_proc= Stop_level_value (Sstring_to_symbol ("tm-apply"));
   Slock_object (tm_apply_proc);
+  tm_call_0_proc= Stop_level_value (Sstring_to_symbol ("tm-call-0"));
+  Slock_object (tm_call_0_proc);
+  tm_call_1_proc= Stop_level_value (Sstring_to_symbol ("tm-call-1"));
+  Slock_object (tm_call_1_proc);
+  tm_call_2_proc= Stop_level_value (Sstring_to_symbol ("tm-call-2"));
+  Slock_object (tm_call_2_proc);
+  tm_call_3_proc= Stop_level_value (Sstring_to_symbol ("tm-call-3"));
+  Slock_object (tm_call_3_proc);
+  tm_call_4_proc= Stop_level_value (Sstring_to_symbol ("tm-call-4"));
+  Slock_object (tm_call_4_proc);
+  tm_call_n_proc= Stop_level_value (Sstring_to_symbol ("tm-call-n"));
+  Slock_object (tm_call_n_proc);
   tm_list_pred= Stop_level_value (Sstring_to_symbol ("list?"));
   Slock_object (tm_list_pred);
   tm_equal_pred= Stop_level_value (Sstring_to_symbol ("equal?"));
   Slock_object (tm_equal_pred);
+  tm_string_to_utf8_proc= Stop_level_value (Sstring_to_symbol ("string->utf8"));
+  Slock_object (tm_string_to_utf8_proc);
   object_stack= Stop_level_value (Sstring_to_symbol ("object-stack"));
   Slock_object (object_stack);
   tm_install_proc= Stop_level_value (Sstring_to_symbol ("tm-install-procedure!"));
