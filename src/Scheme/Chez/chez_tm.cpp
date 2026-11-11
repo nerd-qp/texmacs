@@ -37,35 +37,19 @@ tmscm tm_list_pred= 0;
 tmscm tm_equal_pred= 0;
 tmscm object_stack= 0;
 
-/* All entry points into the Chez kernel are serialized with this recursive
-   mutex: the kernel is not re-entrant across threads, but re-entrant calls
-   from within the kernel (Scheme -> C++ callback -> Scheme) must not
-   deadlock, hence recursive. */
-static std::recursive_mutex chez_mutex;
-
-class chez_lock {
-  std::lock_guard<std::recursive_mutex> guard;
-public:
-  chez_lock (): guard (chez_mutex) {}
-};
-
-/* Threaded kernel: ANY thread that allocates or calls into the kernel must
-   first be registered with Sactivate_thread.  The Chez FFI does this
-   automatically for foreign-procedure calls, but our C++->Scheme entry
-   points (eval_scheme / call_scheme / eval_scheme_file) are plain C++
-   functions -- TeXmacs happily invokes them from the Qt event-loop thread
-   (delayed queue, timers), which the kernel has never seen.  Allocating
-   there without activation corrupts the heap: observed as faults inside
-   S_dirty_set and later "misplaced pair" aborts during GC.
-   Deactivation on scope exit is safe under the single-engine-thread model:
-   while we hold chez_lock no other thread can be running a collection, so
-   no GC can move anything between our deactivation and the next entry. */
-class chez_activate {
-  bool activated;
-public:
-  chez_activate (): activated (Sactivate_thread () == 1) {}
-  ~chez_activate () { if (activated) Sdeactivate_thread (); }
-};
+/* ------------------------------------------------------------------------
+ * Chez Scheme Threading & Concurrency Model
+ *
+ * TeXmacs runs single-threaded on the main GUI thread. The Scheme engine
+ * is initialized and activated once at boot time by Sscheme_init() in
+ * start_scheme(). It remains permanently active for the lifetime of the
+ * process, avoiding per-call TLS activation/deactivation churn.
+ *
+ * TeXmacs C++ document trees (tree_rep, buffer) are strictly single-threaded
+ * and non-reentrant; synchronization is handled at the Qt event loop level.
+ * Therefore, leaf FFI dispatchers (tm_fast_call_N) and call_scheme do not
+ * pay the overhead of an atomic recursive mutex.
+ * ---------------------------------------------------------------------- */
 
 /* ------------------------------------------------------------------------
  * Basic list/equality predicates (need cached Scheme procedures)
@@ -228,8 +212,6 @@ tmscm_blackbox_hash (ptr b) {
 
 void
 reap_blackboxes () {
-  chez_lock lock;
-  chez_activate activate;
   if (!tm_blackbox_guardian) {
     FAILED ("reap_blackboxes called but tm_blackbox_guardian is null");
   }
@@ -278,7 +260,6 @@ static int tm_fast_proc_count = 0;
 
 #define TM_FAST_CALL_BODY(call_expr) \
   if (__builtin_expect (id < 0 || id >= tm_fast_proc_count, 0)) return Sboolean (0); \
-  chez_lock lock; \
   current_glue_proc = tm_fast_table[id].name; \
   try { \
     return (call_expr); \
@@ -326,16 +307,9 @@ extern "C" ptr tm_fast_call_10 (int id, ptr a1, ptr a2, ptr a3, ptr a4, ptr a5, 
 
 extern "C" ptr
 tm_call_by_name (const char* name, ptr args) {
-  /* Threaded kernel: this callback may run on a thread whose activation
-     was deactivated after the previous foreign return.  Allocating tmscm
-     objects (tmg_* glue constructs lists/objects) without an active
-     thread corrupts the heap / trips the write barrier (S_dirty_set). */
-  bool activated= Sactivate_thread () == 1;
-  chez_lock lock;
   current_glue_proc = name;
   std::map<string, tm_proc_entry>::iterator it= tm_proc_registry.find (name);
   if (it == tm_proc_registry.end ()) {
-    if (activated) Sdeactivate_thread ();
     return Sboolean (0);
   }
   void* fn= it->second.fn;
@@ -386,12 +360,10 @@ tm_call_by_name (const char* name, ptr args) {
     }
   }
   catch (const std::string& e) {
-    if (activated) Sdeactivate_thread ();
     return Scons (Sboolean (1),
                   Scons (Sstring_of_length (e.c_str (), (iptr) e.size ()), tm_null));
   }
   catch (...) {
-    if (activated) Sdeactivate_thread ();
     return Scons (Sboolean (1), Scons (Sstring_of_length ("<exception>", 11), tm_null));
   }
   /* normal path */
@@ -466,7 +438,6 @@ call_boot_proc (const char* name, ptr arg) {
  * (tm-install-procedure! name) to be interned with string->symbol during glue setup. */
 void
 chez_install_procedure (const char* name, void* fn, int arity) {
-  chez_lock lock;
   int id = tm_fast_proc_count++;
   if (id >= 2048)
     FAILED ("Chez Scheme: tm_fast_table overflow");
@@ -488,61 +459,45 @@ chez_install_procedure (const char* name, void* fn, int arity) {
 
 tmscm
 eval_scheme_file (string file) {
-  chez_lock lock;
-  chez_activate activate;
   c_string _file (file);
   return Scall1 (tm_load_file_proc, Sstring_utf8 (_file, (iptr) N (file)));
 }
 
 tmscm
 eval_scheme (string s) {
-  chez_lock lock;
-  chez_activate activate;
   c_string _s (s);
   return Scall1 (tm_eval_string_proc, Sstring_utf8 (_s, (iptr) N (s)));
 }
 
 tmscm
 call_scheme (tmscm fun) {
-  chez_lock lock;
-  chez_activate activate;
   return Scall2 (tm_apply_proc, fun, tmscm_null ());
 }
 
 tmscm
 call_scheme (tmscm fun, tmscm a1) {
-  chez_lock lock;
-  chez_activate activate;
   return Scall2 (tm_apply_proc, fun, Scons (a1, tmscm_null ()));
 }
 
 tmscm
 call_scheme (tmscm fun, tmscm a1, tmscm a2) {
-  chez_lock lock;
-  chez_activate activate;
   return Scall2 (tm_apply_proc, fun, Scons (a1, Scons (a2, tmscm_null ())));
 }
 
 tmscm
 call_scheme (tmscm fun, tmscm a1, tmscm a2, tmscm a3) {
-  chez_lock lock;
-  chez_activate activate;
   return Scall2 (tm_apply_proc, fun,
                  Scons (a1, Scons (a2, Scons (a3, tmscm_null ()))));
 }
 
 tmscm
 call_scheme (tmscm fun, tmscm a1, tmscm a2, tmscm a3, tmscm a4) {
-  chez_lock lock;
-  chez_activate activate;
   return Scall2 (tm_apply_proc, fun,
                  Scons (a1, Scons (a2, Scons (a3, Scons (a4, tmscm_null ())))));
 }
 
 tmscm
 call_scheme (tmscm fun, array<tmscm> a) {
-  chez_lock lock;
-  chez_activate activate;
   tmscm l= tmscm_null ();
   for (int i= N (a) - 1; i >= 0; i--) l= Scons (a[i], l);
   return Scall2 (tm_apply_proc, fun, l);
@@ -626,6 +581,7 @@ start_scheme (int argc, char** argv, void (*call_back) (int, char**)) {
 
   Sbuild_heap (argv[0], custom_init);
   if (call_back != NULL) call_back (argc, argv);
+  Sscheme_deinit ();
 }
 
 /* ------------------------------------------------------------------------
@@ -634,8 +590,6 @@ start_scheme (int argc, char** argv, void (*call_back) (int, char**)) {
 
 void
 initialize_scheme () {
-  chez_lock lock;
-
   /* Foreign entry points first: boot-chez.scm binds each of them with
      foreign-procedure while it is being loaded, and Chez resolves the symbol
      at that point. */
