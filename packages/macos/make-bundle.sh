@@ -191,6 +191,8 @@ else
   rsync -a "$ROOT/TeXmacs/progs/init-texmacs-chez.scm" \
            "$ROOT/TeXmacs/progs/init-texmacs.scm" \
            "$ROOT/TeXmacs/progs/tm-mode.el" "$SHARE/progs/"
+  [ -f "$ROOT/TeXmacs/progs/init-chez-compile.scm" ] && \
+    cp "$ROOT/TeXmacs/progs/init-chez-compile.scm" "$SHARE/progs/"
   rsync -a "$ROOT/TeXmacs/progs/kernel/boot/boot-chez.scm" \
            "$ROOT/TeXmacs/progs/kernel/boot/chez-compat.scm" \
            "$ROOT/TeXmacs/progs/kernel/boot/raw-ffi-table.scm" \

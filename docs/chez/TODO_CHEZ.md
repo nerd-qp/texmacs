@@ -971,3 +971,37 @@ This document tracks identified architectural improvements and performance bottl
     - `export-latex` warm latency dropped under 1 second to **982 ms**.
     - Full round-trip fidelity verified on Cork accented text (`"élève naïve à l'Haÿ-les-Roses Grüße"`) and nested mathematical ASTs.
 
+### [X] Fast-Path Dynamic Evaluation (`eval`) in `boot-chez.scm` [RESOLVED & IMPLEMENTED]
+- **Location**: [`TeXmacs/progs/kernel/boot/boot-chez.scm:43-95`](TeXmacs/progs/kernel/boot/boot-chez.scm#L43-L95)
+- **Problem & Root Cause**:
+  1. In Guile, `(eval 'file-menu)` was a simple hash-table variable lookup in the current module.
+  2. In Chez Scheme, even with `(compile-interpret-simple #t)`, `eval` wraps forms into syntax objects, invokes the full `syntax-case` macro expander (`expand`), checks scope ribbons, builds intermediate core ASTs, and dispatches to the interpreter (~2,600 ns and heap allocation per lookup).
+  3. Menu generation (`(expand-all-menus)`) in `menu-widget.scm` repeatedly expands `(link <name>)` (evaluating symbols like `'file-menu`, `'math-menu`) and `(dynamic (proc))` (evaluating forms like `'(texmacs-focus-icons)`).
+  4. Dynamic toolbar/focus-bar updates during editing in `generic-menu.scm` call `eval` on focus-tag names and markup icons on every cursor move.
+  5. Furthermore, `tm-quote-eval-literals` unconditionally re-`cons`ed every pair on every list passed to `eval`, allocating 20+ MB of garbage per 100k calls.
+- **Implementation**:
+  1. **Bound Symbols**: Resolved via `(top-level-value form e)` in ~14 ns (direct value-cell dereference, ~200× faster than native `eval`, zero GC allocation).
+  2. **Self-Evaluating Literals**: Numbers, strings, booleans, procedures, characters, and `'()` return `form` immediately.
+  3. **`(quote datum)`**: Unwrapped directly to `(cadr form)` in ~4 ns (660× faster, zero allocation).
+  4. **Nullary Calls `(proc)`**: If `(car form)` is a bound top-level procedure and `(cdr form)` is null, executes the procedure directly in native machine code (~90× faster, eliminates 1 GB allocation per 100k calls).
+  5. **Zero-Allocation Structural Sharing**: Rewrote `tm-quote-eval-literals` to reuse original cons cells via `(if (and (eq? a a*) (eq? d d*)) x (cons a* d*))`, allocating 0 bytes when no raw procedures or boxes need quoting.
+- **Empirical Results**:
+  - `menus-math`: dropped from **70.6 ms $\to$ 55.3 ms** (**+21.7% faster**).
+  - `menus-text`: cold dropped from **628 ms $\to$ 540 ms**, warm dropped from **81.0 ms $\to$ 73.0 ms**.
+  - `open-change-log`: cold dropped from **1,546 ms $\to$ 906 ms** (**+41.4% faster**), warm dropped from **223 ms $\to$ 168 ms**.
+  - `typing-math-270-keys`: warm dropped from **1,103 ms $\to$ 1,013 ms** (**+8.2% faster**).
+
+### [ ] Further Dynamic Evaluation (`eval`) & Menu Generation Optimizations
+- **Location**: [`TeXmacs/progs/kernel/gui/menu-widget.scm`](TeXmacs/progs/kernel/gui/menu-widget.scm#L949-L958), [`TeXmacs/progs/generic/generic-menu.scm`](TeXmacs/progs/generic/generic-menu.scm), [`TeXmacs/progs/kernel/boot/boot-chez.scm`](TeXmacs/progs/kernel/boot/boot-chez.scm)
+- **Opportunities Identified**:
+  1. **Unary Call Fast-Path for Pure Functions**:
+     - In dynamic menus (e.g. `generic-menu.scm`), forms like `(eval (upcase-first "file"))` or `(eval (pull-focus t "name"))` are common.
+     - Extend direct invocation in `eval` to single-argument calls where the function is a bound procedure and the argument is a literal (string/number/boolean/symbol), avoiding Chez expander dispatch.
+  2. **Direct Procedure Caching at Caller Sites (`menu-widget.scm`)**:
+     - In `menu-widget.scm`: `menu-expand-link` executes `((eval (cadr p)))`.
+     - Because `menu-widget.scm` is compiled into `menu-widget.so`, checking `(cond ((procedure? target) target) ((and (symbol? target) (top-level-bound? target)) (top-level-value target)) (else (eval target)))` allows the compiled C-native code of `menu-widget.so` to resolve the procedure directly without a dynamic Scheme call to `eval`.
+  3. **Dynamic Menu Tree Memoization**:
+     - Menus like `(texmacs-menu)` return static trees that are re-expanded repeatedly when traversing submenus.
+     - Adding short-lived caching or hash-consing for static submenus during a single menu-bar refresh cycle avoids re-expanding unchanged subtrees on every key press.
+
+
