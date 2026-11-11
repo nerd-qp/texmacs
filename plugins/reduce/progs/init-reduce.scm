@@ -25,8 +25,9 @@
   (:session "Reduce")
   (:scripts "Reduce"))
 
+(define reduce-help #f)
+
 (when (supports-reduce?)
-  (define reduce-help #f)
   (import-from (reduce-kbd))
   (import-from (reduce-menus))
   (lazy-input-converter (reduce-input) reduce)

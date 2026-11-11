@@ -21,13 +21,13 @@
   (:session "Mupad")
   (:scripts "Mupad"))
 
+(texmacs-modes
+  (in-mupad-math% #t in-mupad% in-math%)
+  (in-mupad-prog% #t in-mupad% in-prog%))
+
 (when (supports-mupad?)
   (import-from (mupad-menus))
   (lazy-input-converter (mupad-input) mupad)
-
-  (texmacs-modes
-    (in-mupad-math% #t in-mupad% in-math%)
-    (in-mupad-prog% #t in-mupad% in-prog%))
 
   (kbd-map
     (:mode in-mupad-prog?)

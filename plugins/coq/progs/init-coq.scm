@@ -19,8 +19,8 @@
 (when (url-exists-in-path? "coqtop")
   (lazy-format (convert coq init-coqml) vernac))
 
-(when (supports-coq?)
-  (texmacs-modes
-    (in-coq-style% (style-has? "coq-style")))
+(texmacs-modes
+  (in-coq-style% (style-has? "coq-style")))
 
+(when (supports-coq?)
   (lazy-keyboard (coq-kbd) in-coq-style?))

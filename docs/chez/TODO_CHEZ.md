@@ -294,28 +294,26 @@ This document tracks identified architectural improvements and performance bottl
   3. Exported `bytevector?` cleanly in `kernel/boot/chez-compat.scm` (using `(#%bytevector? x)`) and `kernel/boot/compat.scm` (returning `#f` in Guile 1.8).
   4. Verified that `(url-materialize "tmfs://help/article/tm/misc/images/welcome-videos.png" "r")` writes exact raw binary PNG data (verified with `file`: `PNG image data, 371 x 248, 8-bit/color RGBA`) and renders in the welcome page without warnings.
 
-### [ ] Top-Level Definitions Inside Conditional Expressions in Plugin Inits (`invalid context for definition`)
+### [X] Top-Level Definitions Inside Conditional Expressions in Plugin Inits (`invalid context for definition`) [RESOLVED]
 - **Locations**:
-  - [`plugins/coq/progs/init-coq.scm:24-26`](plugins/coq/progs/init-coq.scm#L24-L26)
-  - [`plugins/giac/progs/init-giac.scm:30-36`](plugins/giac/progs/init-giac.scm#L30-L36)
-  - [`plugins/mupad/progs/init-mupad.scm:28-30`](plugins/mupad/progs/init-mupad.scm#L28-L30)
-  - [`plugins/reduce/progs/init-reduce.scm:29`](plugins/reduce/progs/init-reduce.scm#L29)
+  - [`plugins/coq/progs/init-coq.scm:22-26`](plugins/coq/progs/init-coq.scm#L22-L26)
+  - [`plugins/giac/progs/init-giac.scm:24-36`](plugins/giac/progs/init-giac.scm#L24-L36)
+  - [`plugins/mupad/progs/init-mupad.scm:24-30`](plugins/mupad/progs/init-mupad.scm#L24-L30)
+  - [`plugins/reduce/progs/init-reduce.scm:28-29`](plugins/reduce/progs/init-reduce.scm#L28-L29)
+  - [`plugins/cocoa5/progs/init-cocoa5.scm:16-17`](plugins/cocoa5/progs/init-cocoa5.scm#L16-L17)
 - **Problem**:
   In GNU Guile 1.8, top-level code was evaluated dynamically by an interpreter. When evaluating `(when (supports-<plugin>?) ...)`, if the plugin CLI tool was not installed on the host system, the test returned `#f` and Guile skipped the body without evaluating or inspecting internal definitions.
-  In Chez Scheme, `(load "file.scm")` is not an interpreter; it compiles each top-level form to native machine code ahead of time via `compile` / `sc-expand`. `when` expands into `(if test (begin ...))`. In standard R6RS and Chez Scheme, `if` is an expression form, and definitions (`define`, `texmacs-modes`) are strictly forbidden inside an expression context. Consequently, even when the plugin is not installed and the condition would evaluate to `#f`, Chez Scheme's compiler fails during the compilation/expansion phase with:
+  In Chez Scheme, `(load "file.scm")` compiles each top-level form to native machine code ahead of time via `compile` / `sc-expand`. `when` expands into `(if test (begin ...))`. In standard R6RS and Chez Scheme, `if` is an expression form, and definitions (`define`, `texmacs-modes`) are strictly forbidden inside an expression context. Consequently, even when the plugin is not installed and the condition would evaluate to `#f`, Chez Scheme's compiler failed during the compilation/expansion phase with:
   ```
   Exception: invalid context for definition (define ...)
   ```
-  Specific plugin occurrences:
-  - `init-coq.scm`: wraps declarative `(texmacs-modes (in-coq-style% ...))` inside `(when (supports-coq?) ...)`.
-  - `init-mupad.scm`: wraps declarative `(texmacs-modes (in-mupad-math% ...) (in-mupad-prog% ...))` inside `(when (supports-mupad?) ...)`.
-  - `init-giac.scm`: places `(define (giac-eval) ...)` inside `(when (supports-giac?) ...)`.
-  - `init-reduce.scm`: places `(define reduce-help #f)` inside `(when (supports-reduce?) ...)`.
-- **Status / Options**:
-  Upstream plugin source files are currently kept pristine.
-  Possible approaches:
-  1. Hoist declarative definitions (`define`, `texmacs-modes`) outside `(when ...)` to top level in the plugin files, or
-  2. Provide a top-level unrolling loader or dynamic macro for uncompiled `.scm` plugin files.
+  Additionally, `init-cocoa5.scm` contained Guile-style non-semicolon-terminated hex escapes (`\x05\x02`), which failed in Chez's R6RS reader.
+- **Solution Implemented**:
+  1. Hoisted `texmacs-modes` declarations outside `(when ...)` to top level in `init-coq.scm` and `init-mupad.scm`.
+  2. Hoisted `(define (giac-eval) ...)` outside `(when ...)` to top level in `init-giac.scm`.
+  3. Hoisted `(define reduce-help #f)` outside `(when ...)` to top level in `init-reduce.scm`.
+  4. Updated string escapes in `init-cocoa5.scm` to R6RS-compliant `\x05;\x02;`.
+  5. Verified headless execution with `(lazy-plugin-force)`: all 46 plugins initialize cleanly with zero `invalid context for definition` or `LOAD-ERROR` exceptions.
 
 ### [ ] Missing Conversion Route for `(convert doc "texmacs-tree" "latex-document")` in `tm-convert.scm`
 - **Location**: [`TeXmacs/progs/kernel/texmacs/tm-convert.scm:272-274`](TeXmacs/progs/kernel/texmacs/tm-convert.scm#L272-L274), [`TeXmacs/progs/convert/latex/init-latex.scm`](TeXmacs/progs/convert/latex/init-latex.scm)

@@ -21,19 +21,19 @@
   (:session "Giac")
   (:scripts "Giac"))
 
+(define (giac-eval)
+  (import-from (utils plugins plugin-eval))
+  (if (selection-active-any?)
+    (let* ((t (tree->stree (the-selection)))
+           (u (plugin-eval "giac" "default" t)))
+      (clipboard-cut "primary")
+      (insert (stree->tree u)))))
+
 (when (supports-giac?)
   (import-from (giac-kbd))
   (import-from (giac-menus))
   (lazy-input-converter (giac-input) giac)
   (plugin-approx-command-set! "giac" "approx")
-
-  (define (giac-eval)
-    (import-from (utils plugins plugin-eval))
-    (if (selection-active-any?)
-      (let* ((t (tree->stree (the-selection)))
-       (u (plugin-eval "giac" "default" t)))
-  (clipboard-cut "primary")
-  (insert (stree->tree u)))))
 
   (kbd-map
     (:mode in-giac?)
