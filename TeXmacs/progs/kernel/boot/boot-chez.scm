@@ -30,6 +30,39 @@
       compilation-environment
       (make-parameter (interaction-environment))))
 
+;; Guile's primitive loader
+(unless (top-level-bound? 'primitive-load)
+  (define-top-level-value 'primitive-load
+    (top-level-value 'load (scheme-environment))))
+
+;; --- Guile eval/defined?/filter semantics ----------------------------------
+;; Guile's eval accepts 1 argument (current module); R6RS eval requires 2.
+(define tm-orig-eval (if (top-level-bound? 'tm-orig-eval) tm-orig-eval (top-level-value 'eval (scheme-environment))))
+(define primitive-eval tm-orig-eval)
+
+(define (tm-quote-eval-literals x)
+  (cond ((or (box? x) (procedure? x)) (list 'quote x))
+        ((pair? x)
+         (if (eq? (car x) 'quote)
+             x
+             (cons (tm-quote-eval-literals (car x)) (tm-quote-eval-literals (cdr x)))))
+        (else x)))
+(define tm-quote-boxes tm-quote-eval-literals)
+
+(define eval
+  (lambda (form . env)
+    (let ((form* (if (or (box? form) (procedure? form) (pair? form))
+                     (tm-quote-eval-literals form)
+                     form)))
+      (if (null? env)
+          (tm-orig-eval form* tm-user-env)
+          (tm-orig-eval form* (car env))))))
+
+(if (not (top-level-bound? 'select))
+    (eval '(define (select . args)
+             (error "select" "POSIX select is not available on this Scheme dialect"))
+          tm-user-env))
+
 ;;; Foundational helpers & Guile compatibility primitives
 ;; Guile's `noop` is a pass-through: it returns its first argument when
 ;; called with one, and #f when called with none.  The previous Chez version
@@ -729,18 +762,75 @@
 
 (define (tm-syntax-context s) s)
 
-;; TODO: to rewrite in here.
-;; (define *procedure-sources* (make-weak-eq-hashtable))
+;; Guile compatibility load-module: delegates to Chez module-load for specs, or tm-load-file for paths.
+(define (load-module m)
+  (if (list? m)
+      (module-load m)
+      (tm-load-file m)))
 
-;; (define-syntax lambda/source
-;;   (syntax-rules ()
-;;     [(_ formals body1 body2 ...)
-;;      (let ([proc (lambda formals body1 body2 ...)])
-;;        (hashtable-set! *procedure-sources* proc '(lambda formals body1 body2 ...))
-;;        proc)]))
+;; Chez Scheme retains no source for compiled procedures and, unlike Guile
+;; 1.8's memoizer, exposes no hook to capture it.  Source is therefore recorded
+;; explicitly by the macro layer that *creates* the procedure -- the
+;; source-record! calls in $>, $symbol (kernel/gui/gui-markup.scm) and
+;; kbd-map-one (kernel/gui/kbd-define.scm) -- and kept in a weak table keyed by
+;; procedure, so entries die with the closures they describe.
+(define procedure-source-table (make-weak-eq-hashtable))
 
-;; (define (procedure-source proc)
-;;   (hashtable-ref *procedure-sources* proc #f))
+(define (source-record! proc form)
+  "Attach the source form FORM to PROC and return PROC."
+  (if (procedure? proc) (hashtable-set! procedure-source-table proc form))
+  proc)
+
+;; Total, like the stub it replaces: a miss yields #f, never an error.
+(define (procedure-source p)
+  (if (procedure? p) (hashtable-ref procedure-source-table p #f) #f))
+
+(define (promise-source action)
+  (and (procedure? action)
+       (let ((source (procedure-source action)))
+         (and (pair? source)
+              (equal? (car source) 'lambda)
+              (equal? (cadr source) '())
+              (null? (cdddr source))
+              (caddr source)))))
+
+(define (procedure-arity p)
+  (if (procedure? p)
+      (let ((mask (procedure-arity-mask p)))
+        (let loop ((i 0) (m mask))
+          (cond ((odd? m) i)
+                ((= m 0) -1)
+                (else (loop (+ i 1) (quotient m 2))))))
+      -1))
+
+;; module introspection: looks up a bound symbol in the kernel environment.
+;; Every TeXmacs module shares that one environment, so the module argument is
+;; accepted for API compatibility and otherwise ignored.
+(define (module-ref mod sym . default)
+  (let ((env (if (top-level-bound? '*base-kernel-env*) *base-kernel-env* tm-user-env)))
+    (if (top-level-bound? sym env)
+        (top-level-value sym env)
+        (if (null? default)
+            (texmacs-error "module-ref" "~s is not exported" sym)
+            (car default)))))
+
+(define *base-kernel-env* tm-user-env)
+
+(define texmacs-user
+  (if (top-level-bound? 'texmacs-user)
+      texmacs-user
+      tm-user-env))
+
+(define texmacs-user-kernel tm-user-env)
+
+(define developer-mode?
+  (if (top-level-bound? 'developer-mode?)
+      developer-mode?
+      (and (top-level-bound? 'cpp-get-preference)
+           (equal? (cpp-get-preference "developer tool" "off") "on"))))
+
+(unless (top-level-bound? 'notify-preferences-booted)
+  (define-top-level-value 'notify-preferences-booted (lambda () (noop))))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;;; Engine bootstrap

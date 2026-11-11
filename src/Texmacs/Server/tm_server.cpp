@@ -144,7 +144,8 @@ tm_server_rep::tm_server_rep ()
        initialization runs (mirrors the s7 branch's init-texmacs-s7.scm).
        In lint mode we use a trimmed bootstrap that loads the kernel only and
        then runs the macro linter, instead of the whole editor program. */
-    if (lint_mode) tm_init_file= "$TEXMACS_PATH/progs/init-linter.scm";
+    if (compile_modules_mode) tm_init_file= "$TEXMACS_PATH/progs/init-chez-compile.scm";
+    else if (lint_mode) tm_init_file= "$TEXMACS_PATH/progs/init-linter.scm";
     else tm_init_file= "$TEXMACS_PATH/progs/init-texmacs-chez.scm";
 #else
     tm_init_file= "$TEXMACS_PATH/progs/init-texmacs.scm";
