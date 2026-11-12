@@ -115,10 +115,6 @@
   ;;; File and form helpers
   ;;; -------------------------------------------------------------------------
 
-  (define (scan-scm-file? path)
-    (let ((n (string-length path)))
-      (and (> n 4)
-           (string=? (substring path (- n 4) n) ".scm"))))
 
   (define (scan-read-text path)
     (guard (e (else #f))

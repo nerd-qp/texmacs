@@ -1,5 +1,5 @@
 # GNU TeXmacs (Chez port)
-This is an attempt to make texmacs run on chez scheme. I tested the compile_kernel.scm script in MacOS, and so far most .scm files compile. The TeXmacs program runs but with some existing bugs to iron out.
+This is an attempt to make texmacs run on chez scheme. I tested the compile-texmacs.scm script in MacOS, and so far most .scm files compile. The TeXmacs program runs but with some existing bugs to iron out.
 
 Still needs a lot of work to achieve the following:
 1. The program works;

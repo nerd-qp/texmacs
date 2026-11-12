@@ -21,8 +21,6 @@
 #include <cstdio>
 #include <cstdlib>  /* getenv, _fullpath/_MAX_PATH on Windows */
 
-extern bool compile_modules_mode;
-
 /* ------------------------------------------------------------------------
  * Global engine state
  * ---------------------------------------------------------------------- */
@@ -426,15 +424,6 @@ load_scheme_file (string file) {
   Sunlock_object (str);
 }
 
-/* Look up a procedure the bootstrap defined and call it with one argument. */
-static void
-call_boot_proc (const char* name, ptr arg) {
-  ptr proc= Stop_level_value (Sstring_to_symbol (name));
-  if (!Sprocedurep (proc))
-    boot_failed ("Chez Scheme: boot-chez.scm did not define " * string (name));
-  Scall1 (proc, arg);
-}
-
 /* TODO: Sstring_of_length converts 'name' into a Chez Scheme Sstring by
  * treating raw 8-bit bytes as Unicode scalar values (Latin-1 mapping). If a
  * procedure name ever contained non-ASCII UTF-8 characters, this would corrupt
@@ -807,8 +796,6 @@ initialize_scheme () {
   fprintf (stderr, "Chez Scheme: loading %s\n", (char*) c_string (boot));
   fflush (stderr);
   load_scheme_file (boot);
-  call_boot_proc ("tm-set-compiling-mode!",
-                  Sboolean (compile_modules_mode ? 1 : 0));
 
   /* Cache frequently-used procedures.  These ptrs live in STATIC storage,
      which Chez's collector does not scan: newly allocated objects start in

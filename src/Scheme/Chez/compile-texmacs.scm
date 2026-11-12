@@ -5,8 +5,6 @@
 ;;; Usage:
 ;;;  ENV=??? TeXmacs --compile-modules
 
-(define-top-level-value 'texmacs-chez-compiling? #t)
-(define-top-level-value 'boot-kernel-loaded? #t)
 
 ;; ---- Paths and small helpers ---------------------------------------------
 

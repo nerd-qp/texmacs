@@ -243,33 +243,28 @@
                     (kernel old-gui old-gui-test)))
     (interaction-environment)))
 
-;; ---------------------------------------------------------------------------
-;; Runtime definitions for dynamic Scheme evaluation (slotlist-load, REPL, scripts)
-;;
-;; In Chez Scheme, evaluating `(export ...)` outside of a module or library raises:
-;; `Exception in export: export form outside of a module or library ()`.
-;; We therefore provide runtime top-level definitions of define-public,
-;; define-public-macro, define-module-macro, and indirect-export that expand directly
-;; without (export ...) forms so dynamic loading runs cleanly in (interaction-environment).
-;; ---------------------------------------------------------------------------
-(eval '(define-syntax define-public
-         (syntax-rules ()
-           ((_ (name . args) body ...)
-            (define (name . args) body ...))
-           ((_ name val)
-            (define name val))))
-      (interaction-environment))
-(eval '(define-syntax indirect-export
-         (syntax-rules ()
-           ((_ id ...) (noop))))
-      (interaction-environment))
-(eval '(define-syntax define-public-macro
-         (syntax-rules ()
-           ((_ (nm . formals) body ...)
-            (define-macro (nm . formals) body ...))
-           ((_ nm val)
-            (define-macro nm val))))
-      (interaction-environment))
+;; Runtime overrides for the export-bearing definition macros.  boot-chez.scm's
+;; versions emit (export ...) while compile-export-mode? is active, and `export'
+;; is illegal outside a module or library.  Keep the export-free versions so
+;; expanding a dynamically loaded source form never trips over it.
+
+(define-syntax define-public
+  (syntax-rules ()
+    ((_ (name . args) body ...)
+     (define (name . args) body ...))
+    ((_ name val)
+     (define name val))))
+
+(define-syntax indirect-export
+  (syntax-rules ()
+    ((_ id ...) (noop))))
+
+(define-syntax define-public-macro
+  (syntax-rules ()
+    ((_ (nm . formals) body ...)
+     (define-macro (nm . formals) body ...))
+    ((_ nm val)
+     (define-macro nm val))))
 
 ;;; ------------------------------------------------------------- run linter
 

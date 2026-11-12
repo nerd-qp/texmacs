@@ -83,12 +83,6 @@
        (guard (e (#t #f)) (eval '(import (tarjan)))))
       (else (loop (cdr dirs))))))
 
-;; TeXmacs rebinds `keyword?' in boot-chez.scm; plain Chez has no such
-;; procedure, so the test and bench scripts would die on the first call.
-(define (mc-keyword? x)
-  (and (symbol? x)
-       (let ((s (symbol->string x)))
-         (and (> (string-length s) 0) (char=? (string-ref s 0) #\:)))))
 
 (define (mc-walk-each xs f)
   (let loop ((p xs)) (when (pair? p) (f (car p)) (loop (cdr p)))))

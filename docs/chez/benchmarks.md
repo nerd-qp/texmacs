@@ -2,7 +2,7 @@
 
 **Date**: 2026-11-05  
 **Platform**: Apple M2 Virtual Machine (macOS arm64), Qt 6.12.0  
-**Benchmark Script**: [`docs/chez/bench/ui.scm`](chez/bench/ui.scm)  
+**Benchmark Script**: [`docs/chez/bench/ui.scm`](bench/ui.scm)\
 **Execution Environment**:
 
 ```bash

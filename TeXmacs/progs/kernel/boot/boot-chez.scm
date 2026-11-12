@@ -53,7 +53,6 @@
                    x
                    (cons a* d*)))))
         (else x)))
-(define tm-quote-boxes tm-quote-eval-literals)
 
 ;;; ---------------------------------------------------------------------------
 ;;; Redefined `eval` with fast-path lookup
@@ -309,7 +308,6 @@
          (if (file-exists? file) (delete-file file))
          (open-output-file file))
         (else (open-input-file file))))
-(define (flush-all-ports) (noop))
 
 (define (map-in-order f . ls)
   (if (or (null? ls) (null? (car ls))) '()
@@ -329,7 +327,6 @@
     (proc p)
     (get-output-string p)))
 
-(define (char-set? x) (or (list? x) (procedure? x) (char? x)))
 (define (string->char-set str)
   (let loop ((l (string->list str)) (acc '()))
     (cond ((null? l) (reverse acc))
@@ -342,11 +339,6 @@
           ((memv (car chars) res) (loop (cdr chars) res))
           (else (loop (cdr chars) (cons (car chars) res))))))
 
-(define (char-set-contains? cs c) (char-in-set? c cs))
-(define (char-set . chars) (apply char-set-adjoin '() chars))
-(define (char-set-union . sets)
-  (let loop ((sets sets) (acc '()))
-    (if (null? sets) acc (loop (cdr sets) (apply char-set-adjoin acc (car sets))))))
 
 (define old-record-accessor (top-level-value 'record-accessor (scheme-environment)))
 (define (record-accessor rtd field)
@@ -761,16 +753,6 @@
   (module-provide m)
   m)
 
-(meta define (tm-mod-spec->symbol k spec-stx)
-  (let* ((datum (syntax->datum spec-stx))
-         (parts (if (pair? datum)
-                    (map symbol->string datum)
-                    (list (symbol->string datum))))
-         (joined (let loop ((p parts))
-                   (if (null? (cdr p))
-                       (car p)
-                       (string-append (car p) ":" (loop (cdr p)))))))
-    (datum->syntax k (string->symbol joined))))
 
 (define-syntax use-modules
   (syntax-rules ()
@@ -809,7 +791,6 @@
                  (display "Warning] :export no longer supported\n")))))
     options))
 
-(define (tm-syntax-context s) s)
 
 ;; Guile compatibility load-module: delegates to Chez module-load for specs, or tm-load-file for paths.
 (define (load-module m)
@@ -843,14 +824,6 @@
               (null? (cdddr source))
               (caddr source)))))
 
-(define (procedure-arity p)
-  (if (procedure? p)
-      (let ((mask (procedure-arity-mask p)))
-        (let loop ((i 0) (m mask))
-          (cond ((odd? m) i)
-                ((= m 0) -1)
-                (else (loop (+ i 1) (quotient m 2))))))
-      -1))
 
 ;; module introspection: looks up a bound symbol in the kernel environment.
 ;; Every TeXmacs module shares that one environment, so the module argument is
@@ -1034,11 +1007,6 @@
         (call-with-port (open-file-input-port path)
           (lambda (p) (or (get-bytevector-all p) #vu8())))
         #vu8())))
-
-;; Dedicated binary loader, also usable directly by callers that know they
-;; want a bytevector rather than a string.
-(define (binary-load u)
-  (tm-load-bytes (tm-load-path u)))
 
 
 ;; TODO: The current approach is load byte if failing utf8 loading.
@@ -1259,11 +1227,6 @@
                 (lambda args (tm-call-by-name name args))))
         (interaction-environment)))
     #t))
-
-;; [C++] -compile-modules / -recompile-modules set this before any progs file
-;; is read; init-texmacs-chez.scm and compile-texmacs.scm both consult it.
-(define (tm-set-compiling-mode! on?)
-  (define-top-level-value 'texmacs-chez-compiling? on? (interaction-environment)))
 
 ;; The version string is compiled into the C++ side (TEXMACS_VERSION); ask the
 ;; glue for it rather than duplicating the number here.  An unrecognised

@@ -5,7 +5,7 @@
 This is a condensed replacement for the 2854-line chronological handoff. Historical checkpoints, completed roadmaps, disproven designs, and references to artifacts that existed only in an earlier, different Chez tree have been removed (§10). The earlier "embedded engine" port (Chez 10.5.0-pre-release.1, `docker-sandbox-opencode` workspace, `chez-harness`, `build-chez-macos/`) is a **different project**; none of its paths or commands apply here.
 
 > [!NOTE]
-> `TODO_CHEZ.md` (856 lines, 55 unchecked items) is a stale historical TODO: it still claims "184 Compiled, 273 Remaining" and "400 modules (88.3%)", and its C++↔Scheme optimization items were disproven by the measurements in §7. Do not use it as a status source.
+> `TODO_CHEZ.md` (1008 lines, 53 unchecked items) is a stale historical TODO: it still claims "184 Compiled, 273 Remaining" and "400 modules (88.3%)", and its C++↔Scheme optimization items were disproven by the measurements in §7. Do not use it as a status source.
 
 ---
 
@@ -20,7 +20,7 @@ This is a condensed replacement for the 2854-line chronological handoff. Histori
 7. **Never load `init-texmacs.scm`.** All runtime registrations (`lazy-define`, `lazy-menu`, `lazy-keyboard`, fonts, plugin hooks) belong natively in `init-texmacs-chez.scm`.
 8. **Fail fast.** On any failure, report it loudly. No `if/else` bypasses, silent catches, or `top-level-bound?` fallbacks that mask missing definitions; fix root causes.
 9. **No AI git commits.** All agent changes stay unstaged/uncommitted for user review.
-10. **No Scheme source in C++.** `src/Scheme/Chez/chez_tm.cpp` contains no Scheme code and builds no Scheme source strings. Everything the kernel needs on the Scheme side lives in `TeXmacs/progs/kernel/boot/boot-chez.scm`, which `initialize_scheme()` loads with Chez's primitive `load` **before** `initialize_glue()`. The only Scheme knowledge left in C++ is the *names* it caches with `Stop_level_value` (`tmscm-null`, `tm-blackbox-guardian`, `tm-eval-string`, `tm-load-file`, `tm-apply`, `list?`, `equal?`, `object-stack`, `tm-install-procedure!`) plus the two entry points it calls (`tm-set-compiling-mode!`, and `tm-reinstall-io-hooks!` from `init-texmacs-chez.scm`). Consequences: (a) `boot-chez.scm` must not call a glue procedure at load time; (b) the engine globals must be defined at the very top of that file, because `reap-blackboxes!` is installed as the collect-request handler a few forms down and reads `tm-blackbox-guardian`, so a GC mid-load otherwise raises `variable tm-blackbox-guardian is not bound`; (c) `init-texmacs-chez.scm` and `init-linter.scm` must not re-load `boot-chez.scm` (guard on `boot-chez-loaded?`), or `tm-load-file` is recompiled against the `load` shim and the two recurse forever.
+10. **No Scheme source in C++.** `src/Scheme/Chez/chez_tm.cpp` contains no Scheme code and builds no Scheme source strings. Everything the kernel needs on the Scheme side lives in `TeXmacs/progs/kernel/boot/boot-chez.scm`, which `initialize_scheme()` loads with Chez's primitive `load` **before** `initialize_glue()`. The only Scheme knowledge left in C++ is the *names* it caches with `Stop_level_value` (`tmscm-null`, `tm-blackbox-guardian`, `tm-eval-string`, `tm-load-file`, `tm-apply`, `list?`, `equal?`, `object-stack`, `tm-install-procedure!`). C++ no longer calls any Scheme procedure by name; `tm-reinstall-io-hooks!` is invoked from `init-texmacs-chez.scm`. Consequences: (a) `boot-chez.scm` must not call a glue procedure at load time; (b) the engine globals must be defined at the very top of that file, because `reap-blackboxes!` is installed as the collect-request handler a few forms down and reads `tm-blackbox-guardian`, so a GC mid-load otherwise raises `variable tm-blackbox-guardian is not bound`; (c) `init-texmacs-chez.scm` and `init-linter.scm` must not re-load `boot-chez.scm` (guard on `boot-chez-loaded?`), or `tm-load-file` is recompiled against the `load` shim and the two recurse forever.
 
    Dead weight dropped from the bootstrap on 2026-11-05 (160 lines): the per-form / source-loader path (`tm-load-forms-itemized`, `tm-load-from-source`, `tm-read-all-forms`, `tm-compile-eval`, `tm-form-diagnose`, `tm-collect-keywords`, `tm-bind-keywords`) and the compiled-module candidate search (`tm-so-candidates`, `tm-find-so-file`), plus the `tm-load-probe` stub. All of it was unreachable — `tm-load-file` is only `(load f)`, `load-module-file` resolves `.so` files through `module-so-file`, and `compile-texmacs.scm` defines its own `tm-collect-keywords` / `tm-bind-keywords`. Consequence: the `LOAD-START` / `LOAD-SUMMARY` / `FORM-STILL-FAILS` / `LOAD-BATCH-FALLBACK` diagnostic tokens no longer exist; a failing file reports `LOAD-ERROR` with its condition and backtrace, and nothing reports per form.
 
@@ -202,7 +202,7 @@ Historical 181/186-module timings came from the retired workspace and are not co
 
 ### 4.2 Static analysis: `TeXmacs -lint`
 
-`texmacs.cpp:819` sets `lint_mode`, which makes `tm_server` boot `progs/init-linter.scm` instead of `init-texmacs.scm` — kernel only, no GUI, no editor program. `init-linter.scm` loads `src/Scheme/Chez/linter.scm`, which runs five phases over the progs tree and writes four TSVs:
+`texmacs.cpp:819` sets `lint_mode`, which makes `tm_server` boot `progs/init-linter.scm` instead of `progs/init-texmacs-chez.scm` (compile mode similarly boots `progs/init-chez-compile.scm`) — kernel only, no GUI, no editor program. `init-linter.scm` loads `src/Scheme/Chez/linter.scm`, which runs five phases over the progs tree and writes four TSVs:
 
 ```bash
 SCHEMEHEAPDIRS="/opt/homebrew/Cellar/chezscheme/10.4.1/lib/csv10.4.1/tarm64osx" \
@@ -395,7 +395,7 @@ Chez vs published s7/femtolisp numbers (§7.7 of `src/docs/femtolisp/07-performa
 | open-change-log, warm | **185.4 ms** (±8.7 ms) | 215.5 ms (±12.4 ms) | 188.0 ms (±12.7 ms) |
 | manual-124-pages, total | **6549.0 ms** (warm peak) | 6970.7 ms (±348.1 ms) | **6596.3 ms** (±206.9 ms) |
 
-*Detailed breakdowns, raw vectors, and manual compilation runs are recorded in [`docs/benchmarks.md`](../benchmarks.md).*
+*Detailed breakdowns, raw vectors, and manual compilation runs are recorded in [`docs/chez/benchmarks.md`](benchmarks.md).*
 
 The large-document case is off by default: `TEXMACS_BENCH_BIG=1 ... -x '(load "docs/chez/bench/ui.scm")'` types into the 273-page manual (~80 s per round, currently ~197 ms/key) and reproduces §7.2's repaint behaviour. `update-forced` is stricter than the GUI, which defers typesetting to the paint path. **Load matters more than any of these gaps** — the same binary gave `manual.scm expand` 763–1213 ms at load ~2 and 2109 ms at load 7.3. Report load average with every number; never compare a single run against a single run.
 
@@ -491,7 +491,7 @@ Not wired into `run-all-tests`: `regtest-tm-convert` (`kernel/texmacs/tm-convert
 
 ## 10. What was removed, and where to recover it
 
-The 2854-line chronological handoff was compressed to this file on 2026-11-05. Removed: interim milestones (39/39, 116/184/220/400/452-module checkpoints), roadmaps and "next steps" already completed, the disproven C++↔Scheme optimization blueprint, the reverted "Phase 2" trampoline design, resolved-bug narratives, and all references to artifacts that exist only in the retired workspace (`build-chez-macos/`, `chez-harness`, `build-texmacos.sh`, `misc/chez-probe.sh`, `src/Scheme/Chez/compile_kernel.scm`, the `TEXMACS_*_PROBE` instrumentation, Chez 10.5.0-pre-release.1 paths). Duplicate `## 4` / `## 5` / `## 6` numbering and three copies of the boot-module table were collapsed. Still-valid engine invariants from the legacy handoff were folded into §5.
+The 2854-line chronological handoff was compressed to this file on 2026-11-05. Removed: interim milestones (39/39, 116/184/220/400/452-module checkpoints), roadmaps and "next steps" already completed, the disproven C++↔Scheme optimization blueprint, the reverted "Phase 2" trampoline design, resolved-bug narratives, and all references to artifacts that exist only in the retired workspace (`build-chez-macos/`, `chez-harness`, `build-texmacos.sh`, `misc/chez-probe.sh`, `src/Scheme/Chez/compile_kernel.scm` (now `src/Scheme/Chez/compile-texmacs.scm`), the `TEXMACS_*_PROBE` instrumentation, Chez 10.5.0-pre-release.1 paths). Duplicate `## 4` / `## 5` / `## 6` numbering and three copies of the boot-module table were collapsed. Still-valid engine invariants from the legacy handoff were folded into §5.
 
 Recovery is reversible; nothing was committed:
 

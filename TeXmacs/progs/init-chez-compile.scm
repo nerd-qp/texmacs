@@ -26,10 +26,6 @@
 ;; Ensure I/O hooks are set
 (tm-reinstall-io-hooks!)
 
-;; Set compiling mode flags
-(define-top-level-value 'texmacs-chez-compiling? #t)
-(define-top-level-value 'boot-kernel-loaded? #t)
-
 ;; Standard load routing for compilation pass
 (define load
   (lambda (f . ignore-env)

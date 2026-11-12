@@ -5,10 +5,10 @@ plural; there is no `conversion.scm`), plus a check of the step-by-step
 `compile-profile` recipe against this Chez build. `bench/PROFILING.md` §6 rated
 `compile-profile` as possible but not attempted; this is that attempt.
 
-A readable HTML summary of the same data is
-[`conversions-profile-report.html`](conversions-profile-report.html). For the
-measured time budget and optimization potential, see
-[`CONVERSIONS_TIME_BUDGET.md`](CONVERSIONS_TIME_BUDGET.md).
+A readable HTML summary of the same data was produced during the profiling
+session but is not checked into this tree. For the measured time budget and
+optimization potential, see the sections below and
+[`CHEZ_PERFORMANCE_ANALYSIS.md`](CHEZ_PERFORMANCE_ANALYSIS.md).
 
 ## Read this first
 
