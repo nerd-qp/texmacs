@@ -1,4 +1,4 @@
-;;; macro-closure.scm -- transitive dependency closure for macro helpers.
+;;; compiler-oracle.scm -- what a form needs, and how to make it live.
 ;;;
 ;;; The linter's reactive model (call-with-lazy-deps) discovers a helper only
 ;;; after `expand' or `eval' has already failed on it: trap the condition,
@@ -18,10 +18,18 @@
 ;;; it needs no macros to be installed -- which is the whole point, since the
 ;;; set it returns is what gets installed.
 ;;;
-;;; Everything here is a pure procedure.  No I/O, no environment access, no
-;;; side effects at load time, so the file can be primitive-load-ed inside a
-;;; TeXmacs process (linter.scm) and `load-ed from plain Chez (the test and the
-;;; bench script).
+;;; The walkers are pure procedures: no I/O, no environment access, no side
+;;; effects at load time.  That is what lets the linter, macro-closure-test.scm
+;;; and macro-closure-report.scm load this file without booting TeXmacs.
+;;;
+;;; The last section adds the other half of the same idea -- the oracle, which
+;;; turns one of those closures into live definitions -- and that half does read
+;;; the source tree and write into a running scheme.  It is kept in the same
+;;; file because the two are one mechanism (closure says what is needed, oracle
+;;; makes it live), and separated by a banner so a reader looking for the pure
+;;; part can stop there.  Loading this file stays side-effect free: everything
+;;; below is definitions, and `read-all-forms' (compiler-scan.scm) is only
+;;; called when `oracle-index-tree!' runs.
 ;;;
 ;;; ---------------------------------------------------------------------
 ;;; The graph
@@ -447,3 +455,184 @@
             (mc-filter (lambda (c) (> (length c) 1))
                        (vector->list cv))
             n-back-edges)))
+
+;;; =====================================================================
+;;; The oracle: from source forms to a live environment
+;;; =====================================================================
+;;;
+;;; `mc-*' answers "which definitions does this form need?" without touching an
+;;; environment.  The oracle is the half that can act on the answer: an index
+;;; of where every definition in TeXmacs/progs lives, and the install/unbind
+;;; pair that puts one there and takes it back out.  It is what lets a macro
+;;; expander call a helper that its own module never mentions.
+;;;
+;;; Requires `read-all-forms' from (compiler-scan) once `oracle-index-tree!'
+;;; is called, and the `compilation-environment' parameter from
+;;; compiler-helper.scm once anything is installed.
+
+;; ---- Definitions the transpiler has to understand ------------------------
+
+(define *macro-definers*
+  '(define-syntax define-macro define-public-macro define-module-macro
+    define-export-macro tm-define-macro))
+
+(define *value-definers*
+  '(define define-public provide-public tm-define define-table))
+
+;; (define ((f a) b) body) -> (define (f a) (lambda (b) body))
+(define (uncurry-def definer head body)
+  (if (pair? (car head))
+      (uncurry-def definer (car head) (list `(lambda ,(cdr head) ,@body)))
+      `(,definer ,head ,@body)))
+
+(define (tm-maybe-uncurry form)
+  (if (and (pair? form)
+           (memq (car form) '(define define-public provide-public))
+           (pair? (cadr form))
+           (pair? (caadr form)))
+      (uncurry-def (car form) (cadr form) (cddr form))
+      form))
+
+;; (define (f) "doc" body) -> (define (f) body)
+(define (tm-strip-docstring form)
+  (if (and (pair? form)
+           (memq (car form) '(define define-public provide-public))
+           (pair? (cadr form))
+           (pair? (cddr form))
+           (string? (caddr form))
+           (pair? (cdddr form)))
+      (cons (car form) (cons (cadr form) (cdddr form)))
+      form))
+
+(define (normalize-definition form)
+  (tm-strip-docstring (tm-maybe-uncurry form)))
+
+
+;; ---- The index and the installs -------------------------------------------
+
+(define *oracle-defs* (make-eq-hashtable))
+(define *oracle-installing* (make-eq-hashtable))
+(define *oracle-installed* (make-eq-hashtable))
+(define *ephemeral-syms* '())
+
+(define (scheme-files dir)
+  (let loop ((rel "") (acc '()))
+    (let ((full (if (string=? rel "") dir (string-append dir "/" rel))))
+      (if (file-directory? full)
+          (fold-left
+            (lambda (acc name)
+              (if (member name '("." ".."))
+                  acc
+                  (loop (if (string=? rel "") name (string-append rel "/" name)) acc)))
+            acc
+            (directory-list full))
+          (if (string-suffix? ".scm" rel) (cons rel acc) acc)))))
+
+(define (oracle-index-tree! defs root)
+  (define (index-top! top rel mod)
+    ;; Only definitions a top-level context can hold: the form itself, or a
+    ;; definition under a top-level begin/if/when/unless wrapper.
+    (define (record! form)
+      (let ((name (mc-leftmost-symbol (mc-cadr form))))
+        (when (and (symbol? name) (not (hashtable-ref defs name #f)))
+          (hashtable-set! defs name
+                          (vector name
+                                  (if (memq (car form) *macro-definers*) 'macro 'value)
+                                  form top rel mod)))))
+    (define (walk form)
+      (when (pair? form)
+        (let ((head (car form)))
+          (cond ((memq head '(quote syntax syntax-rules quasiquote)) (void))
+                ((and (symbol? head)
+                      (or (memq head *macro-definers*)
+                          (memq head *value-definers*))
+                      (pair? (cdr form)))
+                 (record! form))
+                ((memq head '(begin if when unless))
+                 (for-each walk (cdr form)))))))
+    (walk top))
+
+  (for-each
+    (lambda (rel)
+      (let ((forms (guard (e (else '()))
+                     (read-all-forms (string-append root "/" rel)))))
+        (let ((header (find (lambda (form)
+                              (and (pair? form) (eq? (car form) 'texmacs-module)))
+                            forms)))
+          (when header
+            (for-each (lambda (top) (index-top! top rel (mc-cadr header))) forms)))))
+    (scheme-files root)))
+
+;; A name is live if it holds a value or a working syntax binding. Neither
+;; primitive answers this alone: `top-level-bound?' is #f for a macro, and
+;; `top-level-syntax?' is #t for symbols that were never defined.
+(define (oracle-live? name env)
+  (or (top-level-bound? name env)
+      (guard (e (else #f)) (procedure? (top-level-syntax name env)))
+      (hashtable-ref *oracle-installed* name #f)))
+
+(define (unbound-marker)
+  (guard (e (else (void)))
+    (#%$unbound-object)))
+
+(define (unbind-symbol! entry env)
+  (let ((name (car entry))
+        (syntax (cdr entry)))
+    (when (top-level-bound? name env)
+      (define-top-level-value name (unbound-marker) env))
+    (define-top-level-syntax name syntax env)))
+
+(define (oracle-head-dependency form)
+  (let ((head (and (pair? form) (car form))))
+    (if (and (symbol? head) (hashtable-ref *oracle-defs* head #f))
+        (list head)
+        '())))
+
+(define (oracle-macro? sym)
+  (let ((e (hashtable-ref *oracle-defs* sym #f)))
+    (and e (eq? (vector-ref e 1) 'macro))))
+
+(define (oracle-site-deps site)
+  (append
+    (oracle-head-dependency (vector-ref site 3))
+    (if (eq? (vector-ref site 1) 'macro)
+        ;; A macro definer hides its body from `mc-free-references' (a template is
+        ;; not a use), so its dependencies come from `mc-macro-deps' instead.
+        (or (mc-macro-deps (vector-ref site 2)) '())
+        (mc-val-dependencies (vector-ref site 3) oracle-macro? (compilation-environment)))))
+
+
+(define (oracle-install! name)
+  (let ((env (compilation-environment))
+        (site (and (symbol? name) (hashtable-ref *oracle-defs* name #f))))
+    (cond ((not site) #f)
+          ((oracle-live? name env) #t)
+          ((hashtable-ref *oracle-installing* name #f) #f)   ; cycle: leave it
+          (else (oracle-install-site! name site env)))))
+
+(define (oracle-install-site! name site env)
+  (let ((syntax (top-level-syntax name env))
+        (form (if (eq? (vector-ref site 1) 'macro)
+                  (vector-ref site 3)
+                  (normalize-definition (vector-ref site 2)))))
+    (hashtable-set! *oracle-installing* name #t)
+    (for-each oracle-install! (oracle-site-deps site))
+    (let ((ok? (guard-eval 'ORACLE-INSTALL-FAIL (list name) #f
+                 (lambda ()
+                   ;; `tm-define' publishes through `(interaction-environment)';
+                   ;; keep that inside the module's environment, not the global one.
+                   (parameterize ((interaction-environment env))
+                     (eval form (interaction-environment)))
+                   #t))))
+      (hashtable-delete! *oracle-installing* name)
+      (when ok?
+        (set! *ephemeral-syms* (cons (cons name syntax) *ephemeral-syms*))
+        (hashtable-set! *oracle-installed* name #t))
+      ok?)))
+
+(define (oracle-bring-in-form! form)
+  (for-each oracle-install!
+            (if (and (pair? form) (memq (car form) *macro-definers*))
+                (or (mc-macro-deps form) '())
+                (mc-val-dependencies form oracle-macro? (compilation-environment)))))
+

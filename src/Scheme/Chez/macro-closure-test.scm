@@ -1,4 +1,5 @@
-;;; macro-closure-test.scm -- Self-contained tests for macro-closure.scm.
+;;; macro-closure-test.scm -- Self-contained tests for the mc-* walkers
+;;; in compiler-oracle.scm.
 ;;;
 ;;; Runs under plain Chez Scheme, no TeXmacs runtime needed:
 ;;;
@@ -8,12 +9,12 @@
 
 (define here
   (let loop ((d (current-directory)))
-    (cond ((file-exists? (string-append d "/macro-closure.scm")) d)
-          ((file-exists? (string-append d "/src/Scheme/Chez/macro-closure.scm"))
+    (cond ((file-exists? (string-append d "/compiler-oracle.scm")) d)
+          ((file-exists? (string-append d "/src/Scheme/Chez/compiler-oracle.scm"))
            (string-append d "/src/Scheme/Chez"))
-          ((file-exists? (string-append d "/texmacs/src/Scheme/Chez/macro-closure.scm"))
+          ((file-exists? (string-append d "/texmacs/src/Scheme/Chez/compiler-oracle.scm"))
            (string-append d "/texmacs/src/Scheme/Chez"))
-          ((file-exists? (string-append d "/../src/Scheme/Chez/macro-closure.scm"))
+          ((file-exists? (string-append d "/../src/Scheme/Chez/compiler-oracle.scm"))
            (string-append d "/../src/Scheme/Chez"))
           (else d))))
 
@@ -26,7 +27,7 @@
         (else #f)))
 
 (load (string-append here "/tarjan.scm"))
-(load (string-append here "/macro-closure.scm"))
+(load (string-append here "/compiler-oracle.scm"))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Harness

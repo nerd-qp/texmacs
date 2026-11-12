@@ -17,15 +17,15 @@
 
 (define here
   (let loop ((d (current-directory)))
-    (cond ((file-exists? (string-append d "/macro-closure.scm")) d)
-          ((file-exists? (string-append d "/src/Scheme/Chez/macro-closure.scm"))
+    (cond ((file-exists? (string-append d "/compiler-oracle.scm")) d)
+          ((file-exists? (string-append d "/src/Scheme/Chez/compiler-oracle.scm"))
            (string-append d "/src/Scheme/Chez"))
-          ((file-exists? (string-append d "/../src/Scheme/Chez/macro-closure.scm"))
+          ((file-exists? (string-append d "/../src/Scheme/Chez/compiler-oracle.scm"))
            (string-append d "/../src/Scheme/Chez"))
           (else d))))
 
 (load (string-append here "/tarjan.scm"))
-(load (string-append here "/macro-closure.scm"))
+(load (string-append here "/compiler-oracle.scm"))
 
 ;;; ------------------------------------------------------------------- args
 
