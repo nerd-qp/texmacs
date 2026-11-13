@@ -161,7 +161,19 @@ if [ "$BUNDLE_QT" = 1 ]; then
                "$APP/Contents/Info.plist")
     /usr/libexec/PlistBuddy -c 'Set :CFBundleExecutable texmacs.bin' \
       "$APP/Contents/Info.plist"
-    "$MACDEPLOYQT" "$APP" -always-overwrite >/dev/null
+
+    DEPLOY_FLAGS=(-always-overwrite)
+    # Qt 6 macdeployqt strips and signs sequentially by default. Disabling both
+    # here saves substantial time; make-bundle.sh signs everything in parallel
+    # at the end after dependency resolution anyway.
+    if "$MACDEPLOYQT" -help 2>&1 | grep -q -- "-no-codesign"; then
+      DEPLOY_FLAGS+=(-no-codesign)
+    fi
+    if "$MACDEPLOYQT" -help 2>&1 | grep -q -- "-no-strip"; then
+      DEPLOY_FLAGS+=(-no-strip)
+    fi
+    "$MACDEPLOYQT" "$APP" "${DEPLOY_FLAGS[@]}" >/dev/null
+
     /usr/libexec/PlistBuddy -c "Set :CFBundleExecutable $ORIG_EXE" \
       "$APP/Contents/Info.plist"
   else
@@ -230,6 +242,12 @@ say "copying compiled modules"
 mkdir -p "$SHARE/boot"
 rsync -a --include '*/' --include '*.so' --include 'module-deps.scm' --exclude '*' \
       "$SRC_BOOT/" "$SHARE/boot/"
+
+# Ensure boot-chez.so is bundled
+if [ -f "$SRC_BOOT/kernel/boot/boot-chez.so" ]; then
+  mkdir -p "$SHARE/boot/kernel/boot"
+  cp -p "$SRC_BOOT/kernel/boot/boot-chez.so" "$SHARE/boot/kernel/boot/boot-chez.so"
+fi
 
 # ------------------------------------------------- Chez build & lint scripts
 # `-compile-modules` looks for its driver at
@@ -340,8 +358,15 @@ fi
 # dies at launch with "Library not loaded: @rpath/libbrotlicommon.1.dylib".
 # Copy anything still unresolved from Homebrew and repoint the referrer.
 locate_lib () {
-  local base="$1" p
+  local base="$1" p pkg
   for p in /opt/homebrew/lib/"$base" /usr/local/lib/"$base"; do
+    [ -f "$p" ] && { printf '%s\n' "$p"; return 0; }
+  done
+  # Fast lookup for common keg-only dependencies before expanding full wildcard
+  for pkg in brotli webp jpeg-turbo zstd libpng freetype libtiff fontconfig sqlite openssl@3 icu4c; do
+    p="/opt/homebrew/opt/$pkg/lib/$base"
+    [ -f "$p" ] && { printf '%s\n' "$p"; return 0; }
+    p="/usr/local/opt/$pkg/lib/$base"
     [ -f "$p" ] && { printf '%s\n' "$p"; return 0; }
   done
   for p in /opt/homebrew/opt/*/lib/"$base" /usr/local/opt/*/lib/"$base"; do
@@ -387,9 +412,10 @@ bundle_closure () {
     [ "$changed" = 0 ] && break
   done
 
-  # Point every @rpath/ and absolute reference at the in-bundle copy.
+  # Point every @rpath/ and absolute reference at the in-bundle copy (batched).
   while IFS= read -r f; do
     [ -f "$f" ] || continue
+    changes=()
     while IFS= read -r dep; do
       [ -n "$dep" ] || continue
       case "$dep" in
@@ -397,9 +423,11 @@ bundle_closure () {
       esac
       base=${dep##*/}
       [ -f "$APP/Contents/Frameworks/$base" ] || continue
-      install_name_tool -change "$dep" \
-        "@executable_path/../Frameworks/$base" "$f" 2>/dev/null || true
+      changes+=(-change "$dep" "@executable_path/../Frameworks/$base")
     done < <(otool -L "$f" 2>/dev/null | tail -n +2 | awk '{print $1}')
+    if [ ${#changes[@]} -gt 0 ]; then
+      install_name_tool "${changes[@]}" "$f" 2>/dev/null || true
+    fi
   done < <(macho_files)
 }
 
@@ -411,14 +439,18 @@ fi
 # ----------------------------------------------- drop build-machine rpaths
 # A leftover /opt/homebrew/lib rpath lets the bundle silently load libraries
 # from the build machine instead of its own copy, which masks missing files
-# and breaks on any other Mac. Remove every absolute rpath.
+# and breaks on any other Mac. Remove every absolute rpath (batched).
 say "stripping absolute rpaths"
 while IFS= read -r f; do
   [ -f "$f" ] || continue
+  del_rpaths=()
   for rp in $(otool -l "$f" 2>/dev/null | grep -A2 LC_RPATH \
               | grep 'path ' | awk '{print $2}' | grep '^/' || true); do
-    install_name_tool -delete_rpath "$rp" "$f" 2>/dev/null || true
+    del_rpaths+=(-delete_rpath "$rp")
   done
+  if [ ${#del_rpaths[@]} -gt 0 ]; then
+    install_name_tool "${del_rpaths[@]}" "$f" 2>/dev/null || true
+  fi
 done < <(macho_files)
 
 # Stale absolute LC_ID_DYLIB on the Qt plugins is harmless for loading but
@@ -447,13 +479,16 @@ sign_one () {
 }
 
 sign_nested () {
-  local id="$1" f
+  local id="$1" f ncpu
+  ncpu=$(sysctl -n hw.ncpu 2>/dev/null || echo 4)
   for f in "$APP"/Contents/Frameworks/*.framework; do
     [ -d "$f" ] && sign_one "$f" "$id"
   done
-  while IFS= read -r f; do
-    sign_one "$f" "$id"
-  done < <(macho_files)
+  if [ "$id" = "-" ]; then
+    macho_files | xargs -P "$ncpu" -n 1 -I {} codesign --force --sign - "{}" >/dev/null 2>&1 || true
+  else
+    macho_files | xargs -P "$ncpu" -n 1 -I {} codesign --force --options runtime --sign "$id" "{}" >/dev/null 2>&1 || true
+  fi
 }
 
 if [ -n "$SIGN_ID" ]; then

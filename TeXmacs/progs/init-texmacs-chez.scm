@@ -20,25 +20,6 @@
 ;; mode uses init-chez-compile.scm and lint mode uses init-linter.scm, so every
 ;; form below is unconditional runtime initialization.
 
-;; Load foundational Chez Scheme boot definitions.
-;;
-;; The kernel normally gets here second: initialize_scheme() loads
-;; boot-chez.scm before initialize_glue(), because it needs tm-apply,
-;; tm-load-file and the glue installer there.  The fallback below covers the
-;; case where this file is evaluated by something other than the kernel.
-(unless (top-level-bound? 'boot-chez-loaded?)
-  (let ((boot-chez-path
-         (string-append
-          (or (getenv "TEXMACS_PATH") ".")
-          "/progs/kernel/boot/boot-chez.scm")))
-    (if (file-exists? boot-chez-path)
-        (primitive-load boot-chez-path)
-        (display (list 'WARNING-BOOT-CHEZ-NOT-FOUND boot-chez-path)))))
-
-;; initialize_glue() ran after boot-chez.scm and replaced the Chez-native
-;; tm-output / tm-errput with the C++ glue versions; put ours back in charge.
-(tm-reinstall-io-hooks!)
-
 ;; --- Chain to the standard initialization ------------------------------------
 ;;
 ;; Route every subsequent load through the engine's guarded loader, so a

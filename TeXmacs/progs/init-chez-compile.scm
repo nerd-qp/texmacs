@@ -16,16 +16,6 @@
   (display "WARNING: init-chez-compile.scm loaded more than once!\n"))
 (define *init-chez-compile-loaded* #t)
 
-;; Load foundational Chez Scheme boot definitions if not already loaded
-(unless (top-level-bound? '*boot-chez-loaded*)
-  (let ((boot-chez-path (string-append (or (getenv "TEXMACS_PATH") ".") "/progs/kernel/boot/boot-chez.scm")))
-    (if (file-exists? boot-chez-path)
-        (primitive-load boot-chez-path)
-        (display (list 'WARNING-BOOT-CHEZ-NOT-FOUND boot-chez-path)))))
-
-;; Ensure I/O hooks are set
-(tm-reinstall-io-hooks!)
-
 ;; Standard load routing for compilation pass
 (define load
   (lambda (f . ignore-env)

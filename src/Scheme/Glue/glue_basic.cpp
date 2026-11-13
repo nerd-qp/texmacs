@@ -333,6 +333,7 @@ tmg_set_retina_scale (tmscm arg1) {
   return TMSCM_UNSPECIFIED;
 }
 
+#if !defined(TEXMACS_ENGINE_CHEZ) && !defined(CHEZ_SCHEME)
 tmscm
 tmg_tm_output (tmscm arg1) {
   TMSCM_ASSERT_STRING (arg1, TMSCM_ARG1, "tm-output");
@@ -358,6 +359,7 @@ tmg_tm_errput (tmscm arg1) {
 
   return TMSCM_UNSPECIFIED;
 }
+#endif
 
 tmscm
 tmg_win32_display (tmscm arg1) {
@@ -11207,8 +11209,10 @@ initialize_glue_basic () {
   tmscm_install_procedure ("set-retina-zoom",  tmg_set_retina_zoom, 1, 0, 0);
   tmscm_install_procedure ("set-retina-icons",  tmg_set_retina_icons, 1, 0, 0);
   tmscm_install_procedure ("set-retina-scale",  tmg_set_retina_scale, 1, 0, 0);
+#if !defined(TEXMACS_ENGINE_CHEZ) && !defined(CHEZ_SCHEME)
   tmscm_install_procedure ("tm-output",  tmg_tm_output, 1, 0, 0);
   tmscm_install_procedure ("tm-errput",  tmg_tm_errput, 1, 0, 0);
+#endif
   tmscm_install_procedure ("win32-display",  tmg_win32_display, 1, 0, 0);
   tmscm_install_procedure ("cpp-error",  tmg_cpp_error, 0, 0, 0);
   tmscm_install_procedure ("supports-native-pdf?",  tmg_supports_native_pdfP, 0, 0, 0);

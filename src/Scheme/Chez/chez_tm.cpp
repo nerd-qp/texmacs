@@ -403,6 +403,11 @@ boot_failed (string msg) {
    knows where the data directory is. */
 static string
 boot_scheme_path () {
+  const char* boot_env= getenv ("TEXMACS_BOOT_PATH");
+  if (boot_env != NULL && boot_env[0] != '\0') {
+    string p= string (boot_env) * "/kernel/boot/boot-chez.so";
+    if (exists (url (p))) return p;
+  }
   const char* env= getenv ("TEXMACS_PATH");
   if (env != NULL && env[0] != '\0')
     return string (env) * "/progs/kernel/boot/boot-chez.scm";

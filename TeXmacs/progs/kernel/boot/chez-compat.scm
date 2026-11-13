@@ -7,28 +7,43 @@
 
 (texmacs-module (kernel boot chez-compat))
 
+;; Everything here is a Guile-ism that the rest of the tree still relies on.
+;; This module is compiled first (Tier 1) and loaded before any other module,
+;; so a shim may live here rather than in kernel/boot/boot-chez.scm provided the
+;; bootstrap itself does not need it before the module system exists.  What must
+;; stay in boot-chez.scm: the engine globals, `eval', `equal?', the hash-table
+;; constructors the module registry uses, the io hooks (`display'/`write'/
+;; `tm-output'), `quit-TeXmacs-scheme' (called from C++), and the definition /
+;; export machinery (`define-public', `define-public-macro', `define-macro',
+;; `provide-public') that every module needs in order to be compiled at all.
+
 ;;; Numeric helpers
-(define-public (1+ x) (+ x 1))
-(define-public (1- x) (- x 1))
+;;
+;; No `1+' / `1-' here: `(chezscheme)' already exports both with the same
+;; meaning, so a shim would only shadow a builtin with itself.
 
 ;;; Character sets
+;;
+;; `char-set:letter' and `char-set:letter+digit' are not defined: the tree only
+;; ever asks for whitespace, digit, lower-case and upper-case.
 (define-public char-set:whitespace (string->list " \t\n\r\f\v"))
 (define-public char-set:digit (string->list "0123456789"))
 (define-public char-set:lower-case (string->list "abcdefghijklmnopqrstuvwxyz"))
 (define-public char-set:upper-case (string->list "ABCDEFGHIJKLMNOPQRSTUVWXYZ"))
-(define-public char-set:letter (append char-set:lower-case char-set:upper-case))
-(define-public char-set:letter+digit (append char-set:letter char-set:digit))
 
 ;;; List mutators
-
+;;
+;; Only `delq!' is used (kernel/boot/srfi.scm).  `delete!', `delq' and `delv!'
+;; had no callers and are gone.
 (define-public (delq! x l) (remq! x l))
-(define-public (delv! x l) (remv! x l))
-(define-public (delete! x l) (remove! x l))
-(define-public (delq x l) (remq x l))
 
 (define-public (acons k v l) (cons (cons k v) l))
 
 ;;; Association lists
+;;
+;; `assq-ref' / `assq-set!' / `assq-remove!' had no callers; every alist in the
+;; tree is keyed by string or by a value compared with `equal?', so only the
+;; `assoc-*' family is kept.
 (define-public (assoc-ref alist key) (cond ((assoc key alist) => cdr) (else #f)))
 (define-public (assoc-set! alist key val)
   (let ((entry (assoc key alist)))
@@ -37,17 +52,6 @@
   (let loop ((l alist) (prev #f))
     (cond ((null? l) alist)
           ((equal? (caar l) key)
-           (if prev (begin (set-cdr! prev (cdr l)) alist) (cdr l)))
-          (else (loop (cdr l) l)))))
-
-(define-public (assq-ref alist key) (cond ((assq key alist) => cdr) (else #f)))
-(define-public (assq-set! alist key val)
-  (let ((entry (assq key alist)))
-    (if entry (begin (set-cdr! entry val) alist) (cons (cons key val) alist))))
-(define-public (assq-remove! alist key)
-  (let loop ((l alist) (prev #f))
-    (cond ((null? l) alist)
-          ((eq? (caar l) key)
            (if prev (begin (set-cdr! prev (cdr l)) alist) (cdr l)))
           (else (loop (cdr l) l)))))
 
@@ -65,17 +69,13 @@
         (vector-sort pred seq)
         (chez:sort pred seq))))
 
-(define-public (sort! a b)
-  (sort a b))
-
 ;;; I/O primitives
+;;
+;; `write*' is not defined: nothing in the tree calls it (`display*' is the one
+;; that is used, 293 times).
 (define-public (display* . l)
   "Display all objects in @l."
   (for-each display l))
-
-(define-public (write* . l)
-  "Write all objects in @l to standard output."
-  (for-each write l))
 
 (define-public (read-line . opt)
   (get-line (if (null? opt) (current-input-port) (car opt))))
@@ -346,16 +346,197 @@
   (lambda args (not (apply pred? args))))
 
 ;;; Keyword compatibility
+;;
+;; `string->keyword' had no callers (the tree only ever goes the other way,
+;; keyword -> string/number).
 (define-public (keyword->string x)
   (symbol->string (keyword->symbol x)))
-(define-public (string->keyword x)
-  (symbol->keyword (string->symbol x)))
 (define-public (keyword->number x)
   (let ((s (symbol->string (keyword->symbol x))))
     (string->number (substring s 1 (string-length s)))))
 (define-public (number->keyword x)
   (symbol->keyword (string->symbol (string-append "%" (number->string x)))))
 
+;;; Output capture
+;;
+;; `display' and `write' are rebound by boot-chez.scm so that single-object
+;; output is routed through the C++ `tm-output' hook, and `tm-output' is itself
+;; replaced by the glue.  Fetch Chez's own writers from the scheme environment
+;; so that a capture always writes into the port we hand it.
 
+(define chez:display (top-level-value 'display (scheme-environment)))
+(define chez:write (top-level-value 'write (scheme-environment)))
 
+(define-public (display-to-string x)
+  "Display @x into a fresh string."
+  (call-with-string-output-port (lambda (p) (chez:display x p))))
+
+(define-public (object->string x)
+  "Write @x into a fresh string."
+  (call-with-string-output-port (lambda (p) (chez:write x p))))
+
+;;; Ports and files (Guile argument order)
+(define-public OPEN_READ "r")
+(define-public OPEN_WRITE "w")
+
+(define-public (open-file file mode)
+  (cond ((or (string=? mode "r") (string=? mode "rb"))
+         (open-input-file file))
+        ((or (string=? mode "w") (string=? mode "wb"))
+         (if (file-exists? file) (delete-file file))
+         (open-output-file file))
+        (else (open-input-file file))))
+
+(define-public (call-with-input-string str proc)
+  (proc (open-input-string str)))
+
+(define-public (call-with-output-string proc)
+  (let ((p (open-output-string)))
+    (proc p)
+    (get-output-string p)))
+
+;;; List helpers
+;;
+;; `filter' and `last-pair' are not defined here: `(chezscheme)' exports both
+;; with identical semantics (proper list only, error on `()'), so a shim would
+;; only shadow a builtin with itself.  `kernel/boot/compat.scm' still guards
+;; `filter' with `(defined? 'filter)', which the builtin satisfies.
+(define-public (map-in-order f . ls)
+  (if (or (null? ls) (null? (car ls))) '()
+      (cons (apply f (map car ls))
+            (apply map-in-order f (map cdr ls)))))
+
+(define-public (symbol-append . syms)
+  (string->symbol
+   (apply string-append (map symbol->string syms))))
+
+;;; Character sets represented as lists
+(define-public (string->char-set str)
+  (let loop ((l (string->list str)) (acc '()))
+    (cond ((null? l) (reverse acc))
+          ((memv (car l) acc) (loop (cdr l) acc))
+          (else (loop (cdr l) (cons (car l) acc))))))
+
+(define-public (char-set-adjoin cs . chars)
+  (let loop ((chars chars) (res (if (list? cs) cs (list cs))))
+    (cond ((null? chars) res)
+          ((memv (car chars) res) (loop (cdr chars) res))
+          (else (loop (cdr chars) (cons (car chars) res))))))
+
+;;; Process and error reporting
+(define-public (server-mode?)
+  (if (top-level-bound? 'server-started?)
+      (server-started?)
+      #f))
+
+(define-public (scm-error key subr message args rest)
+  (if (and (string? message) (list? args))
+      (apply error subr message args)
+      (error subr (format "~a: ~a" key message))))
+
+;;; Random numbers and hashing
+(define chez-sys-random
+  (if (top-level-bound? 'random (scheme-environment))
+      (top-level-value 'random (scheme-environment))
+      (lambda (n) (modulo (abs (texmacs-time)) n))))
+
+(define-public (random n . state)
+  (chez-sys-random n))
+
+(define-public (seed->random-state . s)
+  (if (null? s) 1 (car s)))
+
+;; Guile builtin: hash value of obj bounded by n.  Only used for hash tables,
+;; so any deterministic well-distributed value works.
+(define-public (hash obj n)
+  (if (= n 0) 0
+      (modulo (abs (equal-hash obj)) n)))
+
+;;; Records addressed by field name (Guile extension)
+;;
+;; `record-accessor' is used by convert/tools/tmcolor.scm and old-tmtable.scm
+;; (8 calls) with a symbol field name.  The Guile mutator spelling
+;; `record-modifier' had no callers -- Chez calls it `record-mutator' -- so it
+;; is not shimmed.
+(define old-record-accessor
+  (top-level-value 'record-accessor (scheme-environment)))
+
+(define-public (record-accessor rtd field)
+  (if (integer? field)
+      (old-record-accessor rtd field)
+      (let* ((fields (record-type-field-names rtd))
+             (idx (let loop ((i 0))
+                    (cond ((>= i (vector-length fields)) #f)
+                          ((eq? (vector-ref fields i) field) i)
+                          (else (loop (+ i 1)))))))
+        (if idx
+            (old-record-accessor rtd idx)
+            (error 'record-accessor "invalid field specifier" field)))))
+
+;;; Macro-expansion helpers
+;;
+;; These are the classical Lisp destructuring helpers that the TeXmacs macro
+;; layer (kernel/texmacs/tm-define.scm, kernel/gui/menu-convert.scm) calls while
+;; expanding a form, so they are needed at compile time as well as at run time.
+;; tm-define.scm defines its own private copies; the ones below exist because
+;; consumers such as menu-convert.scm reach them through the top-level binding
+;; rather than through an import.  `lambda*' is deliberately absent: tm-define
+;; exports it, and a second export would make the kernel aggregate ambiguous.
+(define-public (ca*r x) (if (pair? x) (ca*r (car x)) x))
+(define-public (ca*adr x) (ca*r (cadr x)))
+
+(define-public (apply* fun head)
+  (cond ((list? head)
+         `(,(apply* fun (car head)) ,@(cdr head)))
+        ((pair? head)
+         `(apply ,(apply* fun (car head)) (cons* ,@(listify (cdr head)))))
+        (else fun)))
+
+(define-public (listify args)
+  (if (pair? args)
+      (cons (car args) (listify (cdr args)))
+      (list args)))
+
+(define-public (and* conds)
+  (if (and (pair? conds) (null? (cdr conds))) (car conds) `(and ,@conds)))
+
+(define-public (begin* conds)
+  (if (and (pair? conds) (null? (cdr conds))) (car conds) `(begin ,@conds)))
+
+(define-public (unlambda pred?)
+  (if (and (pair? pred?) (eq? (car pred?) 'lambda))
+      (caddr pred?)
+      (list pred?)))
+
+;;; Dummy definitions
+;;
+;; `fresh-tm-dummy' hands out a fresh `_tm_def_<n>' symbol when the transpiler
+;; has to name a definition whose name is not known statically.
+(define *tm-dummy-counter* 0)
+
+(define-public (fresh-tm-dummy)
+  (set! *tm-dummy-counter* (+ *tm-dummy-counter* 1))
+  (string->symbol (string-append "_tm_def_" (number->string *tm-dummy-counter*))))
+
+;;; Initialization hooks
+;;
+;; `quit-TeXmacs-scheme' itself stays in boot-chez.scm: the C++ server calls it
+;; by name (src/Texmacs/Server/tm_server.cpp, tm_debug.cpp), so the cell it
+;; mutates is part of the bootstrap contract.
+(define-public-macro (on-entry . cmd)
+  `(begin ,@cmd))
+
+(define-public-macro (on-exit . cmd)
+  `(let ((old-quit quit-TeXmacs-scheme))
+     (set! quit-TeXmacs-scheme
+       (lambda () ,@cmd (old-quit)))))
+
+;;; Guile boot placeholders
+;;
+;; `temp-module' / `temp-value' were only read by kernel/boot/boot.scm, the Guile
+;; bootstrap that is not loaded under Chez, so they are gone.
+;;
+;; The `guile-a?' / `guile-b?' / `guile-c?' / `guile-b-c?' predicates are NOT
+;; here: the transpiler evaluates them as compile-time `if' tests while it walks
+;; the sources, i.e. before any module is loaded, so they stay in boot-chez.scm.
 

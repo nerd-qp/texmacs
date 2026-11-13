@@ -48,11 +48,26 @@
 (primitive-load (string-append *compiler-dir* "/compiler-oracle.scm"))
 (primitive-load (string-append *compiler-dir* "/compiler-helper.scm"))
 
-;; compiler-helper.scm resolves the progs tree, so the boot script it needs is
-;; loaded after it.  The engine normally did this already; the guard is for a
-;; compiler process started some other way.
-(unless (top-level-bound? 'boot-chez-loaded?)
-  (load (progs-path "kernel/boot/boot-chez.scm")))
+;; compiler-helper.scm resolves the progs tree, so boot-chez is handled right
+;; after it: check if it needs compiling; if yes, compile then load; otherwise
+;; just load it. Safeguard: do not load twice if already loaded into this process.
+(let* ((src (progs-path "kernel/boot/boot-chez.scm"))
+       (out (boot-path "kernel/boot/boot-chez.so"))
+       (needs-compiling?
+         (or (not (file-exists? out))
+             (env-flag? "TEXMACS_RECOMPILE_ALL")
+             (and (top-level-bound? '*recompile-all?*) *recompile-all?*)
+             (and (file-exists? src)
+                  (file-exists? out)
+                  (time>? (file-modification-time src)
+                          (file-modification-time out))))))
+  (ensure-dir out)
+  (when needs-compiling?
+    (log-progress-pct "Compiling" "kernel/boot/boot-chez.scm -> boot-chez.so")
+    (compile-file src out)
+    (log-progress-pct "Verified" "boot-chez.so"))
+  (unless (top-level-bound? 'boot-chez-loaded?)
+    (load out)))
 
 ;; ---- Pass 1 --------------------------------------------------------------
 ;;

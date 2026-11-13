@@ -6,6 +6,28 @@ This document tracks identified architectural improvements and performance bottl
 
 ## 1. High Priority (Performance & Startup)
 
+### [!] `save-object` fails on the quit path: `open-output-file: ... file exists`
+- **Location**: [`TeXmacs/progs/kernel/boot/chez-compat.scm`](TeXmacs/progs/kernel/boot/chez-compat.scm) (`open-file`), [`TeXmacs/progs/kernel/boot/abbrevs.scm`](TeXmacs/progs/kernel/boot/abbrevs.scm) (`save-object`), `save-learned` → `quit-TeXmacs-scheme`
+- **Symptom** (only with a real `$HOME` that already has the file):
+  ```
+  (TM-CALL-ERROR failed for ~/.TeXmacs-chez/system/interactive.scm: file exists
+                 FUN: quit-TeXmacs-scheme ARGS: ())
+  Exception in open-output-file: failed for ~/.TeXmacs-chez/system/interactive.scm: file exists
+    (FRAME 0 CODE save-object SRC (open-file (url-materialize file ) OPEN_WRITE))
+    (FRAME 1 CODE quit-TeXmacs-scheme SRC (($top-level-value 'save-learned)))
+  ```
+- **Problem**: `save-object` is `(let ((out (open-file (url-materialize file "") OPEN_WRITE))) (write value out) (close-port out))`, and `open-file` with mode `"w"` is `(if (file-exists? file) (delete-file file))` followed by `(open-output-file file)`. Chez's `open-output-file` raises `&i/o-file-already-exists` when the target exists, so the whole thing hinges on that delete taking effect. On the quit path it does not, and the save is lost.
+- **Impact**: `save-learned` throws, and `on-exit` expands to `(lambda () cmd ... (old-quit))` — so `(old-quit)` never runs and **every shutdown hook registered before it is silently skipped**. The learned state (`interactive.scm`) is never written. Any other `save-object` caller reached during shutdown has the same problem: user shortcuts, the personal spell dictionary, the GPG wallet, the server user DB. The failure is console-only, so the user-visible symptom is "my shortcuts / preferences keep reverting".
+- **Ruled out** (do not re-investigate these):
+  1. **Not glue shadowing.** `delete-file` and `file-exists?` are `(chezscheme)` primitives — there is no `tm_install_procedure` for either in `src/Scheme/Glue/`, and neither is defined anywhere in `TeXmacs/progs/`. An earlier theory that the C++ glue re-binds them is wrong.
+  2. **Not "existing files always fail".** In a clean run, `(save-object "~/.TeXmacs-chez/system/x.scm" 99)` on an existing file returns `#<void>` and overwrites it (`file-exists?` → `#t`).
+  3. **Not specific to `interactive.scm`.** `save-learned`'s real argument is `"$TEXMACS_HOME_PATH/system/interactive.scm"`, which `url-materialize` expands to the correct absolute path with `file-exists?` → `#t` at the moment of failure.
+  4. **Not the `chez-compat` refactor.** `open-file`'s body is byte-identical to the pre-change copy in `boot-chez.scm`; the bug is pre-existing and was only never exercised because every headless run used `HOME=fakehome` (empty, so the file never pre-exists).
+- **Key observation**: `(save-learned)` invoked manually from `-x` **succeeds** (`RES=#<void>`). The failure is on the **second** call — the one made by `quit-TeXmacs-scheme` during shutdown — with the same path and `file-exists?` → `#t`. So this is a shutdown-ordering problem, not a missing delete in general.
+- **Next step**: wrap `delete-file` on the quit path to see whether it is called at all there and what it returns; check whether something re-creates the file between the delete and the open (the C++ side may `save` the same file during teardown), and whether tmfs/`url-materialize` teardown changes the path at shutdown. A defensive fix is to stop relying on delete-then-create (`open-output-file` with an explicit truncate option) — but confirm the mechanism first.
+- **Reproducer**: with an existing `~/.TeXmacs-chez/system/interactive.scm`, `HOME=$HOME TEXMACS_BOOT_PATH=$PWD/build-texmacos/boot ./build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -H` exits 0 but prints the error at quit.
+- **Diagnostic traps**: (a) never park test `.scm` files in `~/.TeXmacs-chez/system/` — TeXmacs loads `system/*.scm` at startup, so a stray file silently kills the boot; (b) `kill -9` on the app leaves `~/.TeXmacs-chez/system/boot_lock`, which blocks the next start with no output at all — `rm` it before re-testing.
+
 ### [!] Warning: Eager Evaluation Side Effects & Stateful Macro Branching (`if`/`else` at Expand Time)
 - **Location**: [`src/Scheme/Chez/compile-texmacs.scm`](src/Scheme/Chez/compile-texmacs.scm), macro definers across `TeXmacs/progs/`
 - **Problem**:
@@ -225,6 +247,25 @@ This document tracks identified architectural improvements and performance bottl
   - **Dynamic Runtime Override**: In development mode (`--dev` or `TEXMACS_DEV_MODE=1`), compare `.scm` file modification timestamps against `*texmacs-boot-timestamp*`. If a source file on disk is newer than the pre-compiled boot image, `module-provide` dynamically re-loads that single file via `tm-load-file`, hot-updating procedures in RAM without requiring a full rebuild of `texmacs.boot`.
   - **Rebuild Cache Utility**: Use the dedicated `--build-chez-boot` command-line flag to rebuild and dump `texmacs.boot` on disk.
   - **Bundled Location Reminder**: When creating production release bundles (e.g. `.app` or Linux packages), ensure `build-boot.scm` and `boot_files.scm` are bundled into `$TEXMACS_PATH` (or `$TEXMACS_PATH/src/Scheme/Chez/`) so `--build-chez-boot` works out-of-the-box without requiring a full source git checkout.
+
+### [ ] Packaging Optimization: Prune Unused Qt Plugins in macOS Bundle
+- **Location**: [`packages/macos/make-bundle.sh`](packages/macos/make-bundle.sh) (`macdeployqt` and `bundle_closure`)
+- **Problem**:
+  `macdeployqt` pessimistically deploys all plugins available in the host Qt installation (`sqldrivers`, `virtualkeyboard`, `networkinformation`, `tls`, `generic`).
+  Beyond the plugin `.dylib`s themselves, these plugins introduce heavy transitive dependencies:
+  - `sqldrivers/libqsqlite.dylib` pulls in the entire `QtSql.framework`.
+  - `tls/libqopensslbackend.dylib` pulls in `/opt/homebrew/opt/openssl@4/lib/libssl.4.dylib` and `libcrypto.4.dylib` (~12 MB).
+  Each unnecessary binary forces `bundle_closure` to run transitive dependency resolution, `install_name_tool` patching, and code signing, adding 15–25 MB of bloat and substantial packaging latency.
+- **Action Plan**:
+  1. Either invoke `macdeployqt "$APP" -no-plugins` and selectively copy only the required plugins:
+     - `platforms/libqcocoa.dylib`
+     - `styles/libqmacstyle.dylib`
+     - `imageformats/` (PNG, JPEG, SVG)
+     - `iconengines/` (SVG icons)
+  2. Or prune unused directories (`sqldrivers`, `virtualkeyboard`, `networkinformation`, `tls/libqopensslbackend.dylib`) immediately after `macdeployqt` runs, before `bundle_closure` begins.
+- **Expected Benefits**:
+  - Drops deployment size by **15–25 MB** (avoids shipping `QtSql.framework` and OpenSSL).
+  - Skips dependency resolution and code-signing on dozens of unused dylibs, significantly speeding up `make-bundle.sh --bundle-qt`.
 
 ---
 

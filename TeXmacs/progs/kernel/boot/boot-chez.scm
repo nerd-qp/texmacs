@@ -34,11 +34,12 @@
 (unless (top-level-bound? 'primitive-load)
   (define-top-level-value 'primitive-load
     (top-level-value 'load (scheme-environment))))
+(unless (top-level-bound? 'load)
+  (define-top-level-value 'load primitive-load))
 
 ;; --- Guile eval/defined?/filter semantics ----------------------------------
 ;; Guile's eval accepts 1 argument (current module); R6RS eval requires 2.
-(define tm-orig-eval (if (top-level-bound? 'tm-orig-eval) tm-orig-eval (top-level-value 'eval (scheme-environment))))
-(define primitive-eval tm-orig-eval)
+(define primitive-eval (if (top-level-bound? 'primitive-eval) primitive-eval (top-level-value 'eval (scheme-environment))))
 
 (define (tm-quote-eval-literals x)
   (cond ((or (box? x) (procedure? x)) (list 'quote x))
@@ -77,7 +78,7 @@
 ;;; 4. Nullary calls: `(proc)` where `proc` is a bound top-level procedure executes
 ;;;    the procedure directly in native machine code, bypassing the expander.
 ;;; 5. General forms: sanitized via non-allocating `tm-quote-eval-literals` and
-;;;    forwarded to native `tm-orig-eval`.
+;;;    forwarded to native `primitive-eval`.
 ;;; ---------------------------------------------------------------------------
 (define eval
   (lambda (form . env)
@@ -98,13 +99,13 @@
            (if (procedure? p)
                (p)
                (let ((form* (tm-quote-eval-literals form)))
-                 (tm-orig-eval form* e)))))
+                 (primitive-eval form* e)))))
         ;; 5. General fallback
         (else
          (let ((form* (if (or (box? form) (procedure? form) (pair? form))
                           (tm-quote-eval-literals form)
                           form)))
-           (tm-orig-eval form* e)))))))
+           (primitive-eval form* e)))))))
 
 (if (not (top-level-bound? 'select))
     (eval '(define (select . args)
@@ -146,7 +147,7 @@
       (reap-blackboxes!))))
 
 (define chez:equal?
-  (if (top-level-bound? 'chez:equal?) chez:equal? equal?))
+  (if (top-level-bound? 'chez:equal?) chez:equal? (top-level-value 'equal? (scheme-environment))))
 (define (equal? a b)
   (cond ((eq? a b) #t)
         ((and (box? a) (box? b))
@@ -159,10 +160,6 @@
          (and (equal? (car a) (car b))
               (equal? (cdr a) (cdr b))))
         (else (chez:equal? a b))))
-
-(define (procedure-name p) #f)
-(define (procedure-documentation p) #f)
-(define (make-soft-port . _) #f)
 
 (define (tm-equal-hash x)
   (cond ((and (box? x)
@@ -269,11 +266,12 @@
              #'(apply (lambda var body ...) val)
              #'(let ((var val)) body ...)))))))
 
-(define-syntax and-with
-  (syntax-rules ()
-    ((_ var val body ...)
-     (with var val (and var (begin body ...))))))
-
+;; `with' must stay: abbrevs.scm deliberately leaves its own copy commented out
+;; so that this hygienic transformer is the one in use (see the long note at
+;; abbrevs.scm:98).  `and-with', `with-define' and `with-result' are NOT here --
+;; they are define-public-macros in kernel/boot/abbrevs.scm, which is loaded
+;; right after this file and whose equivalent definitions shadowed these copies
+;; anyway.
 (define-syntax while
   (syntax-rules ()
     ((_ test body ...)
@@ -282,89 +280,16 @@
          body ...
          (loop))))))
 
-(define-syntax with-define
-  (syntax-rules ()
-    ((_ (name . args) fun-body body ...)
-     (let ((name (lambda args fun-body)))
-       body ...))))
 
-(define-syntax with-result
-  (syntax-rules ()
-    ((_ result body ...)
-     (let* ((return result)
-            (dummy (begin body ...)))
-       return))))
-
-
-(define (filter pred? l)
-  (apply append (map (lambda (x) (if (pred? x) (list x) (list))) l)))
-
-(define OPEN_READ "r")
-(define OPEN_WRITE "w")
-(define (open-file file mode)
-  (cond ((or (string=? mode "r") (string=? mode "rb"))
-         (open-input-file file))
-        ((or (string=? mode "w") (string=? mode "wb"))
-         (if (file-exists? file) (delete-file file))
-         (open-output-file file))
-        (else (open-input-file file))))
-
-(define (map-in-order f . ls)
-  (if (or (null? ls) (null? (car ls))) '()
-      (cons (apply f (map car ls))
-            (apply map-in-order f (map cdr ls)))))
-(define (last-pair l)
-  (if (pair? (cdr l)) (last-pair (cdr l)) l))
-(define (symbol-append . syms)
-  (string->symbol
-   (apply string-append (map symbol->string syms))))
-
-(define (call-with-input-string str proc)
-  (proc (open-input-string str)))
-
-(define (call-with-output-string proc)
-  (let ((p (open-output-string)))
-    (proc p)
-    (get-output-string p)))
-
-(define (string->char-set str)
-  (let loop ((l (string->list str)) (acc '()))
-    (cond ((null? l) (reverse acc))
-          ((memv (car l) acc) (loop (cdr l) acc))
-          (else (loop (cdr l) (cons (car l) acc))))))
-
-(define (char-set-adjoin cs . chars)
-  (let loop ((chars chars) (res (if (list? cs) cs (list cs))))
-    (cond ((null? chars) res)
-          ((memv (car chars) res) (loop (cdr chars) res))
-          (else (loop (cdr chars) (cons (car chars) res))))))
-
-
-(define old-record-accessor (top-level-value 'record-accessor (scheme-environment)))
-(define (record-accessor rtd field)
-  (if (integer? field)
-      (old-record-accessor rtd field)
-      (let* ((fields (record-type-field-names rtd))
-             (idx (let loop ((i 0))
-                    (cond ((>= i (vector-length fields)) #f)
-                          ((eq? (vector-ref fields i) field) i)
-                          (else (loop (+ i 1)))))))
-        (if idx
-            (old-record-accessor rtd idx)
-            (error 'record-accessor "invalid field specifier" field)))))
-
-(define old-record-mutator (top-level-value 'record-mutator (scheme-environment)))
-(define (record-modifier rtd field)
-  (if (integer? field)
-      (old-record-mutator rtd field)
-      (let* ((fields (record-type-field-names rtd))
-             (idx (let loop ((i 0))
-                    (cond ((>= i (vector-length fields)) #f)
-                          ((eq? (vector-ref fields i) field) i)
-                          (else (loop (+ i 1)))))))
-        (if idx
-            (old-record-mutator rtd idx)
-            (error 'record-modifier "invalid field specifier" field)))))
+;; Guile compatibility shims that are only needed once a module is running now
+;; live in kernel/boot/chez-compat.scm: the list helpers (`map-in-order',
+;; `symbol-append'), the port and file helpers (`open-file',
+;; `OPEN_READ'/`OPEN_WRITE', the `call-with-*-string' pair), the char-set
+;; constructors, symbolic record field names (`record-accessor' /
+;; `record-modifier' with a symbol instead of an index), `server-mode?',
+;; `scm-error', `random', `hash' and the macro-expansion helpers.  `filter',
+;; `last-pair', `1+' and `1-' were not moved but dropped: `(chezscheme)' already
+;; exports all four with identical semantics.
 
 (define-syntax with-wallet
   (syntax-rules ()
@@ -375,34 +300,6 @@
               (wallet-off?))
          (wallet-dialogue-turn-on (lambda (x) body ...))
          (begin body ...)))))
-
-(define (server-mode?)
-  (if (top-level-bound? 'server-started?)
-      (server-started?)
-      #f))
-
-(define (scm-error key subr message args rest)
-  (if (and (string? message) (list? args))
-      (apply error subr message args)
-      (error subr (format "~a: ~a" key message))))
-
-(define (seed->random-state . s)
-  (if (null? s) 1 (car s)))
-
-(define chez-sys-random
-  (if (top-level-bound? 'random (scheme-environment))
-      (top-level-value 'random (scheme-environment))
-      (lambda (n) (modulo (abs (texmacs-time)) n))))
-
-(define (random n . state)
-  (chez-sys-random n))
-
-;; Guile builtin: hash value of obj bounded by n. Only used for hash tables,
-;; so any deterministic well-distributed value works.
-(define hash
-  (lambda (obj n)
-    (if (= n 0) 0
-        (modulo (abs (equal-hash obj)) n))))
 
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -448,57 +345,35 @@
                (eval `(apply proc ',(cdr (syntax->datum stx)))
                      (compilation-environment)))))))))
 
-(define temp-module #f)
-(define temp-value #f)
+;; The Guile macro-expansion helpers (`ca*r', `ca*adr', `apply*', `listify',
+;; `and*', `begin*', `unlambda') and `fresh-tm-dummy' are in chez-compat.scm.
+;; `lambda*' is not among them: kernel/texmacs/tm-define.scm owns and exports it.
+;;
+;; The `guile-*?' dialect predicates cannot move: the transpiler evaluates a
+;; top-level `(if (guile-c?) ...)' as a compile-time test while it walks the
+;; sources (abbrevs.scm:63), which happens before any module has been loaded.
 (define (guile-a?) #f)
 (define (guile-b?) #f)
 (define (guile-c?) #f)
 (define (guile-b-c?) #f)
-(define (ca*r x) (if (pair? x) (ca*r (car x)) x))
-(define (ca*adr x) (ca*r (cadr x)))
-(define (apply* fun head)
-  (cond ((list? head)
-         `(,(apply* fun (car head)) ,@(cdr head)))
-        ((pair? head)
-         `(apply ,(apply* fun (car head)) (cons* ,@(listify (cdr head)))))
-        (else fun)))
-(define (lambda* head body)
-  (if (pair? head)
-      (lambda* (car head) `((lambda ,(cdr head) ,@body)))
-      (car body)))
-(define (listify args)
-  (if (pair? args)
-      (cons (car args) (listify (cdr args)))
-      (list args)))
-(define (and* conds)
-  (if (and (pair? conds) (null? (cdr conds))) (car conds) `(and ,@conds)))
-(define (begin* conds)
-  (if (and (pair? conds) (null? (cdr conds))) (car conds) `(begin ,@conds)))
-(define (unlambda pred?)
-  (if (and (pair? pred?) (eq? (car pred?) 'lambda))
-      (caddr pred?)
-      (list pred?)))
-(define chez:sort (if (top-level-bound? 'chez:sort) chez:sort sort))
-;; (define cur-conds '())
-;; (define cur-props '())
-;; (define (property-rewrite l)
-;;   `(property-set! ,@l (list ,@cur-conds)))
-(define *tm-dummy-counter* 0)
-(define (fresh-tm-dummy)
-  (set! *tm-dummy-counter* (+ *tm-dummy-counter* 1))
-  (string->symbol (string-append "_tm_def_" (number->string *tm-dummy-counter*))))
 
+;; Stays here for the same reason: tm-preferences.scm replaces it with a
+;; top-level `(set! has-look-and-feel? test-look-and-feel)', which only reaches
+;; the interaction-environment cell that boot-chez.scm defines.  boot.scm writes
+;; this as `(== x "emacs")', abbrevs' alias for `equal?'; abbrevs is not loaded
+;; yet at this point, so the primitive is used directly.
 (define has-look-and-feel? (lambda (x) (equal? x "emacs")))
+
+(define chez:sort (if (top-level-bound? 'chez:sort) chez:sort (top-level-value 'sort (scheme-environment))))
 (define original-display (if (top-level-bound? 'original-display) original-display (top-level-value 'display (scheme-environment))))
 (define original-write (if (top-level-bound? 'original-write) original-write (top-level-value 'write (scheme-environment))))
 
-(define (display-to-string x)
-  (call-with-string-output-port
-    (lambda (p) (original-display x p))))
-
-(define (object->string x)
-  (call-with-string-output-port
-    (lambda (p) (original-write x p))))
+;; `display-to-string' and `object->string' live in kernel/boot/chez-compat.scm.
+;; The io hooks below cannot use them: they are installed by this file and must
+;; work before any module exists.  The module loader, for instance, reports a
+;; missing module-deps.scm through `display' while it is still loading
+;; chez-compat itself.  Capturing into a string port directly keeps the
+;; bootstrap closed; chez-compat.scm exposes the same two procedures publicly.
 
 (define (tm-output s)
   (original-display s))
@@ -509,31 +384,23 @@
 (define (display . l)
   (if (or (null? l) (not (null? (cdr l))))
       (apply original-display l)
-      (tm-output (display-to-string (car l)))))
+      (tm-output (call-with-string-output-port
+                  (lambda (p) (original-display (car l) p))))))
 (define (write . l)
   (if (or (null? l) (not (null? (cdr l))))
       (apply original-write l)
-      (tm-output (object->string (car l)))))
+      (tm-output (call-with-string-output-port
+                  (lambda (p) (original-write (car l) p))))))
 
 (define-syntax provide-public
   (syntax-rules ()
     ((_ (name . args) body ...) (define-public (name . args) body ...))
     ((_ name val) (define-public name val))))
 
+;; Called from C++ (src/Texmacs/Server/tm_server.cpp, tm_debug.cpp), so this
+;; cell is part of the bootstrap contract and stays here.  The `on-entry' /
+;; `on-exit' macros that mutate it are in chez-compat.scm.
 (define (quit-TeXmacs-scheme) (noop))
-
-(define-syntax on-entry
-  (syntax-rules ()
-    ((_ cmd ...) (begin cmd ...))))
-
-(define-syntax on-exit
-  (syntax-rules ()
-    ((_ cmd ...)
-     (let ((old-quit quit-TeXmacs-scheme))
-       (set! quit-TeXmacs-scheme
-         (lambda ()
-           cmd ...
-           (old-quit)))))))
 
 ;; Controls the export keyword, which is not permitted in run-time.
 (define compile-export-mode? (make-parameter #f))
@@ -641,11 +508,6 @@
                    (if (null? (cdr l)) (car l)
                        (string-append (car l) ":" (loop (cdr l)))))))
     (string->symbol joined)))
-
-(define (module-available? module-name)
-  (or (module-loaded? module-name)
-      (and (module-so-file module-name) #t)
-      (file-exists? (module-file-name module-name))))
 
 (define *module-deps-table* #f)
 (define *module-loading-stack* (make-ahash-table))
@@ -769,10 +631,6 @@
     ((_ mod ...)
      (begin (module-provide 'mod) ...))))
 
-(define-syntax with-module
-  (syntax-rules ()
-    ((_ module body ...) (begin body ...))))
-
 (define-syntax texmacs-module
   (syntax-rules ()
     ((_ name options ...)
@@ -791,12 +649,6 @@
                  (display "Warning] :export no longer supported\n")))))
     options))
 
-
-;; Guile compatibility load-module: delegates to Chez module-load for specs, or tm-load-file for paths.
-(define (load-module m)
-  (if (list? m)
-      (module-load m)
-      (tm-load-file m)))
 
 ;; Chez Scheme retains no source for compiled procedures and, unlike Guile
 ;; 1.8's memoizer, exposes no hook to capture it.  Source is therefore recorded
@@ -824,19 +676,6 @@
               (null? (cdddr source))
               (caddr source)))))
 
-
-;; module introspection: looks up a bound symbol in the kernel environment.
-;; Every TeXmacs module shares that one environment, so the module argument is
-;; accepted for API compatibility and otherwise ignored.
-(define (module-ref mod sym . default)
-  (let ((env (if (top-level-bound? '*base-kernel-env*) *base-kernel-env* tm-user-env)))
-    (if (top-level-bound? sym env)
-        (top-level-value sym env)
-        (if (null? default)
-            (texmacs-error "module-ref" "~s is not exported" sym)
-            (car default)))))
-
-(define *base-kernel-env* tm-user-env)
 
 (define texmacs-user
   (if (top-level-bound? 'texmacs-user)
@@ -1057,7 +896,7 @@
                             (tm-safe-irritants e)))
              (newline)
              (cons #t (list (tm-error-message e))))))
-    (load f)))
+    (primitive-load f)))
 
 (define (tm-backtrace c)
   (guard (e (else (display (list 'BT-ERR (tm-error-message e))) (newline)))
@@ -1166,7 +1005,7 @@
     (cond
      ((null? c) #f)
      ((file-exists? (car c))
-      (load (car c)))
+      (primitive-load (car c)))
      (else (loop (cdr c))))))
 
 ;; [C++] Called once per C++ glue function from chez_install_procedure().
@@ -1234,15 +1073,5 @@
 (define (texmacs-version)
   (texmacs-version-release "version"))
 
-;; `tm-output' and `tm-errput' are also C++ glue procedures (glue_basic.cpp)
-;; and initialize_glue() runs *after* this file, so it replaces the writers
-;; above with ones that push strings through the byte-oriented
-;; tmscm_to_string bridge.  init-texmacs-chez.scm calls this once glue is up
-;; to put the Chez-native writers back in charge.
-(define (tm-reinstall-io-hooks!)
-  (define-top-level-value 'tm-output
-    (lambda (s) (original-display s)) (interaction-environment))
-  (define-top-level-value 'tm-errput
-    (lambda (s) (original-display s (console-error-port))) (interaction-environment)))
 
 (define-top-level-value 'boot-chez-loaded? #t)
