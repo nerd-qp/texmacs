@@ -531,6 +531,14 @@
      (set! quit-TeXmacs-scheme
        (lambda () ,@cmd (old-quit)))))
 
+;;; SRFI-8 binding syntax
+;;
+;; Provided here so that kernel/library/list.scm can use `receive' before
+;; kernel/boot/srfi.scm is compiled.
+(define-public-macro (receive vars vals . body)
+  `(call-with-values (lambda () ,vals)
+     (lambda ,vars ,@body)))
+
 ;;; Guile boot placeholders
 ;;
 ;; `temp-module' / `temp-value' were only read by kernel/boot/boot.scm, the Guile

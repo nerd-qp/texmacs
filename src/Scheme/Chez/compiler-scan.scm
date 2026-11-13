@@ -7,6 +7,9 @@
 
 (library (compiler-scan)
   (export read-all-forms
+          scan-header
+          scan-header->deps
+          scan-collect
           scan-interface-hash
           scan-source-file
           scan-source-files

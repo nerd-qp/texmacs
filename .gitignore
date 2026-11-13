@@ -35,6 +35,7 @@ build-guile
 build-chez
 build-texmacos
 build-profile
+build-*
 fakehome
 dist
 

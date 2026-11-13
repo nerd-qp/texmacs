@@ -76,8 +76,9 @@
 ;; SECTION : receive special form (SRFI-8)
 ;; COPYRIGHT : 2000, 2001 Free Software Foundation, Inc.
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
-;; Copied from guile-1.6.0.
-
+;; Moved to kernel/boot/chez-compat.scm so kernel/library/list.scm can be
+;; compiled before srfi.scm.
+#;
 (define-public-macro (receive vars vals . body)
   `(call-with-values (lambda () ,vals)
      (lambda ,vars ,@body)))
