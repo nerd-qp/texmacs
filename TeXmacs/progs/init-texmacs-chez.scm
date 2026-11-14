@@ -531,9 +531,33 @@
   (use-modules (utils misc updater))
   (delayed (:idle 2000) (updater-initialize)))
 
+;; Mutual circular dependency patch:
+;; generic-menu.scm has (use-modules (generic document-menu)) at its tail.
+;; Post-order DFS records document-menu.so as finishing before generic-menu.so,
+;; which when reversed places document-menu before generic-menu.
+;; Because generic-menu defines an unconditioned base (standard-focus-icons t),
+;; loading generic-menu second wipes out document-menu's conditioned overload.
+;; We ensure generic-menu loads first and document-menu follows.
+(define (patch-cyclic-boot-order lst)
+  (let ((doc "generic/document-menu.so")
+        (gen "generic/generic-menu.so"))
+    (if (and (member doc lst) (member gen lst))
+        (let loop ((rest lst) (acc '()))
+          (cond ((null? rest) (reverse acc))
+                ((string=? (car rest) doc)
+                 (let ((after-doc (cdr rest)))
+                   (if (member gen after-doc)
+                       (let* ((without-gen (filter (lambda (x) (not (string=? x gen))) after-doc))
+                              (reordered (cons gen (cons doc without-gen))))
+                         (append (reverse acc) reordered))
+                       (loop (cdr rest) (cons (car rest) acc)))))
+                (else (loop (cdr rest) (cons (car rest) acc)))))
+        lst)))
+
 (define (dump-boot-order-manifest! out-path)
   (let* ((boot-chez "kernel/boot/boot-chez.so")
-         (ordered-list (cons boot-chez (reverse *traced-so-files*))))
+         (raw-ordered (cons boot-chez (reverse *traced-so-files*)))
+         (ordered-list (patch-cyclic-boot-order raw-ordered)))
     (display (string-append "\n[TRACE] Writing boot loading order manifest ("
                             (number->string (length ordered-list))
                             " modules) to " out-path "...\n"))

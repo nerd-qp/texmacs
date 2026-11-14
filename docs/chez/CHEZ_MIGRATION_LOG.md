@@ -4,6 +4,18 @@ This document records the architectural discoveries, root-cause analyses, and de
 
 ---
 
+## 0.1 Post-Order Cycle Reordering & `tree-ref` Keyword Conflation (2026-11-14)
+
+### A. Mutual Circular Dependency Post-Generation Patch
+- **Issue**: `generic/document-menu.so` defines `(standard-focus-icons t) (:require (tree-is-buffer? t))` containing `focus-style-icons` (document style dropdown, paper size, orientation), but `generic/generic-menu.so` defines unconditioned `(standard-focus-icons t)` (fallback). Because `generic-menu.scm` ends with `(use-modules (generic document-menu))`, post-order DFS recorded `document-menu` as completing before `generic-menu`. Reversing the list for sequential boot placed `generic-menu` after `document-menu`, erasing the conditioned toolbar overload.
+- **Fix**: Added `patch-cyclic-boot-order` in [`init-texmacs-chez.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/init-texmacs-chez.scm) inside `dump-boot-order-manifest!`. It inspects the traced list and safely ensures `generic-menu.so` precedes `document-menu.so`.
+
+### B. `tree-ref` Chez Scheme Keyword vs. Symbol Conflation
+- **Issue**: In Guile Scheme, keywords (`:up`, `:next`, `:previous`, `:down`, etc.) and symbols are disjoint types: `(symbol? :up) => #f` and `(keyword? :up) => #t`. Upstream [`utils/library/tree.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/utils/library/tree.scm) fast-paths `((symbol? (car l)) (find-child-with-tag ...))`, while keyword navigations fall through to `(else (select t l))`. In Chez Scheme, `(symbol? :up) => #t` because keywords are implemented as colon-prefixed symbols. This caused `(tree-ref ft :up)` and `(tree-is? ft :up 'document)` to search for a child tag literally named `:up` and return `#f`. As a result, operations like `(variant-equation t)` (switching from inline math to displayed equation via the focus toolbar) silently did nothing because `(tree-is? t :up 'document)` was `#f`.
+- **Fix**: Overrode `tree-ref` in [`init-texmacs-aot.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/init-texmacs-aot.scm) to guard `((and (symbol? (car l)) (not (keyword? (car l)))) ...)`. This restores proper keyword delegation to `(select t l)` for all tree navigations without modifying pristine upstream source files.
+
+---
+
 ## 0. v2 Phased Helpers: Option Registrations (2026-11-14)
 
 `convert-to-r6rs-v2.scm` now reaches **453/453, 0 failures** for the whole tree,
@@ -346,21 +358,26 @@ Rather than splitting modules into synthetic helper units, the codebase reverted
    * In [`boot-chez.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/boot/boot-chez.scm), cleanly included via `(include "initial-foreign-proc.scm")`.
    * Completely eliminated ad-hoc definitions of `ca*r`, `ca*adr`, and deferred `*on-entry-tasks*` queues from `boot-chez.scm`.
 
-2. **Two-Stage AOT Module Loading**:
+2. **Two-Stage AOT Module Loading & Runtime GUI Initializations**:
    * `make-boot.scm` assembles `texmacs.so` containing 452 modules (excluding `boot-chez.so` and `chez-compat.so`).
    * In [`init-texmacs-aot.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/init-texmacs-aot.scm):
      1. Loads `chez-compat.so` and imports `kernel:boot:chez-compat` into `(interaction-environment)`.
      2. Loads consolidated `texmacs.so` (13.05 MB).
      3. Bulk-imports remaining modules into `(interaction-environment)`.
-   * Result: Guile compatibility macros and syntax transformers (including `ca*r`) are available immediately for any dynamic `eval` or top-level macro expansion during `texmacs.so` loading.
+     4. Sets up essential top-level runtime definitions:
+        * `supports-email?` via `(url-exists-in-path? "mmail")` required by `tools-menu` and `main-menu`
+        * `notify-set-attachment` stub
+        * Interactive property annotations (`tm-property (...) (:interactive #t)`) for search, format, style, and dialog selectors
+        * Lazy plugin initialization via `(for-each lazy-plugin-initialize (plugin-list))`
+   * Result: Guile compatibility macros and syntax transformers (including `ca*r`) are available immediately for any dynamic `eval` or top-level macro expansion during `texmacs.so` loading, and all GUI menu bar / toolbar widgets (including style widget and `tools-menu`) construct cleanly without unbound variable errors.
 
-### Verification
-```bash
-./build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -H -x '(begin (display (list "SYNTAX_CHECKS:" (top-level-syntax? (string->symbol "tm-define")) (procedure? ca*r) (texmacs-version))) (newline) (quit-TeXmacs))'
-```
-* Output: `(SYNTAX_CHECKS: #t #t 2.1.5)`
-* Exit code: 0
-* Zero warnings/errors; pristine upstream files preserved; 0 automated AI git commits.
+3. **Module Loading Order: Overloaded `standard-focus-icons`**:
+   * **Symptom**: In the GUI focus toolbar, the Document Style dropdown (`focus-style-icons`) and page format widgets were missing.
+   * **Root Cause**: Both `generic-menu.scm` and `document-menu.scm` define `(standard-focus-icons t)` using `tm-menu` / `tm-define`.
+     - `document-menu.scm` defines `(standard-focus-icons t) (:require (tree-is-buffer? t))` containing `(dynamic (focus-style-icons t))`.
+     - `generic-menu.scm` defines `(standard-focus-icons t)` *without* `:require` (unconditioned fallback for non-buffer tags).
+     - In `boot-order-full.scm` and `init-texmacs-aot.scm`, `document-menu.so` was ordered before `generic-menu.so`. Because `generic-menu.scm` has no `:require` condition, `tm-define-overloaded` treated it as a base definition and wiped out the conditioned definition from `document-menu.so`.
+   * **Fix**: Reordered modules so `generic:generic-menu` loads before `generic:document-menu`. Now `document-menu` wraps `former` with `(:require (tree-is-buffer? t))`, correctly displaying the Document Style dropdown (`Generic`), Paper size (`A4`), Font (`Roman`), Font size (`10pt`), and Orientation (`Portrait`) on the focus toolbar.
 
 
 

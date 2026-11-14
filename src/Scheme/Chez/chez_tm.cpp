@@ -404,11 +404,6 @@ boot_failed (string msg) {
    knows where the data directory is. */
 static string
 boot_scheme_path () {
-  const char* boot_env= getenv ("TEXMACS_BOOT_PATH");
-  if (boot_env != NULL && boot_env[0] != '\0') {
-    string p= string (boot_env) * "/kernel/boot/boot-chez.so";
-    if (exists (url (p))) return p;
-  }
   const char* env= getenv ("TEXMACS_PATH");
   if (env != NULL && env[0] != '\0')
     return string (env) * "/progs/kernel/boot/boot-chez.scm";
@@ -772,34 +767,38 @@ start_scheme (int argc, char** argv, void (*call_back) (int, char**)) {
 
   if (!is_compile_modules) {
     string texmacs_boot = "";
-    const char* env_boot = getenv ("TEXMACS_BOOT_FILE");
-    if (env_boot == NULL || env_boot[0] == '\0')
-      env_boot = getenv ("TEXMACS_SO_FILE");
-    if (env_boot != NULL && env_boot[0] != '\0' && exists (url (env_boot))) {
-      texmacs_boot = env_boot;
-    } else {
-      const char* boot_env = getenv ("TEXMACS_BOOT_PATH");
-      if (boot_env != NULL && boot_env[0] != '\0') {
-        string cand = string (boot_env) * "/texmacs.so";
-        if (exists (url (cand))) texmacs_boot = cand;
+    const char* no_boot = getenv ("TEXMACS_NO_BOOT");
+    bool skip_boot = (no_boot != NULL && (strcmp (no_boot, "1") == 0 || strcmp (no_boot, "true") == 0));
+    if (!skip_boot) {
+      const char* env_boot = getenv ("TEXMACS_BOOT_FILE");
+      if (env_boot == NULL || env_boot[0] == '\0')
+        env_boot = getenv ("TEXMACS_SO_FILE");
+      if (env_boot != NULL && env_boot[0] != '\0' && exists (url (env_boot))) {
+        texmacs_boot = env_boot;
+      } else {
+        const char* boot_env = getenv ("TEXMACS_BOOT_PATH");
+        if (boot_env != NULL && boot_env[0] != '\0') {
+          string cand = string (boot_env) * "/texmacs.so";
+          if (exists (url (cand))) texmacs_boot = cand;
+        }
       }
-    }
 
-    if (N (texmacs_boot) > 0) {
+      if (N (texmacs_boot) > 0) {
 #if defined(_WIN32)
-      char resolved[_MAX_PATH];
-      if (_fullpath (resolved, c_string (texmacs_boot), _MAX_PATH) != NULL) {
-        texmacs_boot = string (resolved);
-      }
+        char resolved[_MAX_PATH];
+        if (_fullpath (resolved, c_string (texmacs_boot), _MAX_PATH) != NULL) {
+          texmacs_boot = string (resolved);
+        }
 #else
-      char resolved[PATH_MAX];
-      if (realpath (c_string (texmacs_boot), resolved) != NULL) {
-        texmacs_boot = string (resolved);
-      }
+        char resolved[PATH_MAX];
+        if (realpath (c_string (texmacs_boot), resolved) != NULL) {
+          texmacs_boot = string (resolved);
+        }
 #endif
-      s_texmacs_boot_file = texmacs_boot;
-      s_has_texmacs_boot = true;
-      fprintf (stderr, "Chez Scheme: booting from AOT image %s\n", (char*) c_string (texmacs_boot));
+        s_texmacs_boot_file = texmacs_boot;
+        s_has_texmacs_boot = true;
+        fprintf (stderr, "Chez Scheme: booting from AOT image %s\n", (char*) c_string (texmacs_boot));
+      }
     }
   }
 

@@ -126,6 +126,65 @@ fi
 
 ---
 
+## 3. Packaging Initialization Logic into the Boot Image (Zero-Script Boot)
+
+### 3.1 The Architectural Vision
+Currently, TeXmacs boots by having C++ call `load_scheme_file("init-texmacs-aot.scm")` from disk after loading `texmacs.so`. The ideal end state is **zero external bootstrap scripts on disk**: the entire bootstrap logic should be bundled inside `texmacs.so` / `texmacs.boot`.
+
+### 3.2 The Obstacle: Load-Time vs Execution-Time Separation
+When Chez Scheme loads a secondary boot file (`texmacs.boot`) or concatenated object file (`texmacs.so`), top-level expressions execute immediately as the image is loaded into the heap. However, at early engine initialization:
+1. **Foreign Symbols Aren't Registered Yet**: C++ glue functions (`url-exists-in-path?`, `get-preference`, `plugin-list`) are not yet bound.
+2. **Environment & Paths Aren't Established**: `$TEXMACS_PATH`, `$TEXMACS_HOME_PATH`, and user settings are not yet resolved.
+3. **Event Loop & Timers Aren't Active**: Forms like `(delayed (:idle 10000) (autosave-delayed))` require the TeXmacs timer wheel, which has not started.
+
+If `init-texmacs-chez.scm` were baked into the boot image as bare top-level expressions, it would fail during image loading.
+
+### 3.3 The Solution: Compiled Entry-Point Procedure
+Instead of executing as a top-level script, the initialization logic is packaged into a compiled module with a dedicated entry procedure:
+
+```scheme
+(module (kernel boot init-runtime)
+  (export texmacs-initialize-runtime!)
+  (import (chezscheme) ...)
+
+  (define (texmacs-initialize-runtime!)
+    ;; 1. Environment-dependent runtime variables
+    (define-top-level-value 'supports-email? (url-exists-in-path? "mmail"))
+    (when (top-level-value 'supports-email?)
+      (eval '(import utils:email:email-tmfs) (interaction-environment)))
+
+    ;; 2. Runtime GUI properties & security symbols
+    (tm-property (open-search) (:interactive #t))
+    (tm-property (open-replace) (:interactive #t))
+    ...
+
+    ;; 3. Scan user plugins & shortcuts at runtime
+    (for-each lazy-plugin-initialize (plugin-list))
+    (when (url-exists? "$TEXMACS_HOME_PATH/system/shortcuts.scm")
+      (delayed (:idle 100) (init-user-shortcuts)))
+
+    ;; 4. Start background timers and banner
+    (delayed (:idle 10000) (autosave-delayed))
+    (texmacs-banner)))
+```
+
+### 3.4 Execution Lifecycle
+1. **Build Time**: `make-boot.scm` compiles `init-runtime.scm` into `texmacs.so` / `texmacs.boot`. The procedure is compiled to machine code; zero C++ functions are called at build time.
+2. **Engine Boot Time**:
+   - Chez loads `texmacs.boot` in microseconds (pre-allocated heap image, zero nursery GC churn).
+   - C++ initializes foreign symbols and environment variables.
+   - C++ triggers the runtime bootstrap with a single call:
+     ```cpp
+     call_scheme ("(texmacs-initialize-runtime!)");
+     ```
+
+### 3.5 Advantages
+* **Zero External Bootstrap Script**: Eliminates `init-texmacs-aot.scm` and `init-texmacs-chez.scm` from disk entirely.
+* **Compiled Execution**: The 45+ `tm-property` declarations, symbol settings, and plugin initializations execute as native AOT machine code rather than being parsed and evaluated dynamically by `eval`.
+* **Clean Lifecycle**: Strict, bug-free separation between static code objects in the image and dynamic environment initialization.
+
+---
+
 ## 4. Expected Benefits & Verification
 
 | Metric | Current AOT Setup (`.so` files) | With `texmacs.boot` Image |

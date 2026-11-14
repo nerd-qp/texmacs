@@ -223,8 +223,8 @@
   database:db-widgets
   texmacs:menus:print-widgets
   texmacs:menus:file-menu
-  generic:document-menu
   generic:generic-menu
+  generic:document-menu
   database:db-menu
   convert:bibtex:init-bibtex
   convert:tools:output
@@ -519,6 +519,76 @@
      (define-macro (nm . formals) body ...))
     ((_ nm val)
      (define-macro nm val))))
+
+(define supports-email? (url-exists-in-path? "mmail"))
+(if supports-email? (eval '(import utils:email:email-tmfs) (interaction-environment)))
+
+(tm-define (notify-set-attachment name key val) (noop))
+
+;; Fix Chez Scheme symbol?/keyword? conflation in tree-ref:
+;; In Guile, keywords (:up, :next, :previous, etc.) are distinct from symbols,
+;; so (symbol? :up) => #f, falling through to (select t l).
+;; In Chez Scheme, keywords are symbols, causing (symbol? :up) => #t which erroneously
+;; looks for a child node named :up and returns #f.
+(tm-define (tree-ref t . l)
+  (cond ((not (tree? t)) #f)
+        ((null? l) t)
+        ((integer? (car l))
+         (with i (car l)
+           (and (tree-compound? t) (>= i 0) (< i (tree-arity t))
+                (apply tree-ref (cons (tree-child-ref t i) (cdr l))))))
+        ((== (car l) :first)
+         (apply tree-ref (cons t (cons 0 (cdr l)))))
+        ((== (car l) :last)
+         (and (tree-compound? t)
+              (apply tree-ref (cons t (cons (- (tree-arity t) 1) (cdr l))))))
+        ((and (symbol? (car l)) (not (keyword? (car l))))
+         (and (tree-compound? t)
+              (with i (list-find-index (tree-children t)
+                                       (cut tree-is? <> (car l)))
+                (apply tree-ref (cons t (cons i (cdr l)))))))
+        (else (with r (select t l)
+                (and (nnull? r) (car r))))))
+
+(tm-property (open-search) (:interactive #t))
+(tm-property (open-replace) (:interactive #t))
+(tm-property (open-paragraph-format) (:interactive #t))
+(tm-property (open-page-format) (:interactive #t)
+                                (:applicable (not (selection-active?))))
+(tm-property (open-source-tree-preferences) (:interactive #t))
+(tm-property (open-document-paragraph-format) (:interactive #t))
+(tm-property (open-document-page-format) (:interactive #t))
+(tm-property (open-document-metadata) (:interactive #t))
+(tm-property (open-document-colors) (:interactive #t))
+(tm-property (open-pattern-selector cmd w) (:interactive #t))
+(tm-property (open-gradient-selector cmd) (:interactive #t))
+(tm-property (open-background-picture-selector cmd) (:interactive #t))
+
+(tm-property (open-macro-editor l mode) (:interactive #t))
+(tm-property (create-table-macro l mode) (:interactive #t))
+(tm-property (open-macros-editor mode) (:interactive #t))
+(tm-property (edit-focus-macro) (:interactive #t))
+(tm-property (open-shortcuts-editor . opt) (:interactive #t))
+(when (url-exists? "$TEXMACS_HOME_PATH/system/shortcuts.scm")
+  (delayed (:idle 100) (init-user-shortcuts)))
+
+(tm-property (open-cell-properties) (:interactive #t))
+(tm-property (open-table-properties) (:interactive #t))
+
+(define-secure-symbols arrow-with-text arrow-with-text*)
+(define-secure-symbols tmdoc-include youtube-select)
+(tm-property (open-website-builder) (:interactive #t))
+(define-secure-symbols ext-tmhtml-eqnarray*)
+(tm-property (open-biblio) (:interactive #t))
+(define-secure-symbols preview-reference)
+
+(for-each lazy-plugin-initialize (plugin-list))
+
+(tm-property (open-font-selector) (:interactive #t))
+(tm-property (open-document-font-selector) (:interactive #t))
+
+(when (updater-supported?)
+  (delayed (:idle 2000) (updater-initialize)))
 
 (delayed (:idle 10000) (autosave-delayed))
 (texmacs-banner)

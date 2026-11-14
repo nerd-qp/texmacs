@@ -164,12 +164,20 @@
 (define (make-hash-table . _) (make-hashtable tm-equal-hash equal?))
 (define (make-ahash-table . _) (make-hashtable tm-equal-hash equal?))
 
+(define chez:symbol? symbol?)
+
+(define (symbol? x)
+  (and (chez:symbol? x)
+       (not (keyword? x))))
+
 (define (keyword? x)
-  (and (symbol? x)
-       (let ((s (symbol->string x)))
-         (and (> (string-length s) 0) (char=? (string-ref s 0) #\:)))))
+  (and (chez:symbol? x)
+    (let ((s (symbol->string x)))
+      (and (> (string-length s) 0) (char=? (string-ref s 0) #\:)))))
+
 (define (keyword->symbol k)
   (string->symbol (substring (symbol->string k) 1 (string-length (symbol->string k)))))
+
 (define (symbol->keyword s)
   (string->symbol (string-append ":" (symbol->string s))))
 
@@ -190,7 +198,9 @@
     :penalty :option :mixed :inline :block :empty :collapse :element :elem :pre :raw :terms
     :transparent :atomic :focus :selectable :operator :spacing :args :leaf :char :cursor
     :one :several :preamble :uninit :on-cpu-idle :shell
-    :- :1 :advanced :always :answer :apply :approx :attached :background :basic-theme
+    :%0 :%1 :%2 :%3 :%4 :%5 :%6 :%7 :%8 :%9
+    :0 :1 :2 :3 :4 :5 :6 :7 :8 :9
+    :- :advanced :always :answer :apply :approx :attached :background :basic-theme
     :bbb :beamer-theme :beamer-title-theme :big :black :bold :boolean? :box-color :box-shape :braces
     :brackets :button-color :button-shape :cal :calc :case :category :cell :cell-halign :cell-lsep
     :cmdline :code :column :comma :commander :comment-by-list :comment-list :comment-type-list :comments-in-buffer :commit
