@@ -321,21 +321,8 @@
 ;; 2026-11-05 — nothing read the property and no module used the macro.)
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-;; The transformer body is applied *lexically* rather than `eval`ed in
-;; `(compilation-environment)`.
-;;
-;; The old shape -- (eval `(apply (lambda formals body ...) ',datum) env) --
-;; re-interprets the body in the interaction environment every time the macro
-;; is used, so a transformer can only reach a helper that happens to be a
-;; top-level binding.  Applied lexically, the body is compiled in the module
-;; that defines the macro, and its free identifiers resolve through that
-;; module's imports -- including `(import (for <helpers> run expand))'.
-;; Phasing then works the way PHASED_HELPERS_PLAN.md describes, with nothing
-;; published into a shared environment.
-;;
-;; A body that calls `eval' or `top-level-value' itself is unaffected.  A body
-;; that relied on the *caller's* environment is not supported; that is the
-;; point.
+;; Macro transformer bodies are evaluated dynamically in `(compilation-environment)`
+;; so they can access expand-time helpers installed during compilation.
 (define-syntax define-macro
   (lambda (x)
     (syntax-case x ()
@@ -343,19 +330,22 @@
        #'(define-syntax nm
            (lambda (stx)
              (datum->syntax (car (syntax->list stx))
-               (apply (lambda formals body ...)
-                      (cdr (syntax->datum stx)))))))
+               (eval `(apply (lambda formals body ...)
+                             ',(cdr (syntax->datum stx)))
+                     (compilation-environment))))))
       ((_ nm (lambda formals body ...))
        #'(define-syntax nm
            (lambda (stx)
              (datum->syntax (car (syntax->list stx))
-               (apply (lambda formals body ...)
-                      (cdr (syntax->datum stx)))))))
+               (eval `(apply (lambda formals body ...)
+                             ',(cdr (syntax->datum stx)))
+                     (compilation-environment))))))
       ((_ nm proc)
        #'(define-syntax nm
            (lambda (stx)
              (datum->syntax (car (syntax->list stx))
-               (apply proc (cdr (syntax->datum stx))))))))))
+               (eval `(apply proc ',(cdr (syntax->datum stx)))
+                     (compilation-environment)))))))))
 
 ;; The Guile macro-expansion helpers (`ca*r', `ca*adr', `apply*', `listify',
 ;; `and*', `begin*', `unlambda') and `fresh-tm-dummy' are in chez-compat.scm.
@@ -471,9 +461,9 @@
            (define helper-list '(helpers ...))
            (syntax-case call-stx ()
              [(_ . call-args)
-              ;; Applied lexically, for the same reason as `define-macro'.
-              (let ((raw (apply (lambda args . body)
-                                (syntax->datum #'call-args))))
+              (let ((raw (eval `(apply (lambda args . body)
+                                       ',(syntax->datum #'call-args))
+                               (compilation-environment))))
                 (recolor-syntax raw helper-list module-scope call-scope))]))))]))
 
 (define-syntax define-public-macro

@@ -171,3 +171,92 @@ Exception in and-let*: Ill-formed binding: ~A with irritant (<var> <expr>)
                          (cdr (syntax->datum stx))))))))))
    ```
 2. **Eliminate `pre-eval`**: With lexical macro transformers, `(import (for <helpers> run expand))` resolves helper bindings directly. No definitions need to be evaluated into `(interaction-environment)`, preventing cross-module compiler pollution entirely.
+
+---
+
+## 5. Phasing Mechanics: Why `(import (for ... run expand))` Still Requires `eval-when` on Sibling Modules
+
+A common point of confusion during R6RS/Chez Scheme syntactic migration is: *if `(import (for <mod>$h run expand))` already imports the helper module's bindings for expand time (Phase 1), why must `<mod>$h` also be wrapped in `(eval-when (compile eval load) ...)`?*
+
+### The Separation of Phasing vs. Instantiation
+
+In Chez Scheme, executing a macro at compile-time requires two distinct conditions:
+
+1. **Syntactic Identifier Visibility (Phasing)**:
+   * **Mechanism**: `(import (for <mod>$h run expand))`
+   * **Function**: Tells the syntax expander that identifiers exported by `<mod>$h` are legally visible in Phase 1 (macro transformer bodies) as well as Phase 0 (runtime code).
+   * **Failure mode if omitted**: `Exception: attempt to reference out-of-phase identifier <name>` during expansion.
+
+2. **Module Instantiation (Evaluation in Compiler RAM)**:
+   * **Mechanism**: `(eval-when (compile eval load) (module <mod>$h ...))`
+   * **Function**: Tells `compile-file` to evaluate and instantiate `<mod>$h` inside the compiler process's memory immediately during compilation.
+   * **Failure mode if omitted**: `Exception: variable <name> is not bound` during macro execution.
+
+### Why Sibling Modules Fail Without `eval-when`
+
+Because TeXmacs transpiles both `<mod>$h` and `<mod>` into the **same output file**, `compile-file` processes them in a single compilation pass:
+
+1. By default, `compile-file` processes `(module <mod>$h ...)` by compiling its forms and streaming machine code to the target `.so` file for future load-time execution. **It does not instantiate the module in the active compiler memory.**
+2. When the compiler advances to `(module <mod> ...)` and expands a macro, the transformer code executes in Phase 1 and invokes the helper procedure `(<helper> arg)`.
+3. Even though `(for ... expand)` made `<helper>` syntactically valid in Phase 1, the variable's value cell in compiler RAM is empty because `<mod>$h` was never evaluated. Compilation crashes with `Exception: variable <helper> is not bound`.
+
+### The Three Situations of `(eval-when (compile eval load) ...)`
+
+Wrapping `<mod>$h` at the top level addresses all execution targets:
+* **`compile`**: Forces immediate evaluation and instantiation of `<mod>$h` in compiler RAM so helper procedures are live when downstream macros in `<mod>` expand.
+* **`load`**: Compiles `<mod>$h` into the `.so` binary so it is instantiated when the compiled module is loaded at runtime.
+* **`eval`**: Evaluates `<mod>$h` when running as uncompiled Scheme source (e.g. REPL, `load`).
+
+### Top-Level Constraint
+
+`eval-when` must wrap the `(module ...)` form at **top-level file scope**. In Chez Scheme, `(compile)` and `(load)` situations are top-level only; inside a module body or local lexical body, `(compile)` and `(load)` never trigger, and only `(eval)` executes upon module instantiation.
+
+---
+
+## 6. Pivot from v2 Phased Helpers to Encapsulated v1 Compiler Oracle
+
+### Findings on the v2 Phased Helper Architecture
+
+The v2 pipeline explored segregating expand-time helper procedures into dedicated sibling modules (`<mod>$h`) with `(import (for <mod>$h run expand))` and lexical `apply` in `define-macro`. During testing, several fundamental architectural drawbacks became apparent:
+
+1. **Loss of Procedure Inlining**: In Chez Scheme, procedures defined in external or sibling modules are not candidates for standard leaf inlining unless compiled as interconnected R6RS libraries or wrapped in a single enclosing `let` block. Moving internal private helpers into `<mod>$h` actually degraded runtime optimization opportunities for procedures that were otherwise inlined within their home module.
+2. **Minimal Runtime Performance Upside**: Profile benchmarks confirmed that Scheme execution accounts for $<0.5\%$ of interactive keystroke latency in TeXmacs (the bottlenecks reside in Qt repaint region invalidation and typesetting layout passes). Any theoretical gains from lexical macro application were negligible in practice.
+3. **Severe Phasing and Bootstrap Friction**: Nested modules cannot phase-shift with `(for ... run expand)` without triggering `out-of-phase identifier` errors, while top-level sibling modules require complex two-pass instantiation (`(eval-when (compile eval load) ...)`), re-introducing cold-boot circular dependency failures.
+
+### Resolution: Retaining v1 with Oracle Encapsulation Filtering
+
+Rather than splitting modules into synthetic helper units, the codebase reverted to the single-module v1 compiler architecture and addressed cross-module compiler pollution directly at the Oracle layer:
+
+1. **Restored `(compilation-environment)` in `boot-chez.scm`**:
+   `define-macro` and `define-module-macro` were reverted to dynamically evaluate transformer bodies in `(compilation-environment)`:
+   ```scheme
+   (define-syntax define-macro
+     (lambda (x)
+       (syntax-case x ()
+         ((_ (nm . formals) body ...)
+          #'(define-syntax nm
+              (lambda (stx)
+                (datum->syntax (car (syntax->list stx))
+                  (eval `(apply (lambda formals body ...)
+                                ',(cdr (syntax->datum stx)))
+                        (compilation-environment))))))
+         ...)))
+   ```
+2. **Enforced Encapsulation via `oracle-allowed?` in `compiler-oracle.scm`**:
+   To prevent the Compiler Oracle from pulling in unimported symbols or private internal definitions from foreign modules, an encapsulation gate was implemented:
+   * **Context Parameterization**: `setup-module-environment!` binds `*oracle-current-module*` (the module being compiled) and `*oracle-current-deps*` (its declared `:use` / `:inherit` dependencies).
+   * **Filter Criteria**:
+     * **Local module definitions**: Allowed (`#t`).
+     * **Global dynamic forms** (`tm-define`, `tm-define-macro`): Allowed (`#t`).
+     * **Cross-module symbols**: Allowed **only** if the defining module is in `*oracle-current-deps*` **and** the symbol is listed in that module's exported interface (`module-info-exports` in `*compiler-db*` or `module-exports-table`).
+     * **Unimported modules / private helpers**: Blocked (`#f`) and logged via `log-note (format "ORACLE-BLOCKED ~a from ~a ...")`.
+3. **Restored `compiler-scan` Interface**:
+   Reverted temporary public exports of `scan-header`, `scan-header->deps`, and `scan-collect` from `(compiler-scan)`.
+
+### Verification
+
+* **Unit Test Suites**: All 5 Scheme test suites pass cleanly (**206 checks, 0 failures** across `compile-graph-test.scm`, `compile-inventory-test.scm`, `compiler-db-test.scm`, `compiler-scan-test.scm`, and `macro-closure-test.scm`).
+* **Full-Tree Recompilation**: Rebuilding all 453 modules from scratch via `TeXmacs -recompile-modules` succeeded with **453/453 modules compiled and 0 failures**, confirming that foreign private helpers are cleanly blocked without breaking macro expansion.
+* **Headless Startup**: TeXmacs boots successfully with the recompiled native `.so` binaries (`TIME-PRE-GUI-LOOP: 1117 ms`).
+
+

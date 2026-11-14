@@ -515,6 +515,13 @@
 (define *oracle-installed* (make-eq-hashtable))
 (define *ephemeral-syms* '())
 
+;; Currently active module compilation context.
+;; When parameterized during module compilation, the oracle enforces encapsulation:
+;; only local definitions, dynamic tm-define forms, and exported symbols of
+;; declared dependencies (:use / :inherit) may be brought in.
+(define *oracle-current-module* (make-parameter #f))
+(define *oracle-current-deps* (make-parameter '()))
+
 (define (scheme-files dir)
   (let loop ((rel "") (acc '()))
     (let ((full (if (string=? rel "") dir (string-append dir "/" rel))))
@@ -602,12 +609,56 @@
         (mc-val-dependencies (vector-ref site 3) oracle-macro? (compilation-environment)))))
 
 
+;; Check whether the oracle is allowed to bring in a definition from `site`.
+;; Enforces module encapsulation:
+;; 1. Local definitions in the same module being compiled are allowed.
+;; 2. Dynamic multi-methods and global macros (tm-define / tm-define-macro) are allowed.
+;; 3. Cross-module references are ONLY allowed if the defining module is in the
+;;    current module's declared (:use / :inherit) dependencies AND the symbol
+;;    is in that module's exported list.
+;; 4. When *oracle-current-module* is #f (e.g. offline testing/linting), all are allowed.
+(define (oracle-allowed? name site)
+  (let ((cur-mod (*oracle-current-module*)))
+    (if (not cur-mod)
+        #t
+        (let* ((def-mod (vector-ref site 5))
+               (form    (vector-ref site 2))
+               (head    (and (pair? form) (car form)))
+               (db      (and (top-level-bound? '*compiler-db*) *compiler-db*))
+               (info    (and db (compiler-db-ref db def-mod))))
+          (cond
+            ;; 1. Same module: local helpers needed by local macros.
+            ((equal? def-mod cur-mod) #t)
+
+            ;; 2. Dynamic TeXmacs extensions: tm-define / tm-define-macro are globally registered.
+            ((or (memq head '(tm-define tm-define-macro))
+                 (and info
+                      (or (memq name (module-info-global-values info))
+                          (memq name (module-info-global-macros info)))))
+             #t)
+
+            ;; 3. Cross-module references: must be in declared dependencies AND exported.
+            ((and (or (member def-mod (*oracle-current-deps*))
+                      (and (pair? def-mod)
+                           (memq (mod-name->symbol def-mod) (*oracle-current-deps*))))
+                  (or (and info (memq name (module-info-exports info)))
+                      (let ((exported (hashtable-ref module-exports-table (mod-name->symbol def-mod) #f)))
+                        (and exported (memq name exported)))))
+             #t)
+
+            ;; 4. Otherwise: unimported module or private helper -> blocked.
+            (else #f))))))
+
 (define (oracle-install! name)
   (let ((env (compilation-environment))
         (site (and (symbol? name) (hashtable-ref *oracle-defs* name #f))))
     (cond ((not site) #f)
           ((oracle-live? name env) #t)
           ((hashtable-ref *oracle-installing* name #f) #f)   ; cycle: leave it
+          ((not (oracle-allowed? name site))
+           (log-note (format "ORACLE-BLOCKED ~a from ~a (not exported in declared dependencies)"
+                             name (vector-ref site 5)))
+           #f)
           (else (oracle-install-site! name site env)))))
 
 (define (oracle-install-site! name site env)

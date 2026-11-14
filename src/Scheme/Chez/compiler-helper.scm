@@ -316,8 +316,11 @@
 ;; Build one module's expand-time environment: import what it declares, then
 ;; evaluate the forms a macro expander may call.
 (define (setup-module-environment! rel-path deps)
-  (import-modules! deps)
-  (run-eager-forms! rel-path))
+  (let ((mod-name (rel-path->mod-name rel-path)))
+    (parameterize ((*oracle-current-module* mod-name)
+                   (*oracle-current-deps* deps))
+      (import-modules! deps)
+      (run-eager-forms! rel-path))))
 
 ;; ---- Compiling one module -----------------------------------------------
 

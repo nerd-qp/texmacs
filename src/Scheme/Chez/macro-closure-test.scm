@@ -319,6 +319,50 @@
     (drive-test-file "kernel/library/base.scm")))
 
 ;;; ---------------------------------------------------------------------------
+;;; 6. oracle-allowed? encapsulation enforcement
+;;; ---------------------------------------------------------------------------
+
+(let ()
+  ;; site vector format: #(name type form top rel mod)
+  (define local-site
+    (vector 'local-fn 'value '(define (local-fn x) x) '(define (local-fn x) x) "a.scm" '(mod a)))
+  (define tm-define-site
+    (vector 'global-fn 'value '(tm-define (global-fn x) x) '(tm-define (global-fn x) x) "b.scm" '(mod b)))
+  (define exported-dep-site
+    (vector 'pub-fn 'value '(define-public (pub-fn x) x) '(define-public (pub-fn x) x) "c.scm" '(mod c)))
+  (define private-dep-site
+    (vector 'priv-fn 'value '(define (priv-fn x) x) '(define (priv-fn x) x) "c.scm" '(mod c)))
+  (define unimported-site
+    (vector 'other-fn 'value '(define-public (other-fn x) x) '(define-public (other-fn x) x) "d.scm" '(mod d)))
+
+  ;; Populate mock module-exports-table for testing
+  (define mock-exports-table (make-eq-hashtable))
+  (hashtable-set! mock-exports-table 'mod:c '(pub-fn))
+  (hashtable-set! mock-exports-table 'mod:d '(other-fn))
+  (define-top-level-value 'module-exports-table mock-exports-table)
+  (define-top-level-value 'mod-name->symbol
+    (lambda (m)
+      (string->symbol (string-append (symbol->string (car m)) ":" (symbol->string (cadr m))))))
+
+  ;; When no current module is set, everything is allowed (unconstrained mode):
+  (check-true! "unconstrained oracle allows anything"
+               (oracle-allowed? 'priv-fn private-dep-site))
+
+  ;; When compiling '(mod a) with dependency '(mod c):
+  (parameterize ((*oracle-current-module* '(mod a))
+                 (*oracle-current-deps* '((mod c))))
+    (check-true! "local definition is allowed"
+                 (oracle-allowed? 'local-fn local-site))
+    (check-true! "tm-define is allowed globally"
+                 (oracle-allowed? 'global-fn tm-define-site))
+    (check-true! "exported symbol of declared dependency is allowed"
+                 (oracle-allowed? 'pub-fn exported-dep-site))
+    (check-true! "private helper of declared dependency is BLOCKED"
+                 (not (oracle-allowed? 'priv-fn private-dep-site)))
+    (check-true! "symbol from unimported module is BLOCKED"
+                 (not (oracle-allowed? 'other-fn unimported-site)))))
+
+;;; ---------------------------------------------------------------------------
 ;;; Summary
 ;;; ---------------------------------------------------------------------------
 
