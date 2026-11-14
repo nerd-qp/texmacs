@@ -120,15 +120,6 @@
 (define (noop . args)
   (if (null? args) #f (car args)))
 
-;; Foreign procedure hooks for C++ blackbox objects (Box representation + Guardian)
-(define c-delete-blackbox
-  (foreign-procedure "tmscm_delete_blackbox" (uptr) void))
-
-(define c-blackbox-equal?
-  (foreign-procedure "tmscm_blackbox_equal" (scheme-object scheme-object) scheme-object))
-
-(define c-blackbox-hash
-  (foreign-procedure "tmscm_blackbox_hash" (scheme-object) iptr))
 
 (define (reap-blackboxes!)
   (let loop ()
@@ -967,21 +958,16 @@
 ;; The C++ glue dispatcher.  Every procedure installed with
 ;; tmscm_install_procedure() is a closure over its own name that forwards the
 ;; argument list here, so the kernel never has to build Scheme source text.
-(define raw-tm-call-by-name
-  (foreign-procedure "tm-call-by-name" (string scheme-object) scheme-object))
+;; Early C++ foreign procedures and OS predicates
+(eval-when (compile load eval)
+  (let ((tm-path (getenv "TEXMACS_PATH")))
+    (when (and tm-path (> (string-length tm-path) 0))
+      (source-directories (cons (string-append tm-path "/progs/kernel/boot") (source-directories))))
+    (source-directories (append (source-directories)
+                                '("TeXmacs/progs/kernel/boot" "progs/kernel/boot" ".")))))
 
-;; Fast fixed-arity trampolines into C++ glue array table
-(define tm-fast-call-0  (foreign-procedure "tm_fast_call_0"  (int) scheme-object))
-(define tm-fast-call-1  (foreign-procedure "tm_fast_call_1"  (int scheme-object) scheme-object))
-(define tm-fast-call-2  (foreign-procedure "tm_fast_call_2"  (int scheme-object scheme-object) scheme-object))
-(define tm-fast-call-3  (foreign-procedure "tm_fast_call_3"  (int scheme-object scheme-object scheme-object) scheme-object))
-(define tm-fast-call-4  (foreign-procedure "tm_fast_call_4"  (int scheme-object scheme-object scheme-object scheme-object) scheme-object))
-(define tm-fast-call-5  (foreign-procedure "tm_fast_call_5"  (int scheme-object scheme-object scheme-object scheme-object scheme-object) scheme-object))
-(define tm-fast-call-6  (foreign-procedure "tm_fast_call_6"  (int scheme-object scheme-object scheme-object scheme-object scheme-object scheme-object) scheme-object))
-(define tm-fast-call-7  (foreign-procedure "tm_fast_call_7"  (int scheme-object scheme-object scheme-object scheme-object scheme-object scheme-object scheme-object) scheme-object))
-(define tm-fast-call-8  (foreign-procedure "tm_fast_call_8"  (int scheme-object scheme-object scheme-object scheme-object scheme-object scheme-object scheme-object scheme-object) scheme-object))
-(define tm-fast-call-9  (foreign-procedure "tm_fast_call_9"  (int scheme-object scheme-object scheme-object scheme-object scheme-object scheme-object scheme-object scheme-object scheme-object) scheme-object))
-(define tm-fast-call-10 (foreign-procedure "tm_fast_call_10" (int scheme-object scheme-object scheme-object scheme-object scheme-object scheme-object scheme-object scheme-object scheme-object scheme-object) scheme-object))
+(include "initial-foreign-proc.scm")
+
 
 (define (tm-call-by-name name args)
   (let* ((in-trans
@@ -1015,6 +1001,7 @@
 ;; Procedures with strictly non-string signatures are routed directly to
 ;; fixed-arity tm_fast_call_N with zero string/bytevector transcoding and zero
 ;; rest-arg list allocation overhead.
+
 (define (tm-install-procedure! name . rest)
   (guard (e (else (begin
                    (display (list 'INSTALL-FAILED name (tm-error-message e)))

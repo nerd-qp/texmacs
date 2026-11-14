@@ -533,8 +533,8 @@
 
 ;;; SRFI-8 binding syntax
 ;;
-;; Provided here so that kernel/library/list.scm can use `receive' before
-;; kernel/boot/srfi.scm is compiled.
+;; Provided here so that expand-time macro transformers (such as `lazy-define`)
+;; can use `receive` in `(compilation-environment)`.
 (define-public-macro (receive vars vals . body)
   `(call-with-values (lambda () ,vals)
      (lambda ,vars ,@body)))

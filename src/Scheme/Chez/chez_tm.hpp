@@ -162,5 +162,6 @@ void chez_install_procedure (const char* name, void* fn, int arity);
 
 string scheme_dialect ();
 bool chez_has_boot ();
+string chez_boot_file ();
 
 #endif /* defined CHEZ_TM_H */

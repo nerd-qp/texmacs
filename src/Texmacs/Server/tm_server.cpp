@@ -146,6 +146,7 @@ tm_server_rep::tm_server_rep ()
        then runs the macro linter, instead of the whole editor program. */
     if (compile_modules_mode) tm_init_file= "$TEXMACS_PATH/progs/init-chez-compile.scm";
     else if (lint_mode) tm_init_file= "$TEXMACS_PATH/progs/init-linter.scm";
+    else if (chez_has_boot ()) tm_init_file= "$TEXMACS_PATH/progs/init-texmacs-aot.scm";
     else tm_init_file= "$TEXMACS_PATH/progs/init-texmacs-chez.scm";
 #else
     tm_init_file= "$TEXMACS_PATH/progs/init-texmacs.scm";

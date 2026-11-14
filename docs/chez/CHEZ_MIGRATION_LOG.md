@@ -259,4 +259,110 @@ Rather than splitting modules into synthetic helper units, the codebase reverted
 * **Full-Tree Recompilation**: Rebuilding all 453 modules from scratch via `TeXmacs -recompile-modules` succeeded with **453/453 modules compiled and 0 failures**, confirming that foreign private helpers are cleanly blocked without breaking macro expansion.
 * **Headless Startup**: TeXmacs boots successfully with the recompiled native `.so` binaries (`TIME-PRE-GUI-LOOP: 1117 ms`).
 
+---
+
+## 2026-11-14: Ahead-Of-Time (AOT) Boot File (`texmacs.boot`) Generation & Cold Boot Verification
+
+### Goals & Implementation
+
+1. **Restored Pristine Module Ordering**:
+   * Returned `kernel/library/list.scm` after `base.scm` (and after `ahash-table.scm` / `srfi.scm`) in `compile-inventory.scm` and `init-texmacs-chez.scm`.
+   * Retained `receive` in `chez-compat.scm` for macro expansion transformers running in `(compilation-environment)`.
+   * Recompiled all 453 modules cleanly with 0 failures (`build-texmacos/boot/module-deps.scm`).
+
+2. **Sequential Load Order Manifest & AOT Boot File**:
+   * Dumped the complete DFS post-order load order (378 core modules + 75 leaf modules = 453 application modules + `boot-chez.so`) to `build-texmacos/boot/boot-order-full.scm`.
+   * Created `src/Scheme/Chez/make-boot.scm` to assemble all compiled modules into a unified AOT boot image (`texmacs.boot`, ~13.06 MB) using Chez Scheme's `make-boot-file`.
+
+3. **Engine & Bootstrap Integration for AOT Booting**:
+   * **Direct C++ OS Predicate Registration**: Wrapped `os-win32?`, `os-mingw?`, `os-mingw64?`, `os-macos?`, and `os-android?` with `#if !defined(TEXMACS_ENGINE_CHEZ) && !defined(CHEZ_SCHEME)` in `src/Scheme/Glue/glue_basic.cpp`. Registered the underlying C++ boolean functions directly via `Sforeign_symbol` in `register_foreign_symbols()` and bound them in `boot-chez.scm` with `(foreign-procedure ... () boolean)`.
+   * **Deferred Early-Boot Initialization (`on-entry`)**: Updated the `on-entry` macro in `chez-compat.scm` and `boot-chez.scm` to queue thunks into `*on-entry-tasks*` during AOT boot image loading, running them via `run-on-entry-tasks` once C++ server and glue initialization completes.
+   * **Two-Phase C++ Glue Installation**: Enhanced `chez_install_procedure` in `src/Scheme/Chez/chez_tm.cpp` to register C function entries in `tm_fast_table` and `tm_proc_registry` in `custom_init()` before the Scheme heap is built, deferring the `tm-install-procedure!` Scheme trampolines until `initialize_glue()`.
+   * **AOT Image Loading in `initialize_scheme()`**: `initialize_scheme()` loads `texmacs.boot` after C++ `the_server` and glue procedures are established, avoiding premature server lookups (`get_server()`) while achieving instant binary module loading.
+
+### Verification
+
+* **Cold Boot via `TEXMACS_BOOT_FILE`**:
+  ```bash
+  SCHEMEHEAPDIRS="..." TEXMACS_PATH="..." TEXMACS_BOOT_FILE=".../texmacs.boot" \
+    ./build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -H -x '(begin (display "BOOT_OK: ") (display (list (texmacs-version) (os-macos?))) (newline) (quit-TeXmacs))'
+  ```
+  Result:
+  ```
+  Chez Scheme: booting from AOT image .../texmacs.boot
+  Chez Scheme: loading .../boot-chez.so
+  Chez Scheme: initialize_glue
+  Chez Scheme: loading AOT boot image .../texmacs.boot
+  Alternative pattern selector
+  TeXmacs] Loading doxygen C++ support
+  TIME-SERVER-INIT: 3591 ms
+  ...
+  TIME-PRE-GUI-LOOP: 3716 ms
+  BOOT_OK: (2.1.5 #t)
+  ```
+  Exited with status `0`, verified 0 errors, 0 unbound variables.
+
+---
+
+## 2026-11-14: Implementation of Approach 1 (`texmacs.so`) & Dedicated AOT Bootstrap (`init-texmacs-aot.scm`)
+
+### Architectural Decisions & Progress
+
+1. **Logged Long-Term Roadmap in `docs/chez/BOOT_FILE_PLAN.md`**:
+   * Documented both **Approach 1 (`texmacs.so`)** as the clean, immediate milestone and **Approach 2 (`texmacs.boot`)** as the ultimate architectural target.
+   * Clarified that Approach 2 requires migrating C++ glue generation to `Sforeign_symbol` foreign functions in `custom_init()` and decoupling top-level server calls (`get_server()`).
+
+2. **Unified Image Builder (`src/Scheme/Chez/make-boot.scm`)**:
+   * Generates both `texmacs.so` (Approach 1: concatenated object file via CSUG Section 2.8) and `texmacs.boot` (Approach 2: native secondary boot file via CSUG Section 12.1).
+   * Bundles all 453 application modules in topological DFS post-order (`boot-order-full.scm`), omitting `boot-chez.so` which serves as the primary bootstrap loader.
+
+3. **Dedicated AOT Bootstrap Script (`TeXmacs/progs/init-texmacs-aot.scm`)**:
+   * Created a lean, dedicated bootstrap script executed when booting from an AOT binary image (`texmacs.so` / `texmacs.boot`).
+   * Imports all 453 resident modules into `(interaction-environment)` in a single `(import ...)` form, eliminating 700+ lines of redundant `(use-modules ...)` and lazy stubs.
+   * Defines runtime syntax overrides (`define-public`, `define-public-macro`, `indirect-export`) for dynamic user scripts and the REPL.
+   * Updated `src/Texmacs/Server/tm_server.cpp` to automatically select `init-texmacs-aot.scm` when `chez_has_boot()` is true.
+
+4. **Engine Auto-Detection in `src/Scheme/Chez/chez_tm.cpp`**:
+   * Probes `TEXMACS_BOOT_FILE`, `TEXMACS_SO_FILE`, and auto-falls back to `$TEXMACS_BOOT_PATH/texmacs.so`.
+
+### Performance & Verification
+
+* **Cold Boot Timing with `texmacs.so`**:
+  * `TIME-SERVER-INIT`: 1876 ms
+  * `TIME-OPEN-WINDOW`: **100 ms** (down from ~4700 ms without AOT)
+  * `TIME-PRE-GUI-LOOP`: **1977 ms**
+  * Zero load exceptions, zero unbound variable errors (`current-buffer`, etc.).
+
+---
+
+## 2026-11-14: Clean Bootstrap Architecture & Foreign Procedure Separation
+
+### Clean Architecture Improvements
+1. **Extracted Foreign Procedures into `initial-foreign-proc.scm`**:
+   * Created [`initial-foreign-proc.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/boot/initial-foreign-proc.scm) containing early C++ foreign procedures:
+     * Blackbox hooks: `tmscm_delete_blackbox`, `tmscm_blackbox_equal`, `tmscm_blackbox_hash`
+     * Fast trampolines: `tm-call-by-name`, `tm-fast-call-0` .. `tm-fast-call-10`
+     * OS predicates: `os-win32?`, `os-mingw?`, `os-mingw64?`, `os-macos?`, `os-android?`
+   * In [`boot-chez.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/kernel/boot/boot-chez.scm), cleanly included via `(include "initial-foreign-proc.scm")`.
+   * Completely eliminated ad-hoc definitions of `ca*r`, `ca*adr`, and deferred `*on-entry-tasks*` queues from `boot-chez.scm`.
+
+2. **Two-Stage AOT Module Loading**:
+   * `make-boot.scm` assembles `texmacs.so` containing 452 modules (excluding `boot-chez.so` and `chez-compat.so`).
+   * In [`init-texmacs-aot.scm`](file:///Users/king-kong/Documents/my-repo/docker-sandbox-opencode/texmacs/TeXmacs/progs/init-texmacs-aot.scm):
+     1. Loads `chez-compat.so` and imports `kernel:boot:chez-compat` into `(interaction-environment)`.
+     2. Loads consolidated `texmacs.so` (13.05 MB).
+     3. Bulk-imports remaining modules into `(interaction-environment)`.
+   * Result: Guile compatibility macros and syntax transformers (including `ca*r`) are available immediately for any dynamic `eval` or top-level macro expansion during `texmacs.so` loading.
+
+### Verification
+```bash
+./build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -H -x '(begin (display (list "SYNTAX_CHECKS:" (top-level-syntax? (string->symbol "tm-define")) (procedure? ca*r) (texmacs-version))) (newline) (quit-TeXmacs))'
+```
+* Output: `(SYNTAX_CHECKS: #t #t 2.1.5)`
+* Exit code: 0
+* Zero warnings/errors; pristine upstream files preserved; 0 automated AI git commits.
+
+
+
+
 

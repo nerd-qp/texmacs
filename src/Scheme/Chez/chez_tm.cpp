@@ -13,6 +13,7 @@
 #include "blackbox.hpp"
 #include "file.hpp"
 #include "converter.hpp"
+#include "basic.hpp"
 #include "../Scheme/glue.hpp"
 
 #include <map>
@@ -699,8 +700,33 @@ scheme_dialect () {
 }
 
 static void
+register_foreign_symbols () {
+  Sforeign_symbol ("tm-call-by-name", (void*) tm_call_by_name);
+  Sforeign_symbol ("tm_fast_call_0", (void*) tm_fast_call_0);
+  Sforeign_symbol ("tm_fast_call_1", (void*) tm_fast_call_1);
+  Sforeign_symbol ("tm_fast_call_2", (void*) tm_fast_call_2);
+  Sforeign_symbol ("tm_fast_call_3", (void*) tm_fast_call_3);
+  Sforeign_symbol ("tm_fast_call_4", (void*) tm_fast_call_4);
+  Sforeign_symbol ("tm_fast_call_5", (void*) tm_fast_call_5);
+  Sforeign_symbol ("tm_fast_call_6", (void*) tm_fast_call_6);
+  Sforeign_symbol ("tm_fast_call_7", (void*) tm_fast_call_7);
+  Sforeign_symbol ("tm_fast_call_8", (void*) tm_fast_call_8);
+  Sforeign_symbol ("tm_fast_call_9", (void*) tm_fast_call_9);
+  Sforeign_symbol ("tm_fast_call_10", (void*) tm_fast_call_10);
+  Sforeign_symbol ("tmscm_delete_blackbox", (void*) tmscm_delete_blackbox);
+  Sforeign_symbol ("tmscm_blackbox_equal", (void*) tmscm_blackbox_equal);
+  Sforeign_symbol ("tmscm_blackbox_hash", (void*) tmscm_blackbox_hash);
+  Sforeign_symbol ("os_win32", (void*) os_win32);
+  Sforeign_symbol ("os_mingw", (void*) os_mingw);
+  Sforeign_symbol ("os_mingw64", (void*) os_mingw64);
+  Sforeign_symbol ("os_macos", (void*) os_macos);
+  Sforeign_symbol ("os_android", (void*) os_android);
+}
+
+static void
 custom_init (void) {
   /* called by Sbuild_heap before loading the boot files */
+  register_foreign_symbols ();
 }
 
 #ifndef CHEZ_BOOT_DIR
@@ -715,10 +741,16 @@ boot_dir () {
 }
 
 static bool s_has_texmacs_boot = false;
+static string s_texmacs_boot_file = "";
 
 bool
 chez_has_boot () {
   return s_has_texmacs_boot;
+}
+
+string
+chez_boot_file () {
+  return s_texmacs_boot_file;
 }
 
 void
@@ -741,14 +773,20 @@ start_scheme (int argc, char** argv, void (*call_back) (int, char**)) {
   if (!is_compile_modules) {
     string texmacs_boot = "";
     const char* env_boot = getenv ("TEXMACS_BOOT_FILE");
+    if (env_boot == NULL || env_boot[0] == '\0')
+      env_boot = getenv ("TEXMACS_SO_FILE");
     if (env_boot != NULL && env_boot[0] != '\0' && exists (url (env_boot))) {
       texmacs_boot = env_boot;
+    } else {
+      const char* boot_env = getenv ("TEXMACS_BOOT_PATH");
+      if (boot_env != NULL && boot_env[0] != '\0') {
+        string cand = string (boot_env) * "/texmacs.so";
+        if (exists (url (cand))) texmacs_boot = cand;
+      }
     }
 
     if (N (texmacs_boot) > 0) {
 #if defined(_WIN32)
-      /* MinGW provides no realpath(); _fullpath() is the CRT equivalent and
-         _MAX_PATH is the buffer size it expects. */
       char resolved[_MAX_PATH];
       if (_fullpath (resolved, c_string (texmacs_boot), _MAX_PATH) != NULL) {
         texmacs_boot = string (resolved);
@@ -759,7 +797,7 @@ start_scheme (int argc, char** argv, void (*call_back) (int, char**)) {
         texmacs_boot = string (resolved);
       }
 #endif
-      Sregister_boot_file (c_string (texmacs_boot));
+      s_texmacs_boot_file = texmacs_boot;
       s_has_texmacs_boot = true;
       fprintf (stderr, "Chez Scheme: booting from AOT image %s\n", (char*) c_string (texmacs_boot));
     }
@@ -779,21 +817,7 @@ initialize_scheme () {
   /* Foreign entry points first: boot-chez.scm binds each of them with
      foreign-procedure while it is being loaded, and Chez resolves the symbol
      at that point. */
-  Sforeign_symbol ("tm-call-by-name", (void*) tm_call_by_name);
-  Sforeign_symbol ("tm_fast_call_0", (void*) tm_fast_call_0);
-  Sforeign_symbol ("tm_fast_call_1", (void*) tm_fast_call_1);
-  Sforeign_symbol ("tm_fast_call_2", (void*) tm_fast_call_2);
-  Sforeign_symbol ("tm_fast_call_3", (void*) tm_fast_call_3);
-  Sforeign_symbol ("tm_fast_call_4", (void*) tm_fast_call_4);
-  Sforeign_symbol ("tm_fast_call_5", (void*) tm_fast_call_5);
-  Sforeign_symbol ("tm_fast_call_6", (void*) tm_fast_call_6);
-  Sforeign_symbol ("tm_fast_call_7", (void*) tm_fast_call_7);
-  Sforeign_symbol ("tm_fast_call_8", (void*) tm_fast_call_8);
-  Sforeign_symbol ("tm_fast_call_9", (void*) tm_fast_call_9);
-  Sforeign_symbol ("tm_fast_call_10", (void*) tm_fast_call_10);
-  Sforeign_symbol ("tmscm_delete_blackbox", (void*) tmscm_delete_blackbox);
-  Sforeign_symbol ("tmscm_blackbox_equal", (void*) tmscm_blackbox_equal);
-  Sforeign_symbol ("tmscm_blackbox_hash", (void*) tmscm_blackbox_hash);
+  register_foreign_symbols ();
 
   string boot= boot_scheme_path ();
   if (!exists (url (boot)))

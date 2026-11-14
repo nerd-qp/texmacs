@@ -1,103 +1,92 @@
-# Architecture Plan: `make-boot-file` (`texmacs.boot`)
+# Architecture Plan: Single-Image Binary Startup (`texmacs.so` & `texmacs.boot`)
 
 ## Executive Summary
 
-Currently, TeXmacs Chez Scheme startup requires loading `boot-chez.so` followed by hundreds of compiled module `.so` files (or `texmacs-user.so`) via filesystem lookups (`primitive-load`). While ahead-of-time compiled, this still incurs substantial disk I/O, individual FASL deserializations, and dynamic linking overhead during every startup.
+Currently, TeXmacs Chez Scheme startup requires loading `boot-chez.so` followed by 453 individual compiled module `.so` files via sequential filesystem lookups (`primitive-load`). While ahead-of-time compiled, this incurs significant disk I/O, 453 individual file opens/stats, FASL deserializations, and dynamic linking overhead during every startup.
 
-By using Chez Scheme's native `make-boot-file`, we can bundle the foundational Scheme runtime and core application modules into a single binary heap image (`texmacs.boot`). During startup, the Chez C-engine loads this image in a single sequential heap-build operation (`Sbuild_heap`), reducing cold Scheme bootstrap time to near zero.
+To achieve fast binary startup without filesystem thrashing, two architectural approaches have been designed:
+1. **Approach 1 (`texmacs.so`) — Single Consolidated Object File (Immediate Milestone)**:
+   Concatenates all 453 compiled `.so` files in topological DFS post-order into a single binary image `texmacs.so` (per Chez Scheme User's Guide Section 2.8). Loaded via `load_scheme_file` immediately after C++ glue initialization. Provides 95% of performance gains with zero changes to glue generation or upstream Scheme code.
+2. **Approach 2 (`texmacs.boot`) — Native Secondary Boot File via `Sregister_boot_file` (Ultimate Target)**:
+   Builds a native Chez Scheme secondary boot file loaded directly into the static GC generation during `Sbuild_heap()`. Requires re-architecting C++ glue procedures to use Chez `Sforeign_symbol` in `custom_init()` and decoupling top-level server calls.
 
 ```
+Approach 1 (Immediate):
++----------------------------------------------------------------------------------+
+|                              texmacs.so                                          |
+|  Concatenation of 453 compiled .so modules in topological DFS post-order         |
++----------------------------------------------------------------------------------+
+                                        |
+      Sbuild_heap() -> Construct server sv -> initialize_glue() -> load("texmacs.so")
+
+Approach 2 (Ultimate):
 +----------------------------------------------------------------------------------+
 |                              texmacs.boot                                        |
-|  Prerequisites: '("petite" "scheme")                                             |
-|                                                                                  |
-|  +--------------------+  +-------------------------+  +-----------------------+  |
-|  |    boot-chez.so    |  |     texmacs-user.so     |  | (Optional: Full Tier) |  |
-|  |  Foundational FFI, |  |  Core kernel modules    |  | Remaining top-level   |  |
-|  |  primitives, I/O   |  |  (GUI, styles, modes)   |  | application modules   |  |
-|  +--------------------+  +-------------------------+  +-----------------------+  |
+|  Native boot header ('("petite" "scheme")) + compiled object code stream          |
 +----------------------------------------------------------------------------------+
                                         |
-                                        v
-                            Sregister_boot_file()
-                                        |
-                                        v
-                                  Sbuild_heap()
+      Sregister_boot_file("texmacs.boot") -> custom_init() -> Sbuild_heap()
 ```
 
 ---
 
-## 1. Technical Mechanics of Chez Boot Files
+## 1. Analysis of the Two Approaches
 
-In Chez Scheme:
-- A `.boot` file contains pre-compiled, pre-expanded Scheme code serialized into heap images.
-- A secondary boot file specifies base prerequisite boot files (e.g., `'("petite" "scheme")`).
-- Boot files are registered with the C engine using `Sregister_boot_file()` before `Sbuild_heap()` is invoked.
-- `Sbuild_heap(argv[0], custom_init)` reads and instantiates the heap objects directly into memory before Scheme execution starts.
+### Approach 1: Consolidated Object File (`texmacs.so`)
 
-The Scheme API to produce this is:
-```scheme
-(make-boot-file out-path '("petite" "scheme") input-so-file ...)
-```
+* **Chez Scheme Reference**: CSUG Section 2.8 (*Building and Distributing Applications*):
+  > *"Although not strictly necessary, we suggest that you concatenate your Scheme object files, if you have more than one, into a single object file. This may be done on Unix systems simply via the `cat` program or on Windows via `copy`. Placing all of the object code into a single file simplifies both building and distribution of applications."*
+* **Execution Flow**:
+  1. `Sscheme_init()` and `Sbuild_heap()` initialize the base Chez Scheme runtime (`petite.boot`, `scheme.boot`).
+  2. `TeXmacs_main()` initializes GUI and creates `server sv;` (`the_server = this`).
+  3. `initialize_scheme()` registers C foreign symbols, loads `boot-chez.so`, and executes `initialize_glue()`, installing all 1,170 C++ glue procedures.
+  4. `load_scheme_file("texmacs.so")` loads all 453 modules in **one single file read**.
+* **Advantages**:
+  - Replaces 453 file operations with 1 file read (~20–30 ms total load time).
+  - Normal TeXmacs boot sequence, `the_server` lifetime, and glue installation remain intact.
+  - Zero modifications to upstream `TeXmacs/progs/` files.
+  - Zero ad-hoc glue stubs required.
 
----
+### Approach 2: Native Secondary Boot File (`texmacs.boot`)
 
-## 2. Key Lifecycle & Architectural Requirements
-
-### A. Foreign Symbol Registration (`custom_init`)
-Chez Scheme resolves foreign procedure addresses at the time `foreign-procedure` forms are evaluated:
-- Currently, `Sforeign_symbol("tm-call-by-name", ...)` is called inside `initialize_scheme()` **after** `Sbuild_heap()`.
-- If `boot-chez.so` is bundled into `texmacs.boot`, its `(foreign-procedure "tm-call-by-name" ...)` forms will be evaluated during `Sbuild_heap()`.
-- **Requirement:** Move all `Sforeign_symbol(...)` registrations into `custom_init()` in `chez_tm.cpp`. Chez guarantees `custom_init()` is executed by `Sbuild_heap()` *before* loading boot files.
-
-```mermaid
-sequenceDiagram
-    participant Main as C++ main()
-    participant Chez as Chez Engine (scheme.h)
-    participant Custom as custom_init()
-    participant Boot as texmacs.boot
-    participant Server as TeXmacs Server
-
-    Main->>Chez: Sscheme_init()
-    Main->>Chez: Sregister_boot_file("petite.boot")
-    Main->>Chez: Sregister_boot_file("scheme.boot")
-    Main->>Chez: Sregister_boot_file("texmacs.boot")
-    Main->>Chez: Sbuild_heap(argv[0], custom_init)
-    activate Chez
-    Chez->>Custom: custom_init()
-    Note over Custom: Register Sforeign_symbol() for FFI dispatchers
-    Chez->>Boot: Deserializes boot-chez & texmacs-user into initial heap
-    deactivate Chez
-    Main->>Server: initialize_scheme()
-    Note over Server: C++ initialize_glue() (no Scheme disk loads needed!)
-    Main->>Server: Run TeXmacs GUI / Editor Loop
-```
-
-### B. C++ Glue Separation
-- C++ glue procedures (`initialize_glue()`) cannot be inside the `.boot` image because they are compiled C++ functions registered dynamically.
-- However, the Scheme-side receiver (`tm-install-procedure!`) will already be in the heap from `texmacs.boot`.
-- When `initialize_scheme()` runs, it immediately proceeds to `initialize_glue()`, with zero file loading required.
-
-### C. Runtime Bypass in `init-texmacs-chez.scm`
-When `chez_has_boot()` is true:
-- Core kernel modules bundled in `texmacs.boot` are already resident in the interaction environment.
-- `init-texmacs-chez.scm` detects this state and bypasses loading `texmacs-user.so` or the individual kernel module list, jumping straight to late-stage user preferences and window initialization.
+* **Chez Scheme Reference**: CSUG Section 12.1 (`make-boot-file`) and C API (`Sregister_boot_file`, `Sbuild_heap`).
+* **The Core Mechanism**:
+  A boot file registered with `Sregister_boot_file()` is evaluated during `Sbuild_heap()`. All objects, symbols, and procedures loaded this way are placed directly into Chez Scheme's **static generation**, making them permanently exempt from garbage collection.
+* **Why It Requires a Deeper Architectural Overhaul**:
+  1. **Circular Dependency on Heap Build**:
+     - `Sbuild_heap()` evaluates `texmacs.boot` before returning control to C++.
+     - `initialize_glue()` installs procedures into Scheme via `tmscm_install_procedure()`, which calls `Sstring_to_symbol()` and defines top-level values. In Chez Scheme, creating Scheme symbols/definitions before `Sbuild_heap()` crashes because the heap does not exist.
+     - Therefore, during `Sbuild_heap()`, the 1,170 C++ glue procedures do not exist yet.
+  2. **Missing C++ Server Instance**:
+     - `the_server` does not exist during `Sbuild_heap()`.
+     - Modules like `fonts-composite.scm` call `(set-font-rules ...)` at top-level, which calls `get_server()`. This crashes if executed during `Sbuild_heap()`.
+* **Prerequisites to Realize Approach 2**:
+  1. **Regenerate Chez Glue as Foreign Symbols**:
+     Rewrite/extend `build-glue-*.scm` to generate C++ wrappers registered via `Sforeign_symbol()` in `custom_init()` rather than runtime `tmscm_install_procedure()`.
+  2. **Scheme Foreign Procedure Bindings**:
+     Bind all 1,170 foreign symbols via `(foreign-procedure ...)` in `boot-chez.scm` before boot file evaluation.
+  3. **Decouple Server Access from Load Time**:
+     Ensure top-level forms in modules either defer calls to `(on-entry ...)` or guard against null server instances.
 
 ---
 
-## 3. Implementation Steps
+## 2. Implementation Roadmap
 
-### Phase 1: Engine Preparation in C++ (`chez_tm.cpp`)
-1. **Move FFI symbol registrations:**
-   Extract all `Sforeign_symbol` calls from `initialize_scheme()` into `custom_init()`:
-   ```cpp
-   static void
-   custom_init (void) {
-     Sforeign_symbol ("tm-call-by-name", (void*) tm_call_by_name);
-     Sforeign_symbol ("tm_fast_call_0", (void*) tm_fast_call_0);
-     // ... all fast_call and blackbox foreign entry points ...
-   }
-   ```
+### Phase 1: Implement Approach 1 (`texmacs.so`) — Current Task
+1. **Generator Script**:
+   Generate `texmacs.so` by concatenating all 453 compiled `.so` modules according to `boot-order-full.scm` (topological DFS post-order).
+2. **C++ Loader in `chez_tm.cpp`**:
+   Support `TEXMACS_SO_FILE` (or `texmacs.so` in boot directory) to load the single consolidated object file post-glue.
+3. **Runtime Bypass in `init-texmacs-chez.scm`**:
+   Detect that modules are already loaded from `texmacs.so`, skipping the 453 individual `use-modules` / `load` calls.
+4. **Benchmark Verification**:
+   Measure startup time and verify 0 errors during GUI cold boot.
+
+### Phase 2: Design and Implement Approach 2 (`texmacs.boot`) — Subsequent Milestone
+1. Design the Chez-native FFI glue generator (`build-glue-chez.scm`).
+2. Register foreign symbols in `custom_init()`.
+3. Separate bootstrap kernel modules into `texmacs-kernel.boot`.
+4. Decouple top-level C++ side effects.
 2. **Auto-detect default `texmacs.boot` location:**
    Extend `start_scheme()` to probe for:
    - Explicit environment variable: `$TEXMACS_BOOT_FILE`
