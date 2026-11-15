@@ -2,6 +2,14 @@
   (display "WARNING: boot-chez.scm loaded more than once!\n"))
 (define *boot-chez-loaded* #t)
 
+;; `include' resolves included files against these directories
+(eval-when (compile load eval)
+  (let ((tm-path (getenv "TEXMACS_PATH")))
+    (when (and tm-path (> (string-length tm-path) 0))
+      (source-directories (cons (string-append tm-path "/progs/kernel/boot") (source-directories))))
+    (source-directories (append (source-directories)
+                                '("TeXmacs/progs/kernel/boot" "progs/kernel/boot" ".")))))
+
 ;;; ---------------------------------------------------------------------------
 ;;; Engine globals
 ;;;
@@ -499,7 +507,12 @@
                    ".scm")))
 
 (define (module-loaded? m)
-  (hashtable-ref *texmacs-modules-loaded* m #f))
+  (or (hashtable-ref *texmacs-modules-loaded* m #f)
+      (and (list? m)
+           (guard (e (else #f))
+             (environment m)
+             (hashtable-set! *texmacs-modules-loaded* m #t)
+             #t))))
 
 (define (module-so-file which)
   (let* ((ps (map symbol->string which))
@@ -625,6 +638,7 @@
   ;; verification loads would prematurely load forward/deferred circular
   ;; dependencies or stale .so files left on disk from previous builds.
   (when (and (not (compile-export-mode?))
+             (getenv "TEXMACS_PATH")
              (not (module-loaded? m)))
     (module-load m)))
 
@@ -979,15 +993,6 @@
 (define (tm-apply fun args)
   (tm-call-n fun args))
 
-;; `include' resolves glue-chez.scm against these directories, so the progs
-;; tree under TEXMACS_PATH has to come first; the relative fallbacks cover a
-;; tree booted straight from the source checkout.
-(eval-when (compile load eval)
-  (let ((tm-path (getenv "TEXMACS_PATH")))
-    (when (and tm-path (> (string-length tm-path) 0))
-      (source-directories (cons (string-append tm-path "/progs/kernel/boot") (source-directories))))
-    (source-directories (append (source-directories)
-                                '("TeXmacs/progs/kernel/boot" "progs/kernel/boot" ".")))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; The C++ glue layer

@@ -47,6 +47,15 @@ static string s_pending_var   = "";
 static string s_pending_unvar = "";
 static bool   s_has_pending_variant_keys = false;
 
+static string s_pending_printing_command = "";
+static bool   s_has_pending_printing_command = false;
+
+static string s_pending_paper_type = "";
+static bool   s_has_pending_paper_type = false;
+
+static string s_pending_printer_dpi = "";
+static bool   s_has_pending_printer_dpi = false;
+
 tmscm
 tmg_chez_set_variant_keys (tmscm a1, tmscm a2) {
   string var   = tmscm_to_string (a1);
@@ -62,10 +71,60 @@ tmg_chez_set_variant_keys (tmscm a1, tmscm a2) {
   return TMSCM_UNSPECIFIED;
 }
 
+tmscm
+tmg_chez_set_printing_command (tmscm a1) {
+  string cmd = tmscm_to_string (a1);
+  if (is_server_started ()) {
+    get_server () -> set_printing_command (cmd);
+  } else {
+    s_pending_printing_command = cmd;
+    s_has_pending_printing_command = true;
+  }
+  return TMSCM_UNSPECIFIED;
+}
+
+tmscm
+tmg_chez_set_printer_paper_type (tmscm a1) {
+  string paper = tmscm_to_string (a1);
+  if (is_server_started ()) {
+    get_server () -> set_printer_page_type (paper);
+  } else {
+    s_pending_paper_type = paper;
+    s_has_pending_paper_type = true;
+  }
+  return TMSCM_UNSPECIFIED;
+}
+
+tmscm
+tmg_chez_set_printer_dpi (tmscm a1) {
+  string dpi = tmscm_to_string (a1);
+  if (is_server_started ()) {
+    get_server () -> set_printer_dpi (dpi);
+  } else {
+    s_pending_printer_dpi = dpi;
+    s_has_pending_printer_dpi = true;
+  }
+  return TMSCM_UNSPECIFIED;
+}
+
 void
 replay_early_variant_keys () {
-  if (is_server_started () && s_has_pending_variant_keys) {
-    get_server () -> set_variant_keys (s_pending_var, s_pending_unvar);
-    s_has_pending_variant_keys = false;
+  if (is_server_started ()) {
+    if (s_has_pending_variant_keys) {
+      get_server () -> set_variant_keys (s_pending_var, s_pending_unvar);
+      s_has_pending_variant_keys = false;
+    }
+    if (s_has_pending_printing_command) {
+      get_server () -> set_printing_command (s_pending_printing_command);
+      s_has_pending_printing_command = false;
+    }
+    if (s_has_pending_paper_type) {
+      get_server () -> set_printer_page_type (s_pending_paper_type);
+      s_has_pending_paper_type = false;
+    }
+    if (s_has_pending_printer_dpi) {
+      get_server () -> set_printer_dpi (s_pending_printer_dpi);
+      s_has_pending_printer_dpi = false;
+    }
   }
 }

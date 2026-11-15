@@ -97,8 +97,11 @@
 ;; Routines redirected to early-boot safe implementations in glue_overrides.cpp
 ;; (scheme-name . c-function-override)
 (define *chez-override-cfns*
-  '(("set-font-rules"   . "tmg_chez_set_font_rules")
-    ("set-variant-keys" . "tmg_chez_set_variant_keys")))
+  '(("set-font-rules"          . "tmg_chez_set_font_rules")
+    ("set-variant-keys"        . "tmg_chez_set_variant_keys")
+    ("set-printing-command"    . "tmg_chez_set_printing_command")
+    ("set-printer-paper-type"  . "tmg_chez_set_printer_paper_type")
+    ("set-printer-dpi"         . "tmg_chez_set_printer_dpi")))
 
 ;; The glue type names whose values are Scheme objects holding a TeXmacs
 ;; string -- a raw 8-bit bytevector on the C++ side, a Scheme string on the

@@ -67,6 +67,8 @@ Approach 2 (Ultimate):
      Bind all 1,170 foreign symbols via `(foreign-procedure ...)` in `boot-chez.scm` before boot file evaluation.
   3. **Decouple Server Access from Load Time**:
      Ensure top-level forms in modules either defer calls to `(on-entry ...)` or guard against null server instances.
+  4. **Maintain `module-provide` Invariant (No Dynamic Disk Probing During Boot)**:
+     Modules in `texmacs.boot` are already packaged in strict topological DFS order. `module-provide` is an escape hatch for dynamic runtime loading of uncompiled plugins and must remain inert during `Sbuild_heap()` (when `$TEXMACS_PATH` is unset). Generating a static `core-modules.scm` manifest was explicitly rejected to keep pristine upstream source trees clean and avoid synchronization drift.
 
 ---
 

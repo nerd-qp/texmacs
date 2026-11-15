@@ -88,13 +88,14 @@
                                  (string=? p "chez-compat.so")))
                            raw-so-paths)))
 
-      (printf "Assembling ~a input modules into AOT binary images...\n" (length so-paths))
+      (printf "Assembling ~a input modules into AOT binary images (raw: ~a)...\n"
+              (length so-paths) (length raw-so-paths))
 
       (for-each
         (lambda (f)
           (unless (file-exists? f)
             (error 'make-boot "Missing compiled module .so file" f)))
-        so-paths)
+        raw-so-paths)
 
       ;; 1. Generate Approach 1 image: texmacs.so (CSUG 2.8 concatenated object file)
       (printf "Generating ~a (Approach 1: concatenated object file)...\n" out-so)
@@ -104,9 +105,10 @@
                 out-so (/ sz 1048576.0) sz))
 
       ;; 2. Generate Approach 2 image: texmacs.boot (CSUG 12.1 native boot file)
-      (printf "Generating ~a (Approach 2: native boot file)...\n" out-boot)
+      (printf "Generating ~a (Approach 2: native boot file with all ~a modules)...\n"
+              out-boot (length raw-so-paths))
       (when (file-exists? out-boot) (delete-file out-boot))
-      (apply make-boot-file out-boot '("petite" "scheme") so-paths)
+      (apply make-boot-file out-boot '("petite" "scheme") raw-so-paths)
       (let ((sz (file-length (open-file-input-port out-boot))))
         (printf "SUCCESS: Created AOT boot image ~a (~,2f MB, ~a bytes)\n"
                 out-boot (/ sz 1048576.0) sz)))))

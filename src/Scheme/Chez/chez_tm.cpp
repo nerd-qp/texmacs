@@ -780,8 +780,10 @@ start_scheme (int argc, char** argv, void (*call_back) (int, char**)) {
       } else {
         const char* boot_env = getenv ("TEXMACS_BOOT_PATH");
         if (boot_env != NULL && boot_env[0] != '\0') {
-          string cand = string (boot_env) * "/texmacs.so";
-          if (exists (url (cand))) texmacs_boot = cand;
+          string cand_boot = string (boot_env) * "/texmacs.boot";
+          string cand_so   = string (boot_env) * "/texmacs.so";
+          if (exists (url (cand_boot))) texmacs_boot = cand_boot;
+          else if (exists (url (cand_so))) texmacs_boot = cand_so;
         }
       }
 
@@ -800,6 +802,9 @@ start_scheme (int argc, char** argv, void (*call_back) (int, char**)) {
         s_texmacs_boot_file = texmacs_boot;
         s_has_texmacs_boot = true;
         fprintf (stderr, "Chez Scheme: booting from AOT image %s\n", (char*) c_string (texmacs_boot));
+        if (ends (texmacs_boot, ".boot")) {
+          Sregister_boot_file (c_string (texmacs_boot));
+        }
       }
     }
   }
@@ -832,12 +837,14 @@ initialize_scheme () {
      custom_init(), i.e. during Sbuild_heap(). */
   register_foreign_symbols ();
 
-  string boot= boot_scheme_path ();
-  if (!exists (url (boot)))
-    boot_failed ("Chez Scheme: bootstrap file not found: " * boot);
-  fprintf (stderr, "Chez Scheme: loading %s\n", (char*) c_string (boot));
-  fflush (stderr);
-  load_scheme_file (boot);
+  if (!s_has_texmacs_boot || !ends (s_texmacs_boot_file, ".boot")) {
+    string boot= boot_scheme_path ();
+    if (!exists (url (boot)))
+      boot_failed ("Chez Scheme: bootstrap file not found: " * boot);
+    fprintf (stderr, "Chez Scheme: loading %s\n", (char*) c_string (boot));
+    fflush (stderr);
+    load_scheme_file (boot);
+  }
 
   /* Cache frequently-used procedures.  These ptrs live in STATIC storage,
      which Chez's collector does not scan: newly allocated objects start in
@@ -876,6 +883,13 @@ initialize_scheme () {
   Slock_object (object_stack);
   tm_install_proc= Stop_level_value (Sstring_to_symbol ("tm-install-procedure!"));
   Slock_object (tm_install_proc);
+
+  if (s_has_texmacs_boot) {
+    if (ends (s_texmacs_boot_file, ".boot"))
+      eval_scheme ("(define *texmacs-boot-mode* 'boot)");
+    else
+      eval_scheme ("(define *texmacs-boot-mode* 'so)");
+  }
 
   if (chez_legacy_glue ()) {
     fprintf (stderr, "Chez Scheme: initialize_glue (legacy dynamic registration)\n");

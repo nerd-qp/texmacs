@@ -1312,10 +1312,10 @@ extern tmscm tmg_cpp_choose_file (tmscm, tmscm, tmscm, tmscm, tmscm);
 extern tmscm tmg_tm_interactive (tmscm, tmscm);
 extern tmscm tmg_cpp_style_clear_cache ();
 extern tmscm tmg_set_script_status (tmscm);
-extern tmscm tmg_set_printing_command (tmscm);
-extern tmscm tmg_set_printer_paper_type (tmscm);
+extern tmscm tmg_chez_set_printing_command (tmscm);
+extern tmscm tmg_chez_set_printer_paper_type (tmscm);
 extern tmscm tmg_get_printer_paper_type ();
-extern tmscm tmg_set_printer_dpi (tmscm);
+extern tmscm tmg_chez_set_printer_dpi (tmscm);
 extern tmscm tmg_set_default_zoom_factor (tmscm);
 extern tmscm tmg_get_default_zoom_factor ();
 extern tmscm tmg_inclusions_gc ();
@@ -2492,10 +2492,10 @@ TMG_GUARDED_5 ("cpp-choose-file", tmg_cpp_choose_file)
 TMG_GUARDED_2 ("tm-interactive", tmg_tm_interactive)
 TMG_GUARDED_0 ("cpp-style-clear-cache", tmg_cpp_style_clear_cache)
 TMG_GUARDED_1 ("set-script-status", tmg_set_script_status)
-TMG_GUARDED_1 ("set-printing-command", tmg_set_printing_command)
-TMG_GUARDED_1 ("set-printer-paper-type", tmg_set_printer_paper_type)
+TMG_GUARDED_1 ("set-printing-command", tmg_chez_set_printing_command)
+TMG_GUARDED_1 ("set-printer-paper-type", tmg_chez_set_printer_paper_type)
 TMG_GUARDED_0 ("get-printer-paper-type", tmg_get_printer_paper_type)
-TMG_GUARDED_1 ("set-printer-dpi", tmg_set_printer_dpi)
+TMG_GUARDED_1 ("set-printer-dpi", tmg_chez_set_printer_dpi)
 TMG_GUARDED_1 ("set-default-zoom-factor", tmg_set_default_zoom_factor)
 TMG_GUARDED_0 ("get-default-zoom-factor", tmg_get_default_zoom_factor)
 TMG_GUARDED_0 ("inclusions-gc", tmg_inclusions_gc)
@@ -3682,10 +3682,10 @@ static const tmg_entry tmg_entries[]= {
   { "tmg_tm_interactive", (void*) tmgc_tmg_tm_interactive },
   { "tmg_cpp_style_clear_cache", (void*) tmgc_tmg_cpp_style_clear_cache },
   { "tmg_set_script_status", (void*) tmgc_tmg_set_script_status },
-  { "tmg_set_printing_command", (void*) tmgc_tmg_set_printing_command },
-  { "tmg_set_printer_paper_type", (void*) tmgc_tmg_set_printer_paper_type },
+  { "tmg_set_printing_command", (void*) tmgc_tmg_chez_set_printing_command },
+  { "tmg_set_printer_paper_type", (void*) tmgc_tmg_chez_set_printer_paper_type },
   { "tmg_get_printer_paper_type", (void*) tmgc_tmg_get_printer_paper_type },
-  { "tmg_set_printer_dpi", (void*) tmgc_tmg_set_printer_dpi },
+  { "tmg_set_printer_dpi", (void*) tmgc_tmg_chez_set_printer_dpi },
   { "tmg_set_default_zoom_factor", (void*) tmgc_tmg_set_default_zoom_factor },
   { "tmg_get_default_zoom_factor", (void*) tmgc_tmg_get_default_zoom_factor },
   { "tmg_inclusions_gc", (void*) tmgc_tmg_inclusions_gc },

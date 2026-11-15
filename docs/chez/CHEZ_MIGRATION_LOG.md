@@ -4,6 +4,27 @@ This document records the architectural discoveries, root-cause analyses, and de
 
 ---
 
+## 0.3 Approach 2 (`texmacs.boot`) Bootstrap Architecture & `module-provide` Invariant (2026-11-15)
+
+Implements native secondary boot-file loading via `Sregister_boot_file("texmacs.boot")` and `Sbuild_heap()`.
+
+### A. Boot-File Assembly and Image Sequence
+- **Issue**: `make-boot.scm` originally excluded `boot-chez.so` and `chez-compat.so` from object paths when building `texmacs.so` (because in Approach 1, C++ explicitly loads `boot-chez.scm` via `load_scheme_file` and `init-texmacs-aot.scm` loads `chez-compat.so`). When building `texmacs.boot`, `Sbuild_heap()` loads the secondary boot file during heap construction before any runtime script or C++ setup runs. Evaluating 452 modules without `texmacs-module`, `use-modules`, or Guile macro compatibility immediately failed.
+- **Fix**: Updated `make-boot.scm` so that `texmacs.boot` bundles all 454 modules starting with `kernel/boot/boot-chez.so` and `kernel/boot/chez-compat.so`, while `texmacs.so` continues bundling the 452 post-bootstrap modules.
+
+### B. `module-provide` and the Rejection of `core-modules.scm`
+- **Root-Cause Analysis**: During `Sbuild_heap()`, transpiled `.so` modules contain injected `(module-provide '<dep>)` forms (e.g. `prologue.so` calls `(module-provide '(kernel boot ahash-table))`). At boot time, `*texmacs-modules-loaded*` is initialized as a fresh empty hash table in `boot-chez.scm`, so `(module-loaded? '(kernel boot ahash-table))` returned `#f`. This triggered `module-load`, which attempted to read `TeXmacs/progs/kernel/boot/ahash-table.scm` from the filesystem via `(getenv "TEXMACS_PATH")`. Inside `Sbuild_heap()`, runtime paths are not yet set (`$TEXMACS_PATH` is `#f`), causing `file not found: #f` and an aborted module evaluation cascade.
+- **Decision on `core-modules.scm`**: Introducing an auto-generated `core-modules.scm` manifest was rejected:
+  1. *Source tree hygiene*: It pollutes `TeXmacs/progs/kernel/boot/` with a static 454-line file that duplicates `boot-order-full.scm` and will drift when modules change.
+  2. *Architectural invariant*: In Approach 2 (`texmacs.boot`), all 454 modules are already ordered topologically and loaded directly into the static generation during `Sbuild_heap()`. Any `(module-provide '<dep>)` inside the boot file is guaranteed to already be resident.
+  3. *Correct solution*: `module-provide` is an escape hatch for *dynamic runtime loading* of uncompiled plugins. It must remain inert during `Sbuild_heap()` (when `$TEXMACS_PATH` is unset) and for resident modules in AOT boot mode, preventing any filesystem probing.
+
+### C. Top-Level C++ Server Decoupling
+- **Issue**: Preference definitions in `tm-print.scm` (`set-printing-command`, `set-printer-paper-type`, `set-printer-dpi`) and `tm-view.scm` (`show-side-tools`, `set-default-zoom-factor`, `set-window-zoom-factor`) trigger notifiers at definition/load time via `define-preference-call-back`. In `Sbuild_heap()`, `the_server` is NULL, triggering `TeXmacs server not yet started` throws.
+- **Fix**: Buffered early printer and variant settings in `glue_overrides.cpp` and `build-glue-chez.scm`, and guarded preference callbacks until `(server-started?)` is true, replaying buffered settings once `the_server` starts in `initialize_scheme()`.
+
+---
+
 ## 0.2 Native Glue Registration: `initialize_glue_chez` (2026-11-15)
 
 Implements [`GLUE_CHEZ_PLAN.md`](GLUE_CHEZ_PLAN.md), the prerequisite for

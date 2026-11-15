@@ -5269,17 +5269,17 @@
 (define (tm-interactive a1 a2)
   (recur-utf8->string (c-glue-tm_interactive (recur-string->utf8 a1) (recur-string->utf8 a2))))
 
-(define c-glue-set_printing_command
+(define c-glue-chez_set_printing_command
   (foreign-procedure "tmg_set_printing_command" (scheme-object) scheme-object))
 
 (define (set-printing-command a1)
-  (recur-utf8->string (c-glue-set_printing_command (recur-string->utf8 a1))))
+  (recur-utf8->string (c-glue-chez_set_printing_command (recur-string->utf8 a1))))
 
-(define c-glue-set_printer_paper_type
+(define c-glue-chez_set_printer_paper_type
   (foreign-procedure "tmg_set_printer_paper_type" (scheme-object) scheme-object))
 
 (define (set-printer-paper-type a1)
-  (recur-utf8->string (c-glue-set_printer_paper_type (recur-string->utf8 a1))))
+  (recur-utf8->string (c-glue-chez_set_printer_paper_type (recur-string->utf8 a1))))
 
 (define c-glue-get_printer_paper_type
   (foreign-procedure "tmg_get_printer_paper_type" () scheme-object))
@@ -5287,11 +5287,11 @@
 (define (get-printer-paper-type)
   (recur-utf8->string (c-glue-get_printer_paper_type)))
 
-(define c-glue-set_printer_dpi
+(define c-glue-chez_set_printer_dpi
   (foreign-procedure "tmg_set_printer_dpi" (scheme-object) scheme-object))
 
 (define (set-printer-dpi a1)
-  (recur-utf8->string (c-glue-set_printer_dpi (recur-string->utf8 a1))))
+  (recur-utf8->string (c-glue-chez_set_printer_dpi (recur-string->utf8 a1))))
 
 (define c-glue-set_message
   (foreign-procedure "tmg_set_message" (scheme-object scheme-object) scheme-object))

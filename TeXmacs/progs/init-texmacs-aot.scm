@@ -14,34 +14,37 @@
 (unless (top-level-bound? 'notify-preferences-booted)
   (define-top-level-value 'notify-preferences-booted (lambda () (noop))))
 
-;; 1. Load and import chez-compat.so first to provide macro-expansion helpers (ca*r, etc.)
-(let* ((boot-env (getenv "TEXMACS_BOOT_PATH"))
-       (tm-path (getenv "TEXMACS_PATH"))
-       (candidates (list (if boot-env (string-append boot-env "/kernel/boot/chez-compat.so") #f)
-                         (if tm-path (string-append tm-path "/boot/kernel/boot/chez-compat.so") #f)
-                         "build-texmacos/boot/kernel/boot/chez-compat.so"
-                         "boot/kernel/boot/chez-compat.so")))
-  (let loop ((c candidates))
-    (cond ((null? c) (error 'init-texmacs-aot "Cannot locate chez-compat.so"))
-          ((and (car c) (file-exists? (car c)))
-           (primitive-load (car c)))
-          (else (loop (cdr c))))))
+;; 1. Load and import chez-compat.so and texmacs.so if running in Approach 1 (texmacs.so).
+;; When running in Approach 2 (texmacs.boot), all 454 modules are already loaded
+;; directly into the static generation during Sbuild_heap().
+(unless (and (top-level-bound? '*texmacs-boot-mode*)
+             (eq? (top-level-value '*texmacs-boot-mode*) 'boot))
+  (let* ((boot-env (getenv "TEXMACS_BOOT_PATH"))
+         (tm-path (getenv "TEXMACS_PATH"))
+         (candidates (list (if boot-env (string-append boot-env "/kernel/boot/chez-compat.so") #f)
+                           (if tm-path (string-append tm-path "/boot/kernel/boot/chez-compat.so") #f)
+                           "build-texmacos/boot/kernel/boot/chez-compat.so"
+                           "boot/kernel/boot/chez-compat.so")))
+    (let loop ((c candidates))
+      (cond ((null? c) (error 'init-texmacs-aot "Cannot locate chez-compat.so"))
+            ((and (car c) (file-exists? (car c)))
+             (primitive-load (car c)))
+            (else (loop (cdr c))))))
 
-(eval '(import kernel:boot:chez-compat) (interaction-environment))
+  (eval '(import kernel:boot:chez-compat) (interaction-environment))
 
-;; 2. Load the consolidated AOT object file (contains remaining 452 modules)
-(let* ((boot-env (getenv "TEXMACS_BOOT_PATH"))
-       (tm-path (getenv "TEXMACS_PATH"))
-       (candidates (list (if (getenv "TEXMACS_SO_FILE") (getenv "TEXMACS_SO_FILE") #f)
-                         (if boot-env (string-append boot-env "/texmacs.so") #f)
-                         (if tm-path (string-append tm-path "/boot/texmacs.so") #f)
-                         "build-texmacos/boot/texmacs.so"
-                         "boot/texmacs.so")))
-  (let loop ((c candidates))
-    (cond ((null? c) (error 'init-texmacs-aot "Cannot locate texmacs.so"))
-          ((and (car c) (file-exists? (car c)))
-           (primitive-load (car c)))
-          (else (loop (cdr c))))))
+  (let* ((boot-env (getenv "TEXMACS_BOOT_PATH"))
+         (tm-path (getenv "TEXMACS_PATH"))
+         (candidates (list (if (getenv "TEXMACS_SO_FILE") (getenv "TEXMACS_SO_FILE") #f)
+                           (if boot-env (string-append boot-env "/texmacs.so") #f)
+                           (if tm-path (string-append tm-path "/boot/texmacs.so") #f)
+                           "build-texmacos/boot/texmacs.so"
+                           "boot/texmacs.so")))
+    (let loop ((c candidates))
+      (cond ((null? c) (error 'init-texmacs-aot "Cannot locate texmacs.so"))
+            ((and (car c) (file-exists? (car c)))
+             (primitive-load (car c)))
+            (else (loop (cdr c)))))))
 
 ;; Import all resident AOT modules into the interaction environment
 (eval '(import
