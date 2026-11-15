@@ -4,6 +4,83 @@ This document records the architectural discoveries, root-cause analyses, and de
 
 ---
 
+## 0.2 Native Glue Registration: `initialize_glue_chez` (2026-11-15)
+
+Implements [`GLUE_CHEZ_PLAN.md`](GLUE_CHEZ_PLAN.md), the prerequisite for
+Approach 2 (`texmacs.boot`) in [`BOOT_FILE_PLAN.md`](BOOT_FILE_PLAN.md).
+
+### A. Glue leaves the interpreter
+- **Issue**: `initialize_glue()` installed 1,176 C++ routines with 1,176
+  `Scall3` calls into `(tm-install-procedure! name id arity)`, each interning a
+  symbol and allocating a closure. It also had to run *after* `Sbuild_heap()`,
+  because it allocates Scheme objects — so any boot file evaluated during heap
+  construction saw no glue at all, and `texmacs.boot` was unreachable.
+- **Fix**: `src/Scheme/Chez/glue_chez.cpp` registers every entry point with
+  `Sforeign_symbol()` from `custom_init()`. That table is plain C memory: no
+  heap, no interning, no Scheme call, so it is legal inside `Sbuild_heap()`.
+  `TeXmacs/progs/kernel/boot/glue-chez.scm` (included by `boot-chez.scm`) binds
+  the same names with `foreign-procedure`, which the compiler emits as a direct
+  call instead of a `tm_fast_table[id]` lookup. `initialize_glue()` is no
+  longer called for Chez; `TEXMACS_CHEZ_LEGACY_GLUE=1` restores it for bisecting.
+- **Verified**: registration now happens only in `custom_init()`, and boot still
+  succeeds, which is the ordering proof — the glue is live before the first boot
+  file is evaluated.
+
+### B. Two decisions that are not in the plan
+- **Exception shims.** The plan registers the `tmg_*` functions directly. They
+  are ordinary C++ and throw (`tm_throw` throws a *TeXmacs* `string`, which is
+  unrelated to `std::string`, so the existing `catch (const std::string&)` in
+  `chez_tm.cpp` never matched and errors degraded to `<exception>`). Letting that
+  unwind through Chez's foreign-call frame aborts the process, so every entry
+  point is wrapped in a `tmgc_*` shim that contains the throw, returns the
+  `(cons #t (cons msg '()))` pair the kernel expects, and reports the real
+  TeXmacs message rather than `<exception>`.
+- **Classification from declared types, not from `raw-ffi-table.scm`.** A routine
+  is bound raw iff no argument and no result can hold a tm string — the types in
+  `*tm-string-types*`: `string`, `scheme_tree`, `content`, `object`, `url`,
+  `array_url`, `array_string`, `list_string`. `url` and `object` matter because
+  `tmscm_to_url` and `tmscm_to_content` accept strings, and an `object` is an
+  arbitrary Scheme value. Cross-checked: all 441 entries of that table come out
+  raw, and nothing outside it does. Final split: 448 raw (441 + the seven core
+  predicates, which take an opaque object and only inspect its type tag), 728
+  transcoded.
+- **Five routines are skipped** because `glue_basic.cpp` compiles their
+  definitions or registrations out under `TEXMACS_ENGINE_CHEZ`: `tm-output`,
+  `tm-errput`, `string-load` and `string-search-{forwards,backwards}`. The kernel
+  defines all five itself.
+- **The five `os-*?` predicates are ordinary glue again.** Their
+  `#if !defined(TEXMACS_ENGINE_CHEZ) && !defined(CHEZ_SCHEME)` guard has been
+  removed from `glue_basic.cpp`, so `initialize_glue_basic()` installs them on
+  every engine as upstream intended, and the generator emits them like anything
+  else. The hand-written `foreign-procedure` bindings are gone from the kernel,
+  and `register_foreign_symbols()` no longer exports the `os_*` C functions.
+  One provider instead of two.
+- **`initial-foreign-proc.scm` is folded into `boot-chez.scm`.** The file held
+  three groups: blackbox hooks, the legacy trampolines, and the (now empty) OS
+  predicate section. Each moved next to its consumer — the blackbox hooks just
+  above `reap-blackboxes!`, the trampolines just above `tm-install-procedure!` —
+  which also removes a latent hazard: `reap-blackboxes!` is installed as the
+  collect-request handler at line 138 but `c-delete-blackbox` used to be bound
+  only at line 979, so a collection in between would have hit an unbound
+  variable.
+
+### C. Regeneration
+`scheme --script src/Scheme/Chez/build-glue-chez.scm [repo-root]` rewrites both
+artefacts from `src/Scheme/Glue/build-glue-{basic,editor,server}.scm` and fails
+loudly on a duplicate Scheme name, C function name or foreign symbol.
+
+### D. Verification
+- `run-all-tests` logs are byte-identical between the native and legacy paths
+  (only the start-up banner differs), including the two pre-existing failures
+  (`regtest-tmhtml` `<img class="image">`, `regtest-prog-format` `scala`).
+  `regtest-tmmltm` and `regtest-cite-sort` pass identically in both modes.
+- `compile-file` on `boot-chez.scm` succeeds, so the `-compile-modules` path
+  resolves all 1,176 foreign symbols at expand time.
+- Start-up timings are unchanged within noise (±15 ms over five runs each);
+  the gain here is architectural, not measurable on this machine.
+
+---
+
 ## 0.1 Post-Order Cycle Reordering & `tree-ref` Keyword Conflation (2026-11-14)
 
 ### A. Mutual Circular Dependency Post-Generation Patch
@@ -348,6 +425,10 @@ Rather than splitting modules into synthetic helper units, the codebase reverted
 ---
 
 ## 2026-11-14: Clean Bootstrap Architecture & Foreign Procedure Separation
+
+> **Superseded in part by §0.2:** `initial-foreign-proc.scm` no longer exists.
+> Its contents are back in `boot-chez.scm`, next to their consumers, and the
+> `os-*?` predicates are ordinary glue now.
 
 ### Clean Architecture Improvements
 1. **Extracted Foreign Procedures into `initial-foreign-proc.scm`**:

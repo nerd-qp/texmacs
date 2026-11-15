@@ -142,6 +142,17 @@ tmscm_as_fn (T func) {
 
 void chez_install_procedure (const char* name, void* fn, int arity);
 
+/* -- native glue registration (src/Scheme/Chez/glue_chez.cpp) ------------- */
+
+/* Record every C++ glue entry point in Chez's foreign symbol table with
+   Sforeign_symbol().  That table is plain C memory, so this runs from
+   custom_init() inside Sbuild_heap(), before any boot file is evaluated;
+   boot-chez.scm then binds the names with foreign-procedure.  Idempotent. */
+void initialize_glue_chez ();
+
+/* Number of registered entry points, for the start-up diagnostic. */
+int chez_glue_procedure_count ();
+
 #define tmscm_install_procedure(name, func, args, p0, p1) \
   chez_install_procedure (name, (void*) tmscm_as_fn (func), args)
 

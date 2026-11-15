@@ -554,7 +554,7 @@ set (TeXmacs_Include_Dirs ${TeXmacs_Include_Dirs}
 ### --------------------------------------------------------------------
 ### the main sources
 ### --------------------------------------------------------------------
-file (GLOB_RECURSE TeXmacs_Base_SRCS
+file (GLOB_RECURSE TeXmacs_Base_SRCS CONFIGURE_DEPENDS
   "${TEXMACS_SOURCE_DIR}/src/Data/*.cpp"
   "${TEXMACS_SOURCE_DIR}/src/Edit/*.cpp"
   "${TEXMACS_SOURCE_DIR}/src/Graphics/*.cpp"
@@ -568,16 +568,16 @@ file (GLOB_RECURSE TeXmacs_Base_SRCS
 )
 
 if (TEXMACS_ENGINE_CHEZ)
-  file (GLOB_RECURSE TeXmacs_Chez_SRCS
+  file (GLOB_RECURSE TeXmacs_Chez_SRCS CONFIGURE_DEPENDS
     "${TEXMACS_SOURCE_DIR}/src/Scheme/Chez/*.cpp")
   set (TeXmacs_Base_SRCS ${TeXmacs_Base_SRCS} ${TeXmacs_Chez_SRCS})
 else ()
-  file (GLOB_RECURSE TeXmacs_Guile_SRCS
+  file (GLOB_RECURSE TeXmacs_Guile_SRCS CONFIGURE_DEPENDS
     "${TEXMACS_SOURCE_DIR}/src/Scheme/Guile/*.cpp")
   set (TeXmacs_Base_SRCS ${TeXmacs_Base_SRCS} ${TeXmacs_Guile_SRCS})
 endif ()
 
-file (GLOB_RECURSE TeXmacs_Std_Plugins_SRCS
+file (GLOB_RECURSE TeXmacs_Std_Plugins_SRCS CONFIGURE_DEPENDS
   "${TEXMACS_SOURCE_DIR}/src/Plugins/Axel/*.cpp"
   "${TEXMACS_SOURCE_DIR}/src/Plugins/Bibtex/*.cpp"
   "${TEXMACS_SOURCE_DIR}/src/Plugins/Cairo/*.cpp"
@@ -597,7 +597,7 @@ file (GLOB_RECURSE TeXmacs_Std_Plugins_SRCS
   "${TEXMACS_SOURCE_DIR}/src/Plugins/Updater/*.cpp"
 )
 
-file (GLOB_RECURSE TeXmacs_Style_SRCS
+file (GLOB_RECURSE TeXmacs_Style_SRCS CONFIGURE_DEPENDS
   "${TEXMACS_SOURCE_DIR}/src/Style/*.cpp"
 )
 
@@ -607,9 +607,9 @@ set (TeXmacs_All_SRCS ${TeXmacs_Base_SRCS}  ${TeXmacs_Std_Plugins_SRCS})
 ### GUI Interfaces
 ### --------------------------------------------------------------------
 
-file (GLOB_RECURSE TeXmacs_Widkit_SRCS "${TEXMACS_SOURCE_DIR}/src/Plugins/Widkit/*.cpp")
-file (GLOB_RECURSE TeXmacs_X11_SRCS "${TEXMACS_SOURCE_DIR}/src/Plugins/X11/*.cpp")
-file (GLOB_RECURSE TeXmacs_Qt_SRCS "${TEXMACS_SOURCE_DIR}/src/Plugins/Qt/*.cpp")
+file (GLOB_RECURSE TeXmacs_Widkit_SRCS CONFIGURE_DEPENDS "${TEXMACS_SOURCE_DIR}/src/Plugins/Widkit/*.cpp")
+file (GLOB_RECURSE TeXmacs_X11_SRCS CONFIGURE_DEPENDS "${TEXMACS_SOURCE_DIR}/src/Plugins/X11/*.cpp")
+file (GLOB_RECURSE TeXmacs_Qt_SRCS CONFIGURE_DEPENDS "${TEXMACS_SOURCE_DIR}/src/Plugins/Qt/*.cpp")
 
 set (TeXmacs_Qt_Moc_HDRS
   ${TEXMACS_SOURCE_DIR}/src/Plugins/Qt/QTMApplication.hpp
@@ -840,7 +840,7 @@ endif (APPLE AND USE_SPARKLE)
 ### --------------------------------------------------------------------
 
 if (WIN32)
-  file (GLOB_RECURSE TeXmacs_System_SRCS "${TEXMACS_SOURCE_DIR}/src/Plugins/Windows/*.cpp")
+  file (GLOB_RECURSE TeXmacs_System_SRCS CONFIGURE_DEPENDS "${TEXMACS_SOURCE_DIR}/src/Plugins/Windows/*.cpp")
   # Windows/ is the 32-bit backend, and two pieces of it do not build for
   # x86_64. Use the Windows64 equivalents instead of switching the whole
   # backend (the two directories otherwise define parallel, conflicting sets):
@@ -853,7 +853,7 @@ if (WIN32)
     "${TEXMACS_SOURCE_DIR}/src/Plugins/Windows64/windows64_encoding.cpp"
     "${TEXMACS_SOURCE_DIR}/src/Plugins/Windows64/windows64_stacktrace.cpp")
 else (WIN32)
-  file (GLOB_RECURSE TeXmacs_System_SRCS "${TEXMACS_SOURCE_DIR}/src/Plugins/Unix/*.cpp")
+  file (GLOB_RECURSE TeXmacs_System_SRCS CONFIGURE_DEPENDS "${TEXMACS_SOURCE_DIR}/src/Plugins/Unix/*.cpp")
 endif (WIN32)
 
 set (TeXmacs_All_SRCS ${TeXmacs_All_SRCS} ${TeXmacs_System_SRCS})

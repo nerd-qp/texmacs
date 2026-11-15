@@ -711,17 +711,19 @@ register_foreign_symbols () {
   Sforeign_symbol ("tmscm_delete_blackbox", (void*) tmscm_delete_blackbox);
   Sforeign_symbol ("tmscm_blackbox_equal", (void*) tmscm_blackbox_equal);
   Sforeign_symbol ("tmscm_blackbox_hash", (void*) tmscm_blackbox_hash);
-  Sforeign_symbol ("os_win32", (void*) os_win32);
-  Sforeign_symbol ("os_mingw", (void*) os_mingw);
-  Sforeign_symbol ("os_mingw64", (void*) os_mingw64);
-  Sforeign_symbol ("os_macos", (void*) os_macos);
-  Sforeign_symbol ("os_android", (void*) os_android);
 }
 
 static void
 custom_init (void) {
   /* called by Sbuild_heap before loading the boot files */
   register_foreign_symbols ();
+  /* The glue entry points are registered here, not in initialize_scheme(),
+     because Sforeign_symbol() only writes to a C table: it needs neither the
+     heap nor a Scheme call, so it is legal this early.  Doing it here is what
+     lets boot-chez.scm -- and therefore any boot file evaluated during heap
+     construction -- bind the glue with foreign-procedure.  See
+     docs/chez/GLUE_CHEZ_PLAN.md. */
+  initialize_glue_chez ();
 }
 
 #ifndef CHEZ_BOOT_DIR
@@ -811,11 +813,23 @@ start_scheme (int argc, char** argv, void (*call_back) (int, char**)) {
  * Initialization
  * ---------------------------------------------------------------------- */
 
+/* The native glue path installs every C++ routine as a foreign symbol in
+   custom_init(); boot-chez.scm then binds the names with foreign-procedure
+   (see TeXmacs/progs/kernel/boot/glue-chez.scm).  Set this to 1 to fall back
+   to the old run-time installation, which is kept only as an escape hatch
+   for bisecting regressions. */
+static bool
+chez_legacy_glue () {
+  const char* v= getenv ("TEXMACS_CHEZ_LEGACY_GLUE");
+  return v != NULL && (strcmp (v, "1") == 0 || strcmp (v, "true") == 0);
+}
+
 void
 initialize_scheme () {
   /* Foreign entry points first: boot-chez.scm binds each of them with
      foreign-procedure while it is being loaded, and Chez resolves the symbol
-     at that point. */
+     at that point.  The glue entry points were registered the same way in
+     custom_init(), i.e. during Sbuild_heap(). */
   register_foreign_symbols ();
 
   string boot= boot_scheme_path ();
@@ -863,7 +877,15 @@ initialize_scheme () {
   tm_install_proc= Stop_level_value (Sstring_to_symbol ("tm-install-procedure!"));
   Slock_object (tm_install_proc);
 
-  fprintf (stderr, "Chez Scheme: initialize_glue\n"); fflush (stderr);
-  initialize_glue ();
+  if (chez_legacy_glue ()) {
+    fprintf (stderr, "Chez Scheme: initialize_glue (legacy dynamic registration)\n");
+    fflush (stderr);
+    initialize_glue ();
+  }
+  else {
+    fprintf (stderr, "Chez Scheme: %d native glue procedures registered\n",
+             chez_glue_procedure_count ());
+    fflush (stderr);
+  }
 }
 
