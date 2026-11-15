@@ -94,6 +94,12 @@
   '(tm-output tm-errput
     string-load string-search-forwards string-search-backwards))
 
+;; Routines redirected to early-boot safe implementations in glue_overrides.cpp
+;; (scheme-name . c-function-override)
+(define *chez-override-cfns*
+  '(("set-font-rules"   . "tmg_chez_set_font_rules")
+    ("set-variant-keys" . "tmg_chez_set_variant_keys")))
+
 ;; The glue type names whose values are Scheme objects holding a TeXmacs
 ;; string -- a raw 8-bit bytevector on the C++ side, a Scheme string on the
 ;; Scheme side.  Every argument and result of one of these types needs
@@ -574,8 +580,11 @@ tmg_error_std (const std::string& e) {
          ;; spec-entries still yields the raw (name return-type arg-types)
          ;; shape at this point.
          (entries (map (lambda (e)
-                         (let ((m (mangle (car e))))
-                           (list (car e) m m (cadr e) (caddr e))))
+                         (let* ((name (car e))
+                                (m (mangle name))
+                                (cfn (cond ((assoc name *chez-override-cfns*) => cdr)
+                                           (else m))))
+                           (list name cfn m (cadr e) (caddr e))))
                        kept))
          ;; The core predicates keep their historical C function names but are
          ;; registered under the same tmg_<mangled> convention as everything

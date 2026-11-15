@@ -33,7 +33,6 @@
 (let* ((boot-env (getenv "TEXMACS_BOOT_PATH"))
        (tm-path (getenv "TEXMACS_PATH"))
        (candidates (list (if (getenv "TEXMACS_SO_FILE") (getenv "TEXMACS_SO_FILE") #f)
-                         (if (getenv "TEXMACS_BOOT_FILE") (getenv "TEXMACS_BOOT_FILE") #f)
                          (if boot-env (string-append boot-env "/texmacs.so") #f)
                          (if tm-path (string-append tm-path "/boot/texmacs.so") #f)
                          "build-texmacos/boot/texmacs.so"

@@ -124,6 +124,8 @@
 (define-public (has-llama?) #f)
 (define-public (has-mistral-7b?) #f)
 (define-public (has-albert?) #f)
+(define-public (has-ollama?) #f)
+(define-public (has-open-mistral-7b?) #f)
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Mode related

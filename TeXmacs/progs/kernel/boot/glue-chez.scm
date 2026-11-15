@@ -5209,11 +5209,11 @@
 (define (insert-kbd-wildcard a1 a2 a3 a4 a5)
   (recur-utf8->string (c-glue-insert_kbd_wildcard (recur-string->utf8 a1) (recur-string->utf8 a2) (recur-string->utf8 a3) (recur-string->utf8 a4) (recur-string->utf8 a5))))
 
-(define c-glue-set_variant_keys
+(define c-glue-chez_set_variant_keys
   (foreign-procedure "tmg_set_variant_keys" (scheme-object scheme-object) scheme-object))
 
 (define (set-variant-keys a1 a2)
-  (recur-utf8->string (c-glue-set_variant_keys (recur-string->utf8 a1) (recur-string->utf8 a2))))
+  (recur-utf8->string (c-glue-chez_set_variant_keys (recur-string->utf8 a1) (recur-string->utf8 a2))))
 
 (define c-glue-kbd_pre_rewrite
   (foreign-procedure "tmg_kbd_pre_rewrite" (scheme-object) scheme-object))
@@ -5233,11 +5233,11 @@
 (define (kbd-system-rewrite a1)
   (recur-utf8->string (c-glue-kbd_system_rewrite (recur-string->utf8 a1))))
 
-(define c-glue-set_font_rules
+(define c-glue-chez_set_font_rules
   (foreign-procedure "tmg_set_font_rules" (scheme-object) scheme-object))
 
 (define (set-font-rules a1)
-  (recur-utf8->string (c-glue-set_font_rules (recur-string->utf8 a1))))
+  (recur-utf8->string (c-glue-chez_set_font_rules (recur-string->utf8 a1))))
 
 (define c-glue-window_set_property
   (foreign-procedure "tmg_window_set_property" (scheme-object scheme-object) scheme-object))

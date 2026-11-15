@@ -8,6 +8,28 @@
 
 (import (chezscheme))
 
+(define (make-boot:patch-cyclic-boot-order lst)
+  (let ((doc "generic/document-menu.so")
+        (gen "generic/generic-menu.so"))
+    (let loop ((rest lst))
+      (cond
+        ((null? rest) lst)
+        ((string=? (car rest) gen)
+         lst)
+        ((string=? (car rest) doc)
+         (if (member gen (cdr rest))
+             (begin
+               (printf "[make-boot] Detected menu order inversion: ~a before ~a\n" doc gen)
+               (printf "[make-boot] Reordering ~a before ~a to preserve focus toolbar overloads\n" gen doc)
+               (let* ((without-gen (remp (lambda (x) (string=? x gen)) lst)))
+                 (let insert ((l without-gen))
+                   (cond
+                     ((null? l) '())
+                     ((string=? (car l) doc) (cons gen (cons doc (cdr l))))
+                     (else (cons (car l) (insert (cdr l))))))))
+             lst))
+        (else (loop (cdr rest)))))))
+
 (define (make-boot:string-suffix? suf s)
   (let ((suflen (string-length suf))
         (slen (string-length s)))
@@ -54,7 +76,8 @@
     (unless (file-exists? order-file)
       (error 'make-boot "Boot order manifest not found" order-file))
 
-    (let* ((boot-order (read (open-input-file order-file)))
+    (let* ((raw-boot-order (read (open-input-file order-file)))
+           (boot-order (make-boot:patch-cyclic-boot-order raw-boot-order))
            (raw-so-paths (map (lambda (rel) (string-append boot-dir rel)) boot-order))
            ;; boot-chez.so is loaded by initialize_scheme(); chez-compat.so is loaded
            ;; by init-texmacs-aot.scm to provide early Guile macros before texmacs.so.

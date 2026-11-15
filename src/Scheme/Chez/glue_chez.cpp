@@ -1283,11 +1283,11 @@ extern tmscm tmg_show_meminfo ();
 extern tmscm tmg_edit_special ();
 extern tmscm tmg_edit_test ();
 extern tmscm tmg_insert_kbd_wildcard (tmscm, tmscm, tmscm, tmscm, tmscm);
-extern tmscm tmg_set_variant_keys (tmscm, tmscm);
+extern tmscm tmg_chez_set_variant_keys (tmscm, tmscm);
 extern tmscm tmg_kbd_pre_rewrite (tmscm);
 extern tmscm tmg_kbd_post_rewrite (tmscm, tmscm);
 extern tmscm tmg_kbd_system_rewrite (tmscm);
-extern tmscm tmg_set_font_rules (tmscm);
+extern tmscm tmg_chez_set_font_rules (tmscm);
 extern tmscm tmg_window_get_serial ();
 extern tmscm tmg_window_set_property (tmscm, tmscm);
 extern tmscm tmg_window_get_property (tmscm);
@@ -2463,11 +2463,11 @@ TMG_GUARDED_0 ("show-meminfo", tmg_show_meminfo)
 TMG_GUARDED_0 ("edit-special", tmg_edit_special)
 TMG_GUARDED_0 ("edit-test", tmg_edit_test)
 TMG_GUARDED_5 ("insert-kbd-wildcard", tmg_insert_kbd_wildcard)
-TMG_GUARDED_2 ("set-variant-keys", tmg_set_variant_keys)
+TMG_GUARDED_2 ("set-variant-keys", tmg_chez_set_variant_keys)
 TMG_GUARDED_1 ("kbd-pre-rewrite", tmg_kbd_pre_rewrite)
 TMG_GUARDED_2 ("kbd-post-rewrite", tmg_kbd_post_rewrite)
 TMG_GUARDED_1 ("kbd-system-rewrite", tmg_kbd_system_rewrite)
-TMG_GUARDED_1 ("set-font-rules", tmg_set_font_rules)
+TMG_GUARDED_1 ("set-font-rules", tmg_chez_set_font_rules)
 TMG_GUARDED_0 ("window-get-serial", tmg_window_get_serial)
 TMG_GUARDED_2 ("window-set-property", tmg_window_set_property)
 TMG_GUARDED_1 ("window-get-property", tmg_window_get_property)
@@ -3653,11 +3653,11 @@ static const tmg_entry tmg_entries[]= {
   { "tmg_edit_special", (void*) tmgc_tmg_edit_special },
   { "tmg_edit_test", (void*) tmgc_tmg_edit_test },
   { "tmg_insert_kbd_wildcard", (void*) tmgc_tmg_insert_kbd_wildcard },
-  { "tmg_set_variant_keys", (void*) tmgc_tmg_set_variant_keys },
+  { "tmg_set_variant_keys", (void*) tmgc_tmg_chez_set_variant_keys },
   { "tmg_kbd_pre_rewrite", (void*) tmgc_tmg_kbd_pre_rewrite },
   { "tmg_kbd_post_rewrite", (void*) tmgc_tmg_kbd_post_rewrite },
   { "tmg_kbd_system_rewrite", (void*) tmgc_tmg_kbd_system_rewrite },
-  { "tmg_set_font_rules", (void*) tmgc_tmg_set_font_rules },
+  { "tmg_set_font_rules", (void*) tmgc_tmg_chez_set_font_rules },
   { "tmg_window_get_serial", (void*) tmgc_tmg_window_get_serial },
   { "tmg_window_set_property", (void*) tmgc_tmg_window_set_property },
   { "tmg_window_get_property", (void*) tmgc_tmg_window_get_property },
