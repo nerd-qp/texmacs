@@ -23,6 +23,23 @@ Implements native secondary boot-file loading via `Sregister_boot_file("texmacs.
 - **Issue**: Preference definitions in `tm-print.scm` (`set-printing-command`, `set-printer-paper-type`, `set-printer-dpi`) and `tm-view.scm` (`show-side-tools`, `set-default-zoom-factor`, `set-window-zoom-factor`) trigger notifiers at definition/load time via `define-preference-call-back`. In `Sbuild_heap()`, `the_server` is NULL, triggering `TeXmacs server not yet started` throws.
 - **Fix**: Buffered early printer and variant settings in `glue_overrides.cpp` and `build-glue-chez.scm`, and guarded preference callbacks until `(server-started?)` is true, replaying buffered settings once `the_server` starts in `initialize_scheme()`.
 
+### D. Deferred `Sbuild_heap` to `initialize_scheme()` (Post-Server Startup)
+- **Motivation**: Previously, `start_scheme()` called `Sbuild_heap()` immediately before invoking the `TeXmacs_main` callback. Because `the_server` is instantiated inside `TeXmacs_main` (`server sv;`), `the_server` was `NULL` throughout `Sbuild_heap()`. Any top-level expressions evaluated during secondary boot-file evaluation (`texmacs.boot`) that called server-dependent routines triggered `TeXmacs server not yet started` assertions.
+- **Architectural Solution**: Like TinyScheme (`tinyscheme_tm.cpp`), `start_scheme()` now forwards directly to `call_back (argc, argv)` after saving `argc`/`argv`. Chez Scheme initialization, boot-file registration, and `Sbuild_heap()` are deferred to `initialize_scheme()`, which runs inside `tm_server_rep::tm_server_rep()` immediately after `the_server = tm_new<server> (this);`.
+- **Result & GC / Memory Impact**:
+  - `the_server != NULL` (`is_server_started()` is true) throughout `custom_init()` and the evaluation of all registered boot files. Server decoupling workarounds, buffered font rules, and preference guards become natural no-ops because the server is genuinely live during heap construction.
+  - **Static Generation Placement**: Objects instantiated as part of the boot image during `Sbuild_heap()` are allocated directly into Chez Scheme's static generation. The static generation is never swept or collected during regular GC cycles, eliminating ~105.7 MB of transient nursery allocation and ~137 ms of GC pause time during engine bootstrap.
+
+### E. Evaluation of VFASL Format vs Standard FASL Images
+- **Experiment**: Converted the consolidated image to uncompressed memory-image VFASL format via Chez Scheme's `vfasl-convert-file` to evaluate whether pre-linking and uncompressed vspaces improve cold boot startup time.
+- **Empirical Findings (macOS arm64)**:
+  - *Image footprint on disk*: Expanded from **13.07 MB** to **32.05 MB** (2.45× larger).
+  - *Resident memory (Max RSS)*: Surged from **274.2 MB** to **498.8 MB** (+224.6 MB / +82% RAM overhead).
+  - *Peak memory footprint*: Grew from **244.0 MB** to **472.3 MB** (+228.3 MB).
+  - *Startup latency*: Regressed from **2.51–2.86s** to **3.02–3.14s** (~500 ms slower), with `TIME-SERVER-INIT` increasing from ~2,050 ms to ~2,400 ms.
+  - *VM paging overhead*: Page reclaims/faults jumped from 23,452 / 173 to 39,716 / 534 (+16,264 page faults/reclaims), increasing kernel `sys` CPU time by +62%.
+- **Architectural Conclusion**: VFASL is counterproductive for large application aggregates like TeXmacs (454 modules, 1,176 C++ glue bindings). The absence of stream compaction inflates the process memory footprint and VM page faults, which outweighs Scheme-level deserialization gains. Standard compact FASL (`texmacs.so`) is retained as the optimal format.
+
 ---
 
 ## 0.2 Native Glue Registration: `initialize_glue_chez` (2026-11-15)

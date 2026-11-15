@@ -737,8 +737,13 @@ boot_dir () {
   return CHEZ_BOOT_DIR;
 }
 
+extern bool is_server_started ();
+
 static bool s_has_texmacs_boot = false;
 static string s_texmacs_boot_file = "";
+static int s_argc = 0;
+static char** s_argv = NULL;
+static bool s_scheme_initialized = false;
 
 bool
 chez_has_boot () {
@@ -750,8 +755,18 @@ chez_boot_file () {
   return s_texmacs_boot_file;
 }
 
-void
-start_scheme (int argc, char** argv, void (*call_back) (int, char**)) {
+static void
+build_chez_heap () {
+  if (s_scheme_initialized) return;
+  s_scheme_initialized = true;
+
+  if (is_server_started ()) {
+    fprintf (stderr, "Chez Scheme: initializing heap with active TeXmacs server\n");
+  } else {
+    fprintf (stderr, "Chez Scheme: WARNING - initializing heap before TeXmacs server started\n");
+  }
+  fflush (stderr);
+
   Sscheme_init (NULL);
   string dir= boot_dir ();
   if (N (dir) > 0 && dir[N (dir) - 1] != '/') dir= dir * "/";
@@ -759,9 +774,9 @@ start_scheme (int argc, char** argv, void (*call_back) (int, char**)) {
   Sregister_boot_file (c_string (dir * "scheme.boot"));
 
   bool is_compile_modules = false;
-  for (int i = 1; i < argc; i++) {
-    if (strcmp (argv[i], "-compile-modules") == 0 ||
-        strcmp (argv[i], "-recompile-modules") == 0) {
+  for (int i = 1; i < s_argc; i++) {
+    if (strcmp (s_argv[i], "-compile-modules") == 0 ||
+        strcmp (s_argv[i], "-recompile-modules") == 0) {
       is_compile_modules = true;
       break;
     }
@@ -809,9 +824,16 @@ start_scheme (int argc, char** argv, void (*call_back) (int, char**)) {
     }
   }
 
-  Sbuild_heap (argv[0], custom_init);
+  const char* execpath = (s_argv != NULL && s_argv[0] != NULL) ? s_argv[0] : "texmacs";
+  Sbuild_heap (execpath, custom_init);
+}
+
+void
+start_scheme (int argc, char** argv, void (*call_back) (int, char**)) {
+  s_argc = argc;
+  s_argv = argv;
   if (call_back != NULL) call_back (argc, argv);
-  Sscheme_deinit ();
+  if (s_scheme_initialized) Sscheme_deinit ();
 }
 
 /* ------------------------------------------------------------------------
@@ -831,6 +853,12 @@ chez_legacy_glue () {
 
 void
 initialize_scheme () {
+  /* Build the Scheme heap now that the TeXmacs server (the_server) has started.
+     This ensures custom_init() and any registered boot files (e.g. texmacs.boot)
+     can safely interact with the server and glue procedures without hitting
+     uninitialized server crashes. */
+  build_chez_heap ();
+
   /* Foreign entry points first: boot-chez.scm binds each of them with
      foreign-procedure while it is being loaded, and Chez resolves the symbol
      at that point.  The glue entry points were registered the same way in

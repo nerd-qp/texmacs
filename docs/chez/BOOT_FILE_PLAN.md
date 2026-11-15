@@ -25,7 +25,7 @@ Approach 2 (Ultimate):
 |  Native boot header ('("petite" "scheme")) + compiled object code stream          |
 +----------------------------------------------------------------------------------+
                                         |
-      Sregister_boot_file("texmacs.boot") -> custom_init() -> Sbuild_heap()
+      Construct server sv -> Sregister_boot_file("texmacs.boot") -> custom_init() -> Sbuild_heap()
 ```
 
 ---
@@ -57,9 +57,10 @@ Approach 2 (Ultimate):
      - `Sbuild_heap()` evaluates `texmacs.boot` before returning control to C++.
      - `initialize_glue()` installs procedures into Scheme via `tmscm_install_procedure()`, which calls `Sstring_to_symbol()` and defines top-level values. In Chez Scheme, creating Scheme symbols/definitions before `Sbuild_heap()` crashes because the heap does not exist.
      - Therefore, during `Sbuild_heap()`, the 1,170 C++ glue procedures do not exist yet.
-  2. **Missing C++ Server Instance**:
-     - `the_server` does not exist during `Sbuild_heap()`.
-     - Modules like `fonts-composite.scm` call `(set-font-rules ...)` at top-level, which calls `get_server()`. This crashes if executed during `Sbuild_heap()`.
+  2. **Missing C++ Server Instance (Resolved)**:
+     - Previously, `the_server` did not exist during `Sbuild_heap()`.
+     - Modules like `fonts-composite.scm` call `(set-font-rules ...)` at top-level, which calls `get_server()`.
+     - Resolved by deferring `Sbuild_heap()` to `initialize_scheme()`, which runs immediately after `server sv` starts (`the_server = tm_new<server> (this);`), ensuring `is_server_started()` is true during boot-file evaluation.
 * **Prerequisites to Realize Approach 2**:
   1. **Regenerate Chez Glue as Foreign Symbols**:
      Rewrite/extend `build-glue-*.scm` to generate C++ wrappers registered via `Sforeign_symbol()` in `custom_init()` rather than runtime `tmscm_install_procedure()`.
