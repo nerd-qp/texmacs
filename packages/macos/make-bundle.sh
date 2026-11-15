@@ -201,6 +201,7 @@ if [ "$FULL_PROGS" = 1 ]; then
 else
   mkdir -p "$SHARE/progs/kernel/boot"
   rsync -a "$ROOT/TeXmacs/progs/init-texmacs-chez.scm" \
+           "$ROOT/TeXmacs/progs/init-texmacs-aot.scm" \
            "$ROOT/TeXmacs/progs/init-texmacs.scm" \
            "$ROOT/TeXmacs/progs/tm-mode.el" "$SHARE/progs/"
   [ -f "$ROOT/TeXmacs/progs/init-chez-compile.scm" ] && \
@@ -241,7 +242,7 @@ fi
 # ------------------------------------------------------------ compiled modules
 say "copying compiled modules"
 mkdir -p "$SHARE/boot"
-rsync -a --include '*/' --include '*.so' --include 'module-deps.scm' --exclude '*' \
+rsync -a --include '*/' --include '*.so' --include 'module-deps.scm' --include 'boot-order*.scm' --exclude '*' \
       "$SRC_BOOT/" "$SHARE/boot/"
 
 # Ensure boot-chez.so is bundled

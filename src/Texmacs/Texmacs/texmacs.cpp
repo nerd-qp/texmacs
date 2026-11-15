@@ -199,6 +199,10 @@ TeXmacs_init_paths (int& argc, char** argv) {
     url chez = exedir * "../Resources/share/chez";
     if (exists (chez)) set_env ("SCHEMEHEAPDIRS", as_string (chez));
   }
+  if (is_empty (get_env ("TEXMACS_BOOT_PATH"))) {
+    url boot = exedir * "../Resources/share/TeXmacs/boot";
+    if (exists (boot)) set_env ("TEXMACS_BOOT_PATH", as_string (boot));
+  }
   //cout << get_env("PATH") * ":" * as_string(url("$PWD") * argv[0]
   // * "../../Resources/share/TeXmacs/bin") << LF;
   string shell= get_env ("SHELL");

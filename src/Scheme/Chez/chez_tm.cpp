@@ -794,9 +794,14 @@ build_chez_heap () {
         texmacs_boot = env_boot;
       } else {
         const char* boot_env = getenv ("TEXMACS_BOOT_PATH");
-        if (boot_env != NULL && boot_env[0] != '\0') {
-          string cand_boot = string (boot_env) * "/texmacs.boot";
-          string cand_so   = string (boot_env) * "/texmacs.so";
+        string cand_dir = (boot_env != NULL && boot_env[0] != '\0') ? string (boot_env) : "";
+        if (N (cand_dir) == 0) {
+          string tm_p = get_env ("TEXMACS_PATH");
+          if (N (tm_p) > 0 && exists (url (tm_p * "/boot"))) cand_dir = tm_p * "/boot";
+        }
+        if (N (cand_dir) > 0) {
+          string cand_boot = cand_dir * "/texmacs.boot";
+          string cand_so   = cand_dir * "/texmacs.so";
           if (exists (url (cand_boot))) texmacs_boot = cand_boot;
           else if (exists (url (cand_so))) texmacs_boot = cand_so;
         }

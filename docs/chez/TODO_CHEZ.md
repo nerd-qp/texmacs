@@ -6,6 +6,73 @@ This document tracks identified architectural improvements and performance bottl
 
 ## 1. High Priority (Performance & Startup)
 
+### [!] HIGHEST PRIORITY: Native Glue FFI Regression — Segfault in `tmg_tree_label` (User Manual Help Menu Crash)
+- **Status**: Root cause isolated, bisected, and verified; fix pending code generator adjustment in `build-glue-chez.scm`.
+- **Location**: [`src/Scheme/Chez/build-glue-chez.scm`](src/Scheme/Chez/build-glue-chez.scm), [`TeXmacs/progs/kernel/boot/glue-chez.scm`](TeXmacs/progs/kernel/boot/glue-chez.scm), [`src/Scheme/Chez/glue_chez.cpp`](src/Scheme/Chez/glue_chez.cpp)
+- **Symptom**:
+  Opening the "User manual" from the Help menu crashes the editor with a segmentation fault at `tmg_tree_label + 24`.
+- **Reproduction**:
+  ```bash
+  ./texmacs/dist/TeXmacs-chez-2.1.5/TeXmacs-chez.app/Contents/MacOS/texmacs.bin -H \
+    -x '(begin (use-modules (doc help-menu)) (use-modules (doc tmdoc)) \
+               (let ((u (url-resolve "$TEXMACS_PATH/doc/main/man-user-manual.en.tm" "r"))) \
+                 (tmdoc-expand-help u "book")))'
+  ```
+- **Bisection & Definitive Root Cause**:
+  - Bisected with `TEXMACS_CHEZ_LEGACY_GLUE=1`:
+    When running with the exact same AOT boot image (`texmacs.so`) but with legacy glue trampolines enabled (`initialize_glue()` -> `tm-install-procedure!` -> `tm_fast_call_N`), the command **succeeds completely without error in 668 ms**, opening the user manual window cleanly.
+  - **Conclusion**: The regression is **100% caused by commit `fe936df91 direct foreign-procedure calls` (the native glue FFI switch)**, and is **not** caused by the AOT boot file (`texmacs.so` / `texmacs.boot`) conversion.
+- **Crash Mechanism & Connection to `tmscm_to_blackbox`**:
+  - Live backtrace of C++ stack at crash:
+    ```text
+    4   texmacs.bin   tmg_tree_label(void*) + 24
+    5   texmacs.bin   tmg_tree_label(void*) + 24
+    6   texmacs.bin   tmgc_tmg_tree_label(void*) + 36
+    8   texmacs.bin   Scall2() + 120
+    10  texmacs.bin   call(char const*, object) + 84  --> call("tmfs-load", object(name))
+    11  texmacs.bin   get_from_server(url) + 1088
+    12  texmacs.bin   concretize_url(url) + 924
+    14  texmacs.bin   load_string(url, string&, bool, bool) + 612
+    15  texmacs.bin   import_tree(url, string) + 1124
+    17  texmacs.bin   buffer_load(url) + 156
+    18  texmacs.bin   tmg_buffer_load(void*) + 52
+    ```
+  - In `src/Scheme/Glue/glue_basic.cpp`:
+    ```cpp
+    tmscm tmg_tree_label (tmscm arg1) {
+      TMSCM_ASSERT_TREE (arg1, TMSCM_ARG1, "tree-label");
+      tree in1 = tmscm_to_tree (arg1); // open_box<tree>(tmscm_to_blackbox(arg1))
+      tree_label out = L (in1);
+      return tree_label_to_tmscm (out);
+    }
+    ```
+  - In Chez Scheme (`src/Scheme/Chez/chez_tm.hpp:162`), `TMSCM_ASSERT` is defined as:
+    `#define TMSCM_ASSERT(_cond, _arg, _pos, _subr) (void) 0`
+    Unlike Guile (which throws a Scheme type error), Chez Scheme performs no runtime assertion check inside `tmg_tree_label`.
+  - When a non-tree or malformed node reaches `tmg_tree_label`, `tmscm_to_tree` treats `arg1` as a blackbox (`open_box<tree>(tmscm_to_blackbox(arg1))`), dereferencing an invalid address in memory and triggering an immediate `SIGSEGV` at `tmg_tree_label + 24`.
+- **Why It Worked Previously (No `content.scm` changes needed)**:
+  - In `TeXmacs/progs/kernel/library/content.scm`:
+    ```scheme
+    (define-public (tm-label x)
+      (if (pair? x) (car x) (tree-label x)))
+    ```
+    This code is correct and has existed for decades.
+  - The divergence stems from how `src/Scheme/Chez/build-glue-chez.scm` generates wrappers for native `foreign-procedure` calls:
+    - Procedures with types in `*tm-string-types*` (`content`, `object`, `url`, etc.) are wrapped with:
+      `(define (proc a1 ...) (recur-utf8->string (c-fn (recur-string->utf8 a1) ...)))`
+    - For example, `tm->tree`:
+      ```scheme
+      (define (tm->tree a1)
+        (recur-utf8->string (c-glue-tm_2tree (recur-string->utf8 a1))))
+      ```
+      Applying `recur-string->utf8` to structured AST content transforms Scheme strings into R6RS bytevectors (`#vu8(...)`), which alters how nested nodes and symbols are parsed by C++ `tmscm_to_content` during `tmdoc-expand` -> `tm->stree` -> `tmfs-load`.
+    - This caused degraded/malformed AST nodes to flow into `(tm-label x)` and call `(tree-label ...)` on an invalid object.
+- **Action Plan**:
+  1. Audit `*tm-string-types*` and wrapper generation in `src/Scheme/Chez/build-glue-chez.scm` for `content`, `tree`, `url`, and `object`.
+  2. Ensure native `foreign-procedure` wrapping preserves exact input/output data representation identical to legacy `tm-fast-call-N`.
+  3. Regenerate `TeXmacs/progs/kernel/boot/glue-chez.scm` and `src/Scheme/Chez/glue_chez.cpp`.
+  4. Verify that `tmdoc-expand-help` and opening the GUI User manual work without `TEXMACS_CHEZ_LEGACY_GLUE=1`.
+
 ### [!] HIGHEST PRIORITY: Phased Helper Modules (`(import (for helpers run expand))`) to Replace Compiler Oracle
 - **Design Document**: [`docs/chez/PHASED_HELPERS_PLAN.md`](docs/chez/PHASED_HELPERS_PLAN.md)
 - **Location**: [`src/Scheme/Chez/convert-to-r6rs.scm`](src/Scheme/Chez/convert-to-r6rs.scm), [`src/Scheme/Chez/compiler-oracle.scm`](src/Scheme/Chez/compiler-oracle.scm), [`src/Scheme/Chez/compiler-helper.scm`](src/Scheme/Chez/compiler-helper.scm)
