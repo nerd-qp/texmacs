@@ -38,7 +38,7 @@
 ;;              converts Scheme strings to bytevectors on the way in and back
 ;;              on the way out, exactly as tm-install-procedure! did.
 ;;
-;; 1176 routines: 448 raw, 728 transcoded.
+;; 1176 routines: 444 raw, 732 transcoded.
 ;;
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
@@ -928,16 +928,8 @@
   (foreign-procedure "tmg_quit_TeXmacs" () scheme-object))
 (define tree?
   (foreign-procedure "tmg_treeP" (scheme-object) scheme-object))
-(define tm?
-  (foreign-procedure "tmg_tmP" (scheme-object) scheme-object))
 (define observer?
   (foreign-procedure "tmg_observerP" (scheme-object) scheme-object))
-(define url?
-  (foreign-procedure "tmg_urlP" (scheme-object) scheme-object))
-(define modification?
-  (foreign-procedure "tmg_modificationP" (scheme-object) scheme-object))
-(define patch?
-  (foreign-procedure "tmg_patchP" (scheme-object) scheme-object))
 (define blackbox?
   (foreign-procedure "tmg_blackboxP" (scheme-object) scheme-object))
 
@@ -2309,7 +2301,7 @@
   (foreign-procedure "tmg_escape_to_ascii" (scheme-object) scheme-object))
 
 (define (escape-to-ascii a1)
-  (recur-utf8->string (c-glue-escape_to_ascii (recur-string->utf8 a1))))
+  (recur-utf8->string (c-glue-escape_to_ascii (recur-string->cork a1))))
 
 (define c-glue-unescape_guile
   (foreign-procedure "tmg_unescape_guile" (scheme-object) scheme-object))
@@ -2375,25 +2367,25 @@
   (foreign-procedure "tmg_sourcecode_2cork" (scheme-object) scheme-object))
 
 (define (sourcecode->cork a1)
-  (recur-utf8->string (c-glue-sourcecode_2cork (recur-string->utf8 a1))))
+  (recur-cork->string (c-glue-sourcecode_2cork (recur-string->utf8 a1))))
 
 (define c-glue-cork_2sourcecode
   (foreign-procedure "tmg_cork_2sourcecode" (scheme-object) scheme-object))
 
 (define (cork->sourcecode a1)
-  (recur-utf8->string (c-glue-cork_2sourcecode (recur-string->utf8 a1))))
+  (recur-utf8->string (c-glue-cork_2sourcecode (recur-string->cork a1))))
 
 (define c-glue-utf8_2cork
   (foreign-procedure "tmg_utf8_2cork" (scheme-object) scheme-object))
 
 (define (utf8->cork a1)
-  (recur-utf8->string (c-glue-utf8_2cork (recur-string->utf8 a1))))
+  (recur-cork->string (c-glue-utf8_2cork (recur-string->utf8 a1))))
 
 (define c-glue-cork_2utf8
   (foreign-procedure "tmg_cork_2utf8" (scheme-object) scheme-object))
 
 (define (cork->utf8 a1)
-  (recur-utf8->string (c-glue-cork_2utf8 (recur-string->utf8 a1))))
+  (recur-utf8->string (c-glue-cork_2utf8 (recur-string->cork a1))))
 
 (define c-glue-utf8_2t2a
   (foreign-procedure "tmg_utf8_2t2a" (scheme-object) scheme-object))
@@ -5209,11 +5201,11 @@
 (define (insert-kbd-wildcard a1 a2 a3 a4 a5)
   (recur-utf8->string (c-glue-insert_kbd_wildcard (recur-string->utf8 a1) (recur-string->utf8 a2) (recur-string->utf8 a3) (recur-string->utf8 a4) (recur-string->utf8 a5))))
 
-(define c-glue-chez_set_variant_keys
+(define c-glue-set_variant_keys
   (foreign-procedure "tmg_set_variant_keys" (scheme-object scheme-object) scheme-object))
 
 (define (set-variant-keys a1 a2)
-  (recur-utf8->string (c-glue-chez_set_variant_keys (recur-string->utf8 a1) (recur-string->utf8 a2))))
+  (recur-utf8->string (c-glue-set_variant_keys (recur-string->utf8 a1) (recur-string->utf8 a2))))
 
 (define c-glue-kbd_pre_rewrite
   (foreign-procedure "tmg_kbd_pre_rewrite" (scheme-object) scheme-object))
@@ -5233,11 +5225,11 @@
 (define (kbd-system-rewrite a1)
   (recur-utf8->string (c-glue-kbd_system_rewrite (recur-string->utf8 a1))))
 
-(define c-glue-chez_set_font_rules
+(define c-glue-set_font_rules
   (foreign-procedure "tmg_set_font_rules" (scheme-object) scheme-object))
 
 (define (set-font-rules a1)
-  (recur-utf8->string (c-glue-chez_set_font_rules (recur-string->utf8 a1))))
+  (recur-utf8->string (c-glue-set_font_rules (recur-string->utf8 a1))))
 
 (define c-glue-window_set_property
   (foreign-procedure "tmg_window_set_property" (scheme-object scheme-object) scheme-object))
@@ -5269,17 +5261,17 @@
 (define (tm-interactive a1 a2)
   (recur-utf8->string (c-glue-tm_interactive (recur-string->utf8 a1) (recur-string->utf8 a2))))
 
-(define c-glue-chez_set_printing_command
+(define c-glue-set_printing_command
   (foreign-procedure "tmg_set_printing_command" (scheme-object) scheme-object))
 
 (define (set-printing-command a1)
-  (recur-utf8->string (c-glue-chez_set_printing_command (recur-string->utf8 a1))))
+  (recur-utf8->string (c-glue-set_printing_command (recur-string->utf8 a1))))
 
-(define c-glue-chez_set_printer_paper_type
+(define c-glue-set_printer_paper_type
   (foreign-procedure "tmg_set_printer_paper_type" (scheme-object) scheme-object))
 
 (define (set-printer-paper-type a1)
-  (recur-utf8->string (c-glue-chez_set_printer_paper_type (recur-string->utf8 a1))))
+  (recur-utf8->string (c-glue-set_printer_paper_type (recur-string->utf8 a1))))
 
 (define c-glue-get_printer_paper_type
   (foreign-procedure "tmg_get_printer_paper_type" () scheme-object))
@@ -5287,11 +5279,11 @@
 (define (get-printer-paper-type)
   (recur-utf8->string (c-glue-get_printer_paper_type)))
 
-(define c-glue-chez_set_printer_dpi
+(define c-glue-set_printer_dpi
   (foreign-procedure "tmg_set_printer_dpi" (scheme-object) scheme-object))
 
 (define (set-printer-dpi a1)
-  (recur-utf8->string (c-glue-chez_set_printer_dpi (recur-string->utf8 a1))))
+  (recur-utf8->string (c-glue-set_printer_dpi (recur-string->utf8 a1))))
 
 (define c-glue-set_message
   (foreign-procedure "tmg_set_message" (scheme-object scheme-object) scheme-object))
@@ -5310,4 +5302,28 @@
 
 (define (yes? a1)
   (recur-utf8->string (c-glue-yesP (recur-string->utf8 a1))))
+
+(define c-glue-tmP
+  (foreign-procedure "tmg_tmP" (scheme-object) scheme-object))
+
+(define (tm? a1)
+  (recur-utf8->string (c-glue-tmP (recur-string->utf8 a1))))
+
+(define c-glue-urlP
+  (foreign-procedure "tmg_urlP" (scheme-object) scheme-object))
+
+(define (url? a1)
+  (recur-utf8->string (c-glue-urlP (recur-string->utf8 a1))))
+
+(define c-glue-modificationP
+  (foreign-procedure "tmg_modificationP" (scheme-object) scheme-object))
+
+(define (modification? a1)
+  (recur-utf8->string (c-glue-modificationP (recur-string->utf8 a1))))
+
+(define c-glue-patchP
+  (foreign-procedure "tmg_patchP" (scheme-object) scheme-object))
+
+(define (patch? a1)
+  (recur-utf8->string (c-glue-patchP (recur-string->utf8 a1))))
 

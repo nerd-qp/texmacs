@@ -47,7 +47,7 @@
 * what tm_fast_call_N did on the legacy path.  The shim also records the
 * routine name for the diagnostics in chez_tm.hpp.
 *
-* 1176 routines: 448 bound raw, 728 with UTF-8 transcoding.
+* 1176 routines: 444 bound raw, 732 with UTF-8 transcoding.
 ******************************************************************************/
 
 #include "chez_tm.hpp"
@@ -1283,11 +1283,11 @@ extern tmscm tmg_show_meminfo ();
 extern tmscm tmg_edit_special ();
 extern tmscm tmg_edit_test ();
 extern tmscm tmg_insert_kbd_wildcard (tmscm, tmscm, tmscm, tmscm, tmscm);
-extern tmscm tmg_chez_set_variant_keys (tmscm, tmscm);
+extern tmscm tmg_set_variant_keys (tmscm, tmscm);
 extern tmscm tmg_kbd_pre_rewrite (tmscm);
 extern tmscm tmg_kbd_post_rewrite (tmscm, tmscm);
 extern tmscm tmg_kbd_system_rewrite (tmscm);
-extern tmscm tmg_chez_set_font_rules (tmscm);
+extern tmscm tmg_set_font_rules (tmscm);
 extern tmscm tmg_window_get_serial ();
 extern tmscm tmg_window_set_property (tmscm, tmscm);
 extern tmscm tmg_window_get_property (tmscm);
@@ -1312,10 +1312,10 @@ extern tmscm tmg_cpp_choose_file (tmscm, tmscm, tmscm, tmscm, tmscm);
 extern tmscm tmg_tm_interactive (tmscm, tmscm);
 extern tmscm tmg_cpp_style_clear_cache ();
 extern tmscm tmg_set_script_status (tmscm);
-extern tmscm tmg_chez_set_printing_command (tmscm);
-extern tmscm tmg_chez_set_printer_paper_type (tmscm);
+extern tmscm tmg_set_printing_command (tmscm);
+extern tmscm tmg_set_printer_paper_type (tmscm);
 extern tmscm tmg_get_printer_paper_type ();
-extern tmscm tmg_chez_set_printer_dpi (tmscm);
+extern tmscm tmg_set_printer_dpi (tmscm);
 extern tmscm tmg_set_default_zoom_factor (tmscm);
 extern tmscm tmg_get_default_zoom_factor ();
 extern tmscm tmg_inclusions_gc ();
@@ -2463,11 +2463,11 @@ TMG_GUARDED_0 ("show-meminfo", tmg_show_meminfo)
 TMG_GUARDED_0 ("edit-special", tmg_edit_special)
 TMG_GUARDED_0 ("edit-test", tmg_edit_test)
 TMG_GUARDED_5 ("insert-kbd-wildcard", tmg_insert_kbd_wildcard)
-TMG_GUARDED_2 ("set-variant-keys", tmg_chez_set_variant_keys)
+TMG_GUARDED_2 ("set-variant-keys", tmg_set_variant_keys)
 TMG_GUARDED_1 ("kbd-pre-rewrite", tmg_kbd_pre_rewrite)
 TMG_GUARDED_2 ("kbd-post-rewrite", tmg_kbd_post_rewrite)
 TMG_GUARDED_1 ("kbd-system-rewrite", tmg_kbd_system_rewrite)
-TMG_GUARDED_1 ("set-font-rules", tmg_chez_set_font_rules)
+TMG_GUARDED_1 ("set-font-rules", tmg_set_font_rules)
 TMG_GUARDED_0 ("window-get-serial", tmg_window_get_serial)
 TMG_GUARDED_2 ("window-set-property", tmg_window_set_property)
 TMG_GUARDED_1 ("window-get-property", tmg_window_get_property)
@@ -2492,10 +2492,10 @@ TMG_GUARDED_5 ("cpp-choose-file", tmg_cpp_choose_file)
 TMG_GUARDED_2 ("tm-interactive", tmg_tm_interactive)
 TMG_GUARDED_0 ("cpp-style-clear-cache", tmg_cpp_style_clear_cache)
 TMG_GUARDED_1 ("set-script-status", tmg_set_script_status)
-TMG_GUARDED_1 ("set-printing-command", tmg_chez_set_printing_command)
-TMG_GUARDED_1 ("set-printer-paper-type", tmg_chez_set_printer_paper_type)
+TMG_GUARDED_1 ("set-printing-command", tmg_set_printing_command)
+TMG_GUARDED_1 ("set-printer-paper-type", tmg_set_printer_paper_type)
 TMG_GUARDED_0 ("get-printer-paper-type", tmg_get_printer_paper_type)
-TMG_GUARDED_1 ("set-printer-dpi", tmg_chez_set_printer_dpi)
+TMG_GUARDED_1 ("set-printer-dpi", tmg_set_printer_dpi)
 TMG_GUARDED_1 ("set-default-zoom-factor", tmg_set_default_zoom_factor)
 TMG_GUARDED_0 ("get-default-zoom-factor", tmg_get_default_zoom_factor)
 TMG_GUARDED_0 ("inclusions-gc", tmg_inclusions_gc)
@@ -3653,11 +3653,11 @@ static const tmg_entry tmg_entries[]= {
   { "tmg_edit_special", (void*) tmgc_tmg_edit_special },
   { "tmg_edit_test", (void*) tmgc_tmg_edit_test },
   { "tmg_insert_kbd_wildcard", (void*) tmgc_tmg_insert_kbd_wildcard },
-  { "tmg_set_variant_keys", (void*) tmgc_tmg_chez_set_variant_keys },
+  { "tmg_set_variant_keys", (void*) tmgc_tmg_set_variant_keys },
   { "tmg_kbd_pre_rewrite", (void*) tmgc_tmg_kbd_pre_rewrite },
   { "tmg_kbd_post_rewrite", (void*) tmgc_tmg_kbd_post_rewrite },
   { "tmg_kbd_system_rewrite", (void*) tmgc_tmg_kbd_system_rewrite },
-  { "tmg_set_font_rules", (void*) tmgc_tmg_chez_set_font_rules },
+  { "tmg_set_font_rules", (void*) tmgc_tmg_set_font_rules },
   { "tmg_window_get_serial", (void*) tmgc_tmg_window_get_serial },
   { "tmg_window_set_property", (void*) tmgc_tmg_window_set_property },
   { "tmg_window_get_property", (void*) tmgc_tmg_window_get_property },
@@ -3682,10 +3682,10 @@ static const tmg_entry tmg_entries[]= {
   { "tmg_tm_interactive", (void*) tmgc_tmg_tm_interactive },
   { "tmg_cpp_style_clear_cache", (void*) tmgc_tmg_cpp_style_clear_cache },
   { "tmg_set_script_status", (void*) tmgc_tmg_set_script_status },
-  { "tmg_set_printing_command", (void*) tmgc_tmg_chez_set_printing_command },
-  { "tmg_set_printer_paper_type", (void*) tmgc_tmg_chez_set_printer_paper_type },
+  { "tmg_set_printing_command", (void*) tmgc_tmg_set_printing_command },
+  { "tmg_set_printer_paper_type", (void*) tmgc_tmg_set_printer_paper_type },
   { "tmg_get_printer_paper_type", (void*) tmgc_tmg_get_printer_paper_type },
-  { "tmg_set_printer_dpi", (void*) tmgc_tmg_chez_set_printer_dpi },
+  { "tmg_set_printer_dpi", (void*) tmgc_tmg_set_printer_dpi },
   { "tmg_set_default_zoom_factor", (void*) tmgc_tmg_set_default_zoom_factor },
   { "tmg_get_default_zoom_factor", (void*) tmgc_tmg_get_default_zoom_factor },
   { "tmg_inclusions_gc", (void*) tmgc_tmg_inclusions_gc },

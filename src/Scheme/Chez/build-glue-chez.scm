@@ -74,6 +74,7 @@
 
 (define *out-cpp-relative-path* "src/Scheme/Chez/glue_chez.cpp")
 (define *out-scm-relative-path* "TeXmacs/progs/kernel/boot/glue-chez.scm")
+(define *raw-ffi-table-relative-path* "TeXmacs/progs/kernel/boot/raw-ffi-table.scm")
 
 ;; Routines the C++ side does not provide for Chez Scheme, because their
 ;; definitions and/or registrations in src/Scheme/Glue/glue_basic.cpp sit
@@ -93,15 +94,6 @@
 (define *chez-unsupported-names*
   '(tm-output tm-errput
     string-load string-search-forwards string-search-backwards))
-
-;; Routines redirected to early-boot safe implementations in glue_overrides.cpp
-;; (scheme-name . c-function-override)
-(define *chez-override-cfns*
-  '(("set-font-rules"          . "tmg_chez_set_font_rules")
-    ("set-variant-keys"        . "tmg_chez_set_variant_keys")
-    ("set-printing-command"    . "tmg_chez_set_printing_command")
-    ("set-printer-paper-type"  . "tmg_chez_set_printer_paper_type")
-    ("set-printer-dpi"         . "tmg_chez_set_printer_dpi")))
 
 ;; The glue type names whose values are Scheme objects holding a TeXmacs
 ;; string -- a raw 8-bit bytevector on the C++ side, a Scheme string on the
@@ -248,28 +240,29 @@
 (define (e-args e) (car (cddddr e)))
 (define (e-arity e) (length (e-args e)))
 
-(define (core-predicate-name? name)
-  (let loop ((c *core-predicates*))
-    (cond ((null? c) #f)
-          ((string=? (car (car c)) name) #t)
-          (else (loop (cdr c))))))
+;; Read the whitelist of raw procedures from raw-ffi-table.scm
+(define *raw-ffi-table* #f)
 
-;; Does this glue type name denote a tm string?
-(define (tm-string-type? type)
-  (and (memq type *tm-string-types*) #t))
+(define (load-raw-ffi-table!)
+  (let ((forms (read-file-forms (under *raw-ffi-table-relative-path*))))
+    (let loop ((f forms))
+      (cond
+        ((null? f)
+         (error 'build-glue-chez "could not find raw symbol list in raw-ffi-table.scm"))
+        ((and (pair? (car f))
+              (eq? (car (car f)) 'for-each)
+              (pair? (cddr (car f)))
+              (pair? (caddr (car f)))
+              (eq? (car (caddr (car f))) 'quote))
+         (let ((ht (make-eq-hashtable)))
+           (for-each (lambda (s) (hashtable-set! ht s #t)) (cadr (caddr (car f))))
+           (set! *raw-ffi-table* ht)
+           ht))
+        (else (loop (cdr f)))))))
 
-;; Does any argument or the result of this entry hold a tm string, and so
-;; need transcoding at the boundary?
-(define (uses-tm-string? entry)
-  ;; The core predicates are the exception: they accept any Scheme object and
-  ;; only inspect its type tag, so transcoding cannot change what they return
-  ;; and the plan binds them raw (GLUE_CHEZ_PLAN.md §3.3).
-  (and (not (core-predicate-name? (e-name entry)))
-       (or (tm-string-type? (e-ret entry))
-           (let loop ((a (e-args entry)))
-             (cond ((null? a) #f)
-                   ((tm-string-type? (car a)) #t)
-                   (else (loop (cdr a))))))))
+(define (raw-ffi? name)
+  (unless *raw-ffi-table* (load-raw-ffi-table!))
+  (hashtable-ref *raw-ffi-table* (string->symbol name) #f))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Output helpers
@@ -296,8 +289,23 @@
 (define (scheme-formals n)
   (join " " n (lambda (i) (string-append "a" (number->string i)))))
 (define (scheme-ffi-types n) (join " " n (lambda (i) "scheme-object")))
-(define (scheme-transcoded-actuals n)
-  (join " " n (lambda (i) (string-append "(recur-string->utf8 a" (number->string i) ")"))))
+
+(define (scheme-in-transcoder name)
+  (cond
+    ((raw-ffi? name) #f)
+    ((member name '("cork->utf8" "cork->sourcecode" "escape-to-ascii"))
+     "recur-string->cork")
+    (else "recur-string->utf8")))
+
+(define (scheme-out-transcoder name)
+  (cond
+    ((raw-ffi? name) #f)
+    ((member name '("utf8->cork" "sourcecode->cork"))
+     "recur-cork->string")
+    (else "recur-utf8->string")))
+
+(define (scheme-transcoded-actuals in-trans n)
+  (join " " n (lambda (i) (string-append "(" in-trans " a" (number->string i) ")"))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; C++ artefact
@@ -541,18 +549,20 @@ tmg_error_std (const std::string& e) {
 
 (define (scm-transcoded-binding entry)
   (let* ((name (e-name entry))
-         (c-fn (e-cfn entry))
-         ;; Drop the tmg_ prefix: c-glue-<mangled> cannot collide with any
-         ;; kernel binding, while c-<mangled> could.
-         (alias (string-append "c-glue-" (substring c-fn 4 (string-length c-fn))))
+         (sym (e-sym entry))
+         ;; Drop the tmg_ prefix from the foreign symbol: c-glue-<mangled> cannot
+         ;; collide with any kernel binding, while c-<mangled> could.
+         (alias (string-append "c-glue-" (substring sym 4 (string-length sym))))
          (n (e-arity entry))
-         (args (scheme-transcoded-actuals n)))
+         (in-trans (scheme-in-transcoder name))
+         (out-trans (scheme-out-transcoder name))
+         (args (scheme-transcoded-actuals in-trans n)))
     (string-append
       "(define " alias "\n"
       "  (foreign-procedure \"" (e-sym entry) "\" (" (scheme-ffi-types n) ") scheme-object))\n"
       "\n"
       "(define (" name (if (= n 0) "" " ") (scheme-formals n) ")\n"
-      "  (recur-utf8->string (" alias (if (= n 0) "" " ") args ")))\n"
+      "  (" out-trans " (" alias (if (= n 0) "" " ") args ")))\n"
       "\n")))
 
 ;;; ---------------------------------------------------------------------------
@@ -583,11 +593,8 @@ tmg_error_std (const std::string& e) {
          ;; spec-entries still yields the raw (name return-type arg-types)
          ;; shape at this point.
          (entries (map (lambda (e)
-                         (let* ((name (car e))
-                                (m (mangle name))
-                                (cfn (cond ((assoc name *chez-override-cfns*) => cdr)
-                                           (else m))))
-                           (list name cfn m (cadr e) (caddr e))))
+                         (let ((m (mangle (car e))))
+                           (list (car e) m m (cadr e) (caddr e))))
                        kept))
          ;; The core predicates keep their historical C function names but are
          ;; registered under the same tmg_<mangled> convention as everything
@@ -597,9 +604,21 @@ tmg_error_std (const std::string& e) {
                         (list name cfn (mangle name) 'bool (list 'object))))
                     *core-predicates*))
          (all-entries (append entries core))
-         (raw (filter (lambda (e) (not (uses-tm-string? e))) all-entries))
-         (wrapped (filter uses-tm-string? all-entries))
+         (raw (filter (lambda (e) (not (scheme-in-transcoder (e-name e)))) all-entries))
+         (wrapped (filter (lambda (e) (scheme-in-transcoder (e-name e))) all-entries))
          (total (length all-entries)))
+
+    ;; Consistency checks:
+    ;; 1. Every symbol in raw-ffi-table must be in all-entries
+    (let ((all-names (map (lambda (e) (string->symbol (e-name e))) all-entries))
+          (raw-table (load-raw-ffi-table!)))
+      (vector-for-each
+        (lambda (s)
+          (unless (memq s all-names)
+            (error 'build-glue-chez
+                   (string-append "symbol in raw-ffi-table not in glue entries: "
+                                  (symbol->string s)))))
+        (hashtable-keys raw-table)))
 
     ;; Three name spaces, one check each.  This runs before anything is
     ;; written, so a collision leaves the artefacts untouched.

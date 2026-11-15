@@ -933,7 +933,6 @@ initialize_scheme () {
     fprintf (stderr, "Chez Scheme: %d native glue procedures registered\n",
              chez_glue_procedure_count ());
     fflush (stderr);
-    replay_early_variant_keys ();
   }
 }
 

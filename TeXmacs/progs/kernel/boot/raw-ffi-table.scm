@@ -443,4 +443,7 @@
     update-all-buffers
     recall-message
     quit-TeXmacs
+    tree?
+    observer?
+    blackbox?
   ))

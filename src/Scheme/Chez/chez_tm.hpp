@@ -153,9 +153,6 @@ void initialize_glue_chez ();
 /* Number of registered entry points, for the start-up diagnostic. */
 int chez_glue_procedure_count ();
 
-/* -- early-boot glue overrides (src/Scheme/Chez/glue_overrides.cpp) ------- */
-void replay_early_variant_keys ();
-
 #define tmscm_install_procedure(name, func, args, p0, p1) \
   chez_install_procedure (name, (void*) tmscm_as_fn (func), args)
 
