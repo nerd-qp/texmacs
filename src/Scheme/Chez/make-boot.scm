@@ -105,13 +105,34 @@
                 out-so (/ sz 1048576.0) sz))
 
       ;; 2. Generate Approach 2 image: texmacs.boot (CSUG 12.1 native boot file)
-      (printf "Generating ~a (Approach 2: native boot file with all ~a modules)...\n"
-              out-boot (length raw-so-paths))
-      (when (file-exists? out-boot) (delete-file out-boot))
-      (apply make-boot-file out-boot '("petite" "scheme") raw-so-paths)
-      (let ((sz (file-length (open-file-input-port out-boot))))
-        (printf "SUCCESS: Created AOT boot image ~a (~,2f MB, ~a bytes)\n"
-                out-boot (/ sz 1048576.0) sz)))))
+      ;; TEXMACS_BOOT_MODULE_COUNT allows packing only the first N modules into
+      ;; texmacs.boot. During Sbuild_heap(), Chez evaluates registered boot files
+      ;; before user exception handlers are established. If any module triggers a
+      ;; low-level crash or memory corruption during startup, setting this variable
+      ;; (e.g. TEXMACS_BOOT_MODULE_COUNT=77) enables fast binary-search bisection
+      ;; to isolate the offending module. Defaults to all modules when unset.
+      (let* ((count (or (and (getenv "TEXMACS_BOOT_MODULE_COUNT")
+                             (string->number (getenv "TEXMACS_BOOT_MODULE_COUNT")))
+                        (length raw-so-paths)))
+             (boot-so-paths (list-head raw-so-paths (min count (length raw-so-paths)))))
+        (printf "Generating ~a (Approach 2: native boot file with ~a/~a modules)...\n"
+                out-boot (length boot-so-paths) (length raw-so-paths))
+        (let ((use-vfasl? (let ((v (getenv "TEXMACS_BOOT_VFASL")))
+                            (and v (or (string=? v "1") (string=? v "true") (string=? v "yes"))))))
+          (if use-vfasl?
+              (let ((tmp-boot (string-append out-boot ".tmp")))
+                (when (file-exists? tmp-boot) (delete-file tmp-boot))
+                (apply make-boot-file tmp-boot '("petite" "scheme") boot-so-paths)
+                (printf "Converting ~a to high-performance VFASL boot format...\n" out-boot)
+                (when (file-exists? out-boot) (delete-file out-boot))
+                (vfasl-convert-file tmp-boot out-boot '("petite" "scheme"))
+                (delete-file tmp-boot))
+              (begin
+                (when (file-exists? out-boot) (delete-file out-boot))
+                (apply make-boot-file out-boot '("petite" "scheme") boot-so-paths))))
+        (let ((sz (file-length (open-file-input-port out-boot))))
+          (printf "SUCCESS: Created AOT boot image ~a (~,2f MB, ~a bytes)\n"
+                  out-boot (/ sz 1048576.0) sz))))))
 
 ;; If executed directly via scheme --script, run immediately
 (when (top-level-bound? 'command-line-arguments)

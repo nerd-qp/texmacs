@@ -36,6 +36,7 @@ typedef ptr tmscm;
 
 extern tmscm tm_null;              /* the value of '()                        */
 extern tmscm tm_blackbox_guardian;  /* Guardian procedure for blackboxes      */
+extern "C" void chez_cache_runtime_procedures ();
 extern tmscm tm_eval_string_proc;  /* (tm-eval-string s)                      */
 extern tmscm tm_load_file_proc;    /* (tm-load-file file)                     */
 extern tmscm tm_apply_proc;        /* (tm-apply fun args-list)                */

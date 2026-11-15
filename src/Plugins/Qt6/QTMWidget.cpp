@@ -35,6 +35,7 @@
 #include <QFocusEvent>
 #include <QPainter>
 #include <QApplication>
+#include <QPointer>
 #include <QScrollBar>
 #include <QScroller>
 
@@ -815,10 +816,10 @@ QTMWidget::event (QEvent* event) {
 }
 
 #if QT_VERSION >= 0x050000
-QTMWidget *last_focused_widget = nullptr;
+QPointer<QTMWidget> last_focused_widget = nullptr;
 
 QTMWidget *QTMWidget::getLastFocusedWidget() {
-  return last_focused_widget;
+  return last_focused_widget.data();
 }
 
 void QTMWidget::setFocusToLast() {

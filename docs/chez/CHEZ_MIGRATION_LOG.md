@@ -38,7 +38,7 @@ Implements native secondary boot-file loading via `Sregister_boot_file("texmacs.
   - *Peak memory footprint*: Grew from **244.0 MB** to **472.3 MB** (+228.3 MB).
   - *Startup latency*: Regressed from **2.51–2.86s** to **3.02–3.14s** (~500 ms slower), with `TIME-SERVER-INIT` increasing from ~2,050 ms to ~2,400 ms.
   - *VM paging overhead*: Page reclaims/faults jumped from 23,452 / 173 to 39,716 / 534 (+16,264 page faults/reclaims), increasing kernel `sys` CPU time by +62%.
-- **Architectural Conclusion**: VFASL is counterproductive for large application aggregates like TeXmacs (454 modules, 1,176 C++ glue bindings). The absence of stream compaction inflates the process memory footprint and VM page faults, which outweighs Scheme-level deserialization gains. Standard compact FASL (`texmacs.so`) is retained as the optimal format.
+- **Architectural Conclusion**: When used as a dynamic object file (`texmacs.so` loaded via `primitive-load`), VFASL is counterproductive because stream bloat increases page faults during post-boot file reading. *(Update: When applied as a native secondary boot file `texmacs.boot` loaded directly by `Sbuild_heap()`, VFASL avoids per-object decoding and provides a 15–20% speedup over standard FASL boot files; see §5).* Standard compact FASL remains optimal for Approach 1 (`texmacs.so`).
 
 ---
 
@@ -498,7 +498,80 @@ Rather than splitting modules into synthetic helper units, the codebase reverted
      - In `boot-order-full.scm` and `init-texmacs-aot.scm`, `document-menu.so` was ordered before `generic-menu.so`. Because `generic-menu.scm` has no `:require` condition, `tm-define-overloaded` treated it as a base definition and wiped out the conditioned definition from `document-menu.so`.
    * **Fix**: Reordered modules so `generic:generic-menu` loads before `generic:document-menu`. Now `document-menu` wraps `former` with `(:require (tree-is-buffer? t))`, correctly displaying the Document Style dropdown (`Generic`), Paper size (`A4`), Font (`Roman`), Font size (`10pt`), and Orientation (`Portrait`) on the focus toolbar.
 
+---
 
+## 2026-11-15: Complete `texmacs.boot` Resolution, Focus Crash Fix & VFASL Benchmarking
 
+### 1. Resolution of `Error: invalid memory reference` during `texmacs.boot` Startup
 
+* **Root Cause**:
+  When booting from the AOT image `texmacs.boot`, Chez Scheme's `Sbuild_heap()` evaluates all registered boot files before returning to C++.
+  Module 77 (`fonts/fonts-truetype.so`) calls `(default-chinese-font)` at top level, which transitions into C++ `default_chinese_font_name() -> tt_font_find -> tt_font_path -> get_preference("imported fonts", "")`. Because `tm-preferences.scm` (module 75) had already run `(notify-preferences-booted)`, `preferences_ok` was `true`, causing `get_preference` to callback into Scheme via `call("get-preference", var)`.
+  This instantiated `object(var)` and invoked `tmscm_object_rep::tmscm_object_rep(obj)` in `src/Scheme/Scheme/object.cpp`, dereferencing `object_stack` and Scheme call entry points `tm_call_0_proc` .. `tm_call_n_proc`. Because these static procedure handles were previously only initialized in `initialize_scheme()` *after* `Sbuild_heap()` returned, `object_stack == 0`, triggering a null pointer dereference (`Error: invalid memory reference`).
+* **Solution**:
+  - Implemented `extern "C" void chez_cache_runtime_procedures()` in `src/Scheme/Chez/chez_tm.cpp` and exported it via `Sforeign_symbol`.
+  - In `TeXmacs/progs/kernel/boot/boot-chez.scm`, invoked `((foreign-procedure "chez_cache_runtime_procedures" () void))` at the end of the module.
+  - Added self-healing guards in `src/Scheme/Scheme/object.cpp` (`if (object_stack == 0) chez_cache_runtime_procedures();`) and in `call_scheme` in `src/Scheme/Chez/chez_tm.cpp`.
 
+### 2. Resolution of `tm-keywords.scm` (Module 124) Boot-Time Crash
+
+* **Symptom**: `tm-keywords.scm` compiled with 0 errors during `-recompile-modules`, but loading `texmacs.boot` during `Sbuild_heap()` crashed with `Exception: variable nullary-keywords is not bound` (Exit code 255).
+* **Root Cause**:
+  `tm-keywords.scm` is unique in the codebase: it dynamically reads an external non-Scheme file (`tm-mode.el`) at top level and evaluates it via `(eval (cons 'begin (kw-transform kwo)))`.
+  In `tm-mode.el`, expressions are interdependent compound lists:
+  `(setq nullary-keywords '(begin cond else ...))`
+  `(setq nullary-no-highlight '(:use :inherit ...))`
+  `(setq nullary-indent (append nullary-keywords nullary-no-highlight))`
+  When transformed into `tm-define`, `nullary-keywords` is bound at runtime via `define-top-level-value`. However, Chez Scheme's `eval` compiles the entire `begin` block before executing it. During early heap construction (`Sbuild_heap()`), evaluating `(append nullary-keywords ...)` failed because `nullary-keywords` had not yet been assigned in the top-level scope.
+* **Fix**:
+  - Replaced runtime `eval` with a direct table-driven recursive evaluator (`kw-eval`).
+  - Recorded keyword lists into local table `kw-env` and published them to `(interaction-environment)` via `define-top-level-value`.
+  - Added explicit module imports `(:use (kernel library base) (kernel boot ahash-table))` and ensured definitions precede expressions.
+
+### 3. Investigation & Elimination of False-Positive `ORACLE-BLOCKED` Warnings
+
+* **Investigation Findings**:
+  Running `-recompile-modules` produced 45 `ORACLE-BLOCKED` warnings:
+  - 40 warnings in `menu-widget.scm` and `menu-convert.scm` for local helpers (`adjust-translation`, `kbd-find-shortcut`, `menu-protect`, `greyed?`, `delay-command`, `active?`, `add-menu-entry-balloon`, `menu-label-add-dots`, `kbd-system`, `verb?`, `tab-key`, `tab-value`, `icon-tab-key`, `icon-tab-value`, `icon-tab-icon`, `cached-widgets`, `translatable?`, `make-resize`).
+  - 4 warnings in `debug.scm` for `first`, `second`, `third`, `fourth`.
+  - 1 warning in `graphics-env.scm` for `graphics-closest-point-pos`.
+* **Flat Namespace Collision in the Oracle**:
+  `*oracle-defs*` in `compiler-oracle.scm` maintained a single flat hashtable mapping symbol names to the *first* definition site encountered in the source tree. Because `menu-convert.scm` was scanned before `menu-widget.scm`, all 16 identically-named private helper procedures were assigned to `menu-convert`. When `menu-widget.scm` compiled its eager tables, the Oracle queried `*oracle-defs*`, found the foreign module `menu-convert`, and blocked the symbol — completely ignoring that `menu-widget.scm` defined its own identical local copy!
+* **Module-Scoped Definition Indexing (`*oracle-mod-defs*`)**:
+  - Added `*oracle-mod-defs*` (keyed by module name) in `compiler-oracle.scm`.
+  - Updated `oracle-lookup-site` to prioritize:
+    1. Definitions defined directly within the compiling module (`*oracle-current-module*`).
+    2. Definitions exported by declared dependencies (`*oracle-current-deps*`).
+    3. Fallback to the global `*oracle-defs*` registry.
+  - In `debug.scm`, replaced uses of `(kernel library list)` routines (`first`, `second`, `third`, `fourth`) in the `regression-test-group` macro with standard `car`, `cadr`, `caddr`, `cadddr`, honoring `debug.scm`'s early bootstrap tier.
+* **Outcome**:
+  - Eliminated all 44 false-positive `ORACLE-BLOCKED` warnings.
+  - Only the single genuine encapsulation block in `(graphics graphics-env)` remains as designed.
+  - All 5 compiler unit test suites pass (206 checks, 0 failures).
+
+### 4. Upstream GUI Focus & Menu Dangling Pointer Fix
+
+* **Issue**:
+  When opening and closing menus or switching between multiple document windows, TeXmacs intermittently crashed with a segmentation fault (`SIGSEGV` / `sigtramp` inside `QWidget::setFocus()`).
+* **Root Cause**:
+  In `src/Plugins/Qt/QTMWidget.cpp` and `Qt6/QTMWidget.cpp`, a recent upstream commit introduced `last_focused_widget` as a raw pointer `QTMWidget*` to restore focus after closing popup menus. When windows or views closed, `last_focused_widget` became a dangling pointer. Calling `QTMWidget::setFocusToLast()` dereferenced the deallocated widget memory.
+* **Fix**:
+  Converted `static QPointer<QTMWidget> last_focused_widget = nullptr;` in both Qt and Qt6 plugin backends. Qt's guarded pointer automatically resets to `nullptr` when the tracked `QObject` is destroyed, eliminating dangling pointer dereferences.
+
+### 5. Native Secondary Boot File Performance & VFASL Benchmark
+
+* **Startup Performance Comparison (macOS arm64)**:
+
+  | Bootstrap Architecture | Image Size | `TIME-SERVER-INIT` | `TIME-PRE-GUI-LOOP` | Notes |
+  | :--- | :--- | :--- | :--- | :--- |
+  | **Approach 1 (`texmacs.so`)** | 13.06 MB | ~2,025 – 2,127 ms | ~2,090 – 2,202 ms | Loaded via `primitive-load` after heap initialization; undergoes runtime deserialization and nursery GC cycles. |
+  | **Approach 2 (`texmacs.boot` Standard FASL)** | 16.67 MB | ~891 – 1,056 ms | ~851 – 1,154 ms | Registered via `Sregister_boot_file()` and evaluated inside `Sbuild_heap()`. |
+  | **Approach 2 (`texmacs.boot` VFASL)** | 33.37 MB | **~708 – 807 ms** | **~802 – 880 ms** | **Fastest (2.5× faster than `texmacs.so`).** Pre-mapped memory image via `vfasl-convert-file`. |
+
+* **Tooling & Build Enhancements**:
+  - In `src/Scheme/Chez/make-boot.scm`:
+    - Added `TEXMACS_BOOT_VFASL=1` support: converts `texmacs.boot` using `(vfasl-convert-file ... '("petite" "scheme"))`.
+    - Added `TEXMACS_BOOT_MODULE_COUNT=N` knob: packs only the first $N$ modules into `texmacs.boot`, enabling fast binary-search bisection if early heap evaluation ever regresses.
+  - In `TeXmacs/progs/kernel/boot/boot-chez.scm`:
+    - Bound `chez-heap-built?` directly to `(foreign-procedure "chez_heap_built" () boolean)`.
+    - Documented `module-provide` lifecycle: `(chez-heap-built?)` is `#f` strictly during `Sbuild_heap()`, preventing resident modules from redundantly searching the filesystem, and `#t` once the heap is established.

@@ -381,7 +381,7 @@
 
 static tmscm
 tmg_error_literal (const char* msg, iptr n) {
-  return Scons (Sboolean (1), Scons (Sstring_of_length (msg, n), tm_null));
+  return Scons (Sboolean (1), Scons (Sstring_of_length (msg, n), (tm_null != NULL) ? tm_null : Snil));
 }
 
 /* TeXmacs throws its own string class (basic.cpp: throw string (msg)), which
@@ -408,9 +408,18 @@ tmg_error_std (const std::string& e) {
 #define TMG_GUARD_BODY(NAME, FN, CALL)                                   \\
   current_glue_proc= NAME;                                               \\
   try { return FN CALL; }                                                \\
-  catch (const string& e) { return tmg_error_texmacs (e); }              \\
-  catch (const std::string& e) { return tmg_error_std (e); }             \\
-  catch (...) { return tmg_error_literal (\"<exception>\", 11); }
+  catch (const string& e) {                                              \\
+    fprintf (stderr, \"[GLUE EXCEPTION in %s]: %s\\n\", NAME, (char*) c_string (e)); \\
+    return tmg_error_texmacs (e);                                        \\
+  }                                                                      \\
+  catch (const std::string& e) {                                         \\
+    fprintf (stderr, \"[GLUE EXCEPTION in %s]: %s\\n\", NAME, e.c_str ()); \\
+    return tmg_error_std (e);                                            \\
+  }                                                                      \\
+  catch (...) {                                                          \\
+    fprintf (stderr, \"[GLUE UNKNOWN EXCEPTION in %s]\\n\", NAME);         \\
+    return tmg_error_literal (\"<exception>\", 11);                      \\
+  }
 "))
 
 (define (cpp-guard-macro n)

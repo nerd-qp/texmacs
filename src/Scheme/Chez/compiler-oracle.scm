@@ -511,6 +511,7 @@
 ;; ---- The index and the installs -------------------------------------------
 
 (define *oracle-defs* (make-eq-hashtable))
+(define *oracle-mod-defs* (make-hashtable equal-hash equal?))
 (define *oracle-installing* (make-eq-hashtable))
 (define *oracle-installed* (make-eq-hashtable))
 (define *ephemeral-syms* '())
@@ -541,11 +542,18 @@
     ;; definition under a top-level begin/if/when/unless wrapper.
     (define (record! form)
       (let ((name (mc-leftmost-symbol (mc-cadr form))))
-        (when (and (symbol? name) (not (hashtable-ref defs name #f)))
-          (hashtable-set! defs name
-                          (vector name
-                                  (if (memq (car form) *macro-definers*) 'macro 'value)
-                                  form top rel mod)))))
+        (when (symbol? name)
+          (let ((site (vector name
+                              (if (memq (car form) *macro-definers*) 'macro 'value)
+                              form top rel mod)))
+            (let ((m-tbl (hashtable-ref *oracle-mod-defs* mod #f)))
+              (unless m-tbl
+                (set! m-tbl (make-eq-hashtable))
+                (hashtable-set! *oracle-mod-defs* mod m-tbl))
+              (unless (hashtable-ref m-tbl name #f)
+                (hashtable-set! m-tbl name site)))
+            (unless (hashtable-ref defs name #f)
+              (hashtable-set! defs name site))))))
     (define (walk form)
       (when (pair? form)
         (let ((head (car form)))
@@ -589,14 +597,32 @@
       (define-top-level-value name (unbound-marker) env))
     (define-top-level-syntax name syntax env)))
 
+(define (oracle-lookup-site name)
+  (let ((cur-mod (*oracle-current-module*))
+        (deps    (*oracle-current-deps*)))
+    (or (and cur-mod
+             (let ((m-tbl (hashtable-ref *oracle-mod-defs* cur-mod #f)))
+               (and m-tbl (hashtable-ref m-tbl name #f))))
+        (and (symbol? name)
+             (let loop ((rest deps))
+               (if (null? rest)
+                   #f
+                   (let* ((dep (car rest))
+                          (m-tbl (hashtable-ref *oracle-mod-defs* dep #f))
+                          (site (and m-tbl (hashtable-ref m-tbl name #f))))
+                     (if (and site (oracle-allowed? name site))
+                         site
+                         (loop (cdr rest)))))))
+        (and (symbol? name) (hashtable-ref *oracle-defs* name #f)))))
+
 (define (oracle-head-dependency form)
   (let ((head (and (pair? form) (car form))))
-    (if (and (symbol? head) (hashtable-ref *oracle-defs* head #f))
+    (if (and (symbol? head) (oracle-lookup-site head))
         (list head)
         '())))
 
 (define (oracle-macro? sym)
-  (let ((e (hashtable-ref *oracle-defs* sym #f)))
+  (let ((e (oracle-lookup-site sym)))
     (and e (eq? (vector-ref e 1) 'macro))))
 
 (define (oracle-site-deps site)
@@ -651,13 +677,14 @@
 
 (define (oracle-install! name)
   (let ((env (compilation-environment))
-        (site (and (symbol? name) (hashtable-ref *oracle-defs* name #f))))
+        (site (and (symbol? name) (oracle-lookup-site name))))
     (cond ((not site) #f)
           ((oracle-live? name env) #t)
           ((hashtable-ref *oracle-installing* name #f) #f)   ; cycle: leave it
           ((not (oracle-allowed? name site))
-           (log-note (format "ORACLE-BLOCKED ~a from ~a (not exported in declared dependencies)"
-                             name (vector-ref site 5)))
+           (let ((def-mod (vector-ref site 5)))
+             (log-note (format "ORACLE-BLOCKED ~a from ~a (not exported in declared dependencies)"
+                               name def-mod)))
            #f)
           (else (oracle-install-site! name site env)))))
 

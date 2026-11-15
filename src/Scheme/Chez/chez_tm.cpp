@@ -694,8 +694,17 @@ scheme_dialect () {
   return "chez";
 }
 
+static bool s_chez_heap_built = false;
+
+static bool
+chez_heap_built () {
+  return s_chez_heap_built;
+}
+
 static void
 register_foreign_symbols () {
+  Sforeign_symbol ("chez_heap_built", (void*) chez_heap_built);
+  Sforeign_symbol ("chez_cache_runtime_procedures", (void*) chez_cache_runtime_procedures);
   Sforeign_symbol ("tm-call-by-name", (void*) tm_call_by_name);
   Sforeign_symbol ("tm_fast_call_0", (void*) tm_fast_call_0);
   Sforeign_symbol ("tm_fast_call_1", (void*) tm_fast_call_1);
@@ -716,6 +725,7 @@ register_foreign_symbols () {
 static void
 custom_init (void) {
   /* called by Sbuild_heap before loading the boot files */
+  s_chez_heap_built = false;
   register_foreign_symbols ();
   /* The glue entry points are registered here, not in initialize_scheme(),
      because Sforeign_symbol() only writes to a C table: it needs neither the
@@ -831,6 +841,7 @@ build_chez_heap () {
 
   const char* execpath = (s_argv != NULL && s_argv[0] != NULL) ? s_argv[0] : "texmacs";
   Sbuild_heap (execpath, custom_init);
+  s_chez_heap_built = true;
 }
 
 void
@@ -856,34 +867,10 @@ chez_legacy_glue () {
   return v != NULL && (strcmp (v, "1") == 0 || strcmp (v, "true") == 0);
 }
 
-void
-initialize_scheme () {
-  /* Build the Scheme heap now that the TeXmacs server (the_server) has started.
-     This ensures custom_init() and any registered boot files (e.g. texmacs.boot)
-     can safely interact with the server and glue procedures without hitting
-     uninitialized server crashes. */
-  build_chez_heap ();
-
-  /* Foreign entry points first: boot-chez.scm binds each of them with
-     foreign-procedure while it is being loaded, and Chez resolves the symbol
-     at that point.  The glue entry points were registered the same way in
-     custom_init(), i.e. during Sbuild_heap(). */
-  register_foreign_symbols ();
-
-  if (!s_has_texmacs_boot || !ends (s_texmacs_boot_file, ".boot")) {
-    string boot= boot_scheme_path ();
-    if (!exists (url (boot)))
-      boot_failed ("Chez Scheme: bootstrap file not found: " * boot);
-    fprintf (stderr, "Chez Scheme: loading %s\n", (char*) c_string (boot));
-    fflush (stderr);
-    load_scheme_file (boot);
-  }
-
-  /* Cache frequently-used procedures.  These ptrs live in STATIC storage,
-     which Chez's collector does not scan: newly allocated objects start in
-     the copying nursery and move on collection, so an unpinned handle goes
-     stale as soon as enough allocation happens to trigger a minor GC.
-     Slock_object pins them (they are process-lifetime, never unlocked). */
+extern "C" void
+chez_cache_runtime_procedures () {
+  // Only run once, can be invoked from scheme or C++.
+  if (object_stack != 0) return;
   tm_null= Stop_level_value (Sstring_to_symbol ("tmscm-null"));
   Slock_object (tm_null);
   tm_blackbox_guardian= Stop_level_value (Sstring_to_symbol ("tm-blackbox-guardian"));
@@ -916,6 +903,27 @@ initialize_scheme () {
   Slock_object (object_stack);
   tm_install_proc= Stop_level_value (Sstring_to_symbol ("tm-install-procedure!"));
   Slock_object (tm_install_proc);
+}
+
+void
+initialize_scheme () {
+  /* Build the Scheme heap now that the TeXmacs server (the_server) has started.
+     This ensures custom_init() and any registered boot files (e.g. texmacs.boot)
+     can safely interact with the server and glue procedures without hitting
+     uninitialized server crashes. */
+  build_chez_heap ();
+
+  if (!s_has_texmacs_boot || !ends (s_texmacs_boot_file, ".boot")) {
+    string boot= boot_scheme_path ();
+    if (!exists (url (boot)))
+      boot_failed ("Chez Scheme: bootstrap file not found: " * boot);
+    fprintf (stderr, "Chez Scheme: loading %s\n", (char*) c_string (boot));
+    fflush (stderr);
+    load_scheme_file (boot);
+  }
+
+  // probably doesn't run, since boot-chez.scm will call this also at the end.
+  chez_cache_runtime_procedures ();
 
   if (s_has_texmacs_boot) {
     if (ends (s_texmacs_boot_file, ".boot"))

@@ -63,6 +63,27 @@
                    (cons a* d*)))))
         (else x)))
 
+;;; --- Symbol & Keyword semantics (mirroring Guile) -------------------------
+;; In Guile, keywords (:up, :next, etc.) are distinct from symbols, so (symbol? :up) => #f.
+;; Chez Scheme inherits symbols for keywords by default. Defining symbol? and keyword?
+;; here ensures eval and other predicates recognize them properly.
+(define chez:symbol? (top-level-value 'symbol? (scheme-environment)))
+
+(define (symbol? x)
+  (and (chez:symbol? x)
+       (not (keyword? x))))
+
+(define (keyword? x)
+  (and (chez:symbol? x)
+    (let ((s (symbol->string x)))
+      (and (> (string-length s) 0) (char=? (string-ref s 0) #\:)))))
+
+(define (keyword->symbol k)
+  (string->symbol (substring (symbol->string k) 1 (string-length (symbol->string k)))))
+
+(define (symbol->keyword s)
+  (string->symbol (string-append ":" (symbol->string s))))
+
 ;;; ---------------------------------------------------------------------------
 ;;; Redefined `eval` with fast-path lookup
 ;;;
@@ -115,10 +136,6 @@
                           form)))
            (primitive-eval form* e)))))))
 
-(if (not (top-level-bound? 'select))
-    (eval '(define (select . args)
-             (error "select" "POSIX select is not available on this Scheme dialect"))
-          tm-user-env))
 
 ;;; Foundational helpers & Guile compatibility primitives
 ;; Guile's `noop` is a pass-through: it returns its first argument when
@@ -142,6 +159,9 @@
 
 (define c-blackbox-hash
   (foreign-procedure "tmscm_blackbox_hash" (scheme-object) iptr))
+
+(define chez-heap-built?
+  (foreign-procedure "chez_heap_built" () boolean))
 
 (define (reap-blackboxes!)
   (let loop ()
@@ -186,22 +206,6 @@
 (define (make-hash-table . _) (make-hashtable tm-equal-hash equal?))
 (define (make-ahash-table . _) (make-hashtable tm-equal-hash equal?))
 
-(define chez:symbol? symbol?)
-
-(define (symbol? x)
-  (and (chez:symbol? x)
-       (not (keyword? x))))
-
-(define (keyword? x)
-  (and (chez:symbol? x)
-    (let ((s (symbol->string x)))
-      (and (> (string-length s) 0) (char=? (string-ref s 0) #\:)))))
-
-(define (keyword->symbol k)
-  (string->symbol (substring (symbol->string k) 1 (string-length (symbol->string k)))))
-
-(define (symbol->keyword s)
-  (string->symbol (string-append ":" (symbol->string s))))
 
 ;; Pre-bind common TeXmacs option keywords so unquoted keywords evaluate without error
 (for-each
@@ -232,7 +236,7 @@
     :gpg-empty :gpg-mismatch :handler :hidden :hide :in-row :in-row-group :initialize :integer? :interrupted
     :it :italic :keep-folded :keep-unfolded :language :lasprat :launch :left-margin :lhw :light
     :link :literal :loaded :loading :loasc :loc :local :lodes :loh :ltac
-    :lvw :macpath :mag :math-correct :math-display :math-input :medium :menu-item :menu-item-list :menu-label
+    :lvw :macpath :mag :math :math-correct :math-display :math-input :medium :menu-item :menu-item-list :menu-label
     :menu-wide-item :menu-wide-label :modified :mono :multiply :must-recognize :new :new-window :none :normal
     :now :numerator :oblique :off :order :ornament- :ornament-border :ornament-color :ornament-extra-color :ornament-hpadding
     :ornament-shadow-color :ornament-shape :ornament-sunny-color :ornament-swell :ornament-title-style :ornament-vpadding :out-row :out-row-group :out-table :over
@@ -507,12 +511,7 @@
                    ".scm")))
 
 (define (module-loaded? m)
-  (or (hashtable-ref *texmacs-modules-loaded* m #f)
-      (and (list? m)
-           (guard (e (else #f))
-             (environment m)
-             (hashtable-set! *texmacs-modules-loaded* m #t)
-             #t))))
+  (hashtable-ref *texmacs-modules-loaded* m #f))
 
 (define (module-so-file which)
   (let* ((ps (map symbol->string which))
@@ -631,13 +630,12 @@
     (load-module-file which)))
 
 (define (module-provide m)
-  ;; During AOT compilation (compile-export-mode? #t), compile_kernel.scm
-  ;; compiles and loads every module in strict topological order.
-  ;; Injected (module-provide '<dep>) calls in .so files are intended for
-  ;; runtime dynamic dependency loading; executing them during compile-time
-  ;; verification loads would prematurely load forward/deferred circular
-  ;; dependencies or stale .so files left on disk from previous builds.
-  (when (and (not (compile-export-mode?))
+  ;; Sbuild_heap() sets chez-heap-built? to #t only after heap construction returns.
+  ;; In normal startup (init-texmacs-chez.scm), it is already #t so module-provide loads
+  ;; files normally. In texmacs.boot, it is #f during Sbuild_heap(), preventing resident
+  ;; boot modules from redundantly searching the filesystem for dependencies.
+  (when (and (chez-heap-built?)
+             (not (compile-export-mode?))
              (getenv "TEXMACS_PATH")
              (not (module-loaded? m)))
     (module-load m)))
@@ -1126,3 +1124,7 @@
 
 
 (define-top-level-value 'boot-chez-loaded? #t)
+
+;; Notify C++ to cache runtime procedures now that boot-chez has fully defined them.
+;; This enables C++ to call scheme functions properly.
+((foreign-procedure "chez_cache_runtime_procedures" () void))

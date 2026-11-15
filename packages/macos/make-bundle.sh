@@ -242,7 +242,7 @@ fi
 # ------------------------------------------------------------ compiled modules
 say "copying compiled modules"
 mkdir -p "$SHARE/boot"
-rsync -a --include '*/' --include '*.so' --include 'module-deps.scm' --include 'boot-order*.scm' --exclude '*' \
+rsync -a --include '*/' --include '*.so' --include '*.boot' --include 'module-deps.scm' --include 'boot-order*.scm' --exclude '*' \
       "$SRC_BOOT/" "$SHARE/boot/"
 
 # Ensure boot-chez.so is bundled

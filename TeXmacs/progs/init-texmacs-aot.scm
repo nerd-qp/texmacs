@@ -47,7 +47,7 @@
             (else (loop (cdr c)))))))
 
 ;; Import all resident AOT modules into the interaction environment
-(eval '(import
+(define *aot-resident-symbols* '(
   kernel:boot:chez-compat
   kernel:boot:compat
   kernel:boot:abbrevs
@@ -500,8 +500,25 @@
   utils:relate:relate-menu
   utils:test:test-latex-export
   version:version-git
-  version:version-svn
-) (interaction-environment))
+  version:version-svn))
+
+(eval (cons 'import *aot-resident-symbols*) (interaction-environment))
+
+;; Pre-populate *texmacs-modules-loaded* so (module-loaded? m) is true for all resident modules
+(for-each
+  (lambda (sym)
+    (let* ((str (symbol->string sym))
+           (len (string-length str)))
+      (let loop ((i 0) (start 0) (acc '()))
+        (cond
+          ((= i len)
+           (let ((spec (reverse (cons (string->symbol (substring str start i)) acc))))
+             (hashtable-set! *texmacs-modules-loaded* spec #t)))
+          ((char=? (string-ref str i) #\:)
+           (loop (+ i 1) (+ i 1) (cons (string->symbol (substring str start i)) acc)))
+          (else
+           (loop (+ i 1) start acc))))))
+  *aot-resident-symbols*)
 
 ;; Runtime definitions for export-bearing syntax
 (define-syntax define-public
