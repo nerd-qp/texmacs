@@ -57,10 +57,17 @@ format_exists (string format) {
 
 tree
 generic_to_tree (string s, string fm) {
+  // Fast-path native .tm in C++: ideal for Chez where call_scheme decodes strings as UTF-8,
+  // which would corrupt 8-bit Cork bytes (>= 0x80) to U+FFFD ('?'), and skips the FFI round-trip.
+  if (fm == "texmacs-document") return texmacs_document_to_tree (s);
+  if (fm == "texmacs-snippet")  return texmacs_to_tree (s);
   return as_tree (call ("generic->texmacs", s, fm));
 }
 
 string
 tree_to_generic (tree doc, string fm) {
+  // Fast-path native .tm in C++: keeps 8-bit Cork output out of Chez's UTF-8 FFI bridge.
+  if (fm == "texmacs-document" || fm == "texmacs-snippet")
+    return tree_to_texmacs (doc);
   return as_string (call ("texmacs->generic", doc, fm));
 }

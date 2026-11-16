@@ -165,6 +165,9 @@
 ;;; into glue_basic.cpp / glue_editor.cpp / glue_server.cpp.
 ;;; ---------------------------------------------------------------------------
 
+;; Map Scheme identifier punctuation to valid C identifier characters:
+;;   ? -> P (predicate), ! -> S (setter), < -> F (from), > -> 2 (to),
+;;   - -> _, = -> Q (equal).
 (define (translate-name-char c)
   (case c
     ((#\?) #\P)
@@ -175,6 +178,9 @@
     ((#\=) #\Q)
     (else c)))
 
+;; Convert a Scheme glue name (e.g. "cork->utf8" or "foo*") into its C shim
+;; symbol ("tmg_cork_2utf8" or "tmg_foo_dot").  Trailing '*' maps to "_dot"
+;; to match build-glue.scm.
 (define (mangle name)
   (let* ((name (if (and (> (string-length name) 0)
                         (char=? (string-ref name (- (string-length name) 1)) #\*))
@@ -290,23 +296,63 @@
   (join " " n (lambda (i) (string-append "a" (number->string i)))))
 (define (scheme-ffi-types n) (join " " n (lambda (i) "scheme-object")))
 
+;; Per-signature encoding overrides for C++ glue procedures whose `string'
+;; parameters or return values carry 8-bit Cork or raw binary bytes instead
+;; of UTF-8.  Keeping this table here avoids modifying upstream's
+;; build-glue-*.scm specs or regenerating glue_basic.cpp.
+;;
+;; Format: (proc-name (ret-enc arg1-enc arg2-enc ...))
+;; Encodings:
+;;   cork -> recur-string->cork (arg) / recur-cork->string (ret)
+;;   utf8 -> recur-string->utf8 (arg) / recur-utf8->string (ret)
+;;   raw  -> pass-through without string transcoding
+;;   #f   -> fall back to default type-based rule
+(define *chez-encoding-overrides*
+  '(("cork->utf8"               (utf8 cork))
+    ("cork->sourcecode"         (utf8 cork))
+    ("escape-to-ascii"          (utf8 cork))
+    ("parse-texmacs"            (utf8 cork))
+    ("parse-texmacs-snippet"    (utf8 cork))
+    ("utf8->cork"               (cork utf8))
+    ("sourcecode->cork"         (cork utf8))
+    ("serialize-texmacs"        (cork utf8))
+    ("serialize-texmacs-snippet" (cork utf8))))
+
+(define (override-enc->type orig-type enc)
+  (case enc
+    ((#f)   orig-type)
+    ((cork) 'cork_string)
+    ((utf8) 'utf8_string)
+    ((raw)  'raw_bytes)
+    (else   (error 'build-glue-chez "unknown encoding override"))))
+
+;; Rewrite an entry's (ret-type arg-types) using *chez-encoding-overrides*
+;; so scheme-arg-transcoder and scheme-ret-transcoder dispatch purely on type.
+(define (apply-encoding-overrides entry)
+  (let* ((name (car entry))
+         (ret (cadr entry))
+         (args (caddr entry))
+         (p (assoc name *chez-encoding-overrides*)))
+    (if (not p)
+        entry
+        (let ((sig (cadr p)))
+          (unless (= (length (cdr sig)) (length args))
+            (error 'build-glue-chez
+                   (string-append "encoding override arity mismatch for " name)))
+          (list name
+                (override-enc->type ret (car sig))
+                (map override-enc->type args (cdr sig)))))))
+
 (define (scheme-arg-transcoder name type)
   (cond
-    ((raw-ffi? name) #f)
-    ((or (memq type '(content scheme_tree))
-         (member name '("cork->utf8" "cork->sourcecode" "escape-to-ascii"
-                         "parse-texmacs" "parse-texmacs-snippet")))
-     "recur-string->cork")
+    ((or (raw-ffi? name) (eq? type 'raw_bytes)) #f)
+    ((memq type '(cork_string content scheme_tree)) "recur-string->cork")
     (else "recur-string->utf8")))
 
 (define (scheme-ret-transcoder name ret-type)
   (cond
-    ((raw-ffi? name) #f)
-    ((or (eq? ret-type 'scheme_tree)
-         (member name '("utf8->cork" "sourcecode->cork"
-                        "serialize-texmacs" "serialize-texmacs-snippet"
-                        "extract-preamble" "extract-body")))
-     "recur-cork->string")
+    ((or (raw-ffi? name) (eq? ret-type 'raw_bytes)) #f)
+    ((memq ret-type '(cork_string scheme_tree)) "recur-cork->string")
     (else "recur-utf8->string")))
 
 ;;; ---------------------------------------------------------------------------
@@ -559,7 +605,11 @@ tmg_error_std (const std::string& e) {
     (scheme-ffi-types (e-arity entry)) ") scheme-object))\n"))
 
 (define (scheme-arg-actual name i type)
-  (string-append "(" (scheme-arg-transcoder name type) " a" (number->string i) ")"))
+  (let ((trans (scheme-arg-transcoder name type))
+        (var (string-append "a" (number->string i))))
+    (if trans
+        (string-append "(" trans " " var ")")
+        var)))
 
 (define (scheme-arg-actuals name types)
   (let loop ((i 1) (types types))
@@ -604,11 +654,15 @@ tmg_error_std (const std::string& e) {
          (actuals (scheme-arg-actuals name args)))
     (if (string=? name "string-convert")
         (scm-string-convert-binding alias sym)
-        (string-append
-          "(define " alias "\n"
-          "  (foreign-procedure \"" sym "\" (" (scheme-ffi-types n) ") scheme-object))\n\n"
-          "(define (" name (if (= n 0) "" " ") (scheme-formals n) ")\n"
-          "  (" out-trans " (" alias (if (= n 0) "" " ") actuals ")))\n\n"))))
+        ;; Emit two top-level definitions per transcoded glue routine:
+        ;;   1. `c-glue-*': the raw (foreign-procedure ...) registration (no encoding support).
+        ;;   2. `<name>':   the public calling handle that transcodes string args/return values.
+        (let ((call-expr (string-append "(" alias (if (= n 0) "" " ") actuals ")")))
+          (string-append
+            "(define " alias "\n"
+            "  (foreign-procedure \"" sym "\" (" (scheme-ffi-types n) ") scheme-object))\n\n"
+            "(define (" name (if (= n 0) "" " ") (scheme-formals n) ")\n"
+            "  " (if out-trans (string-append "(" out-trans " " call-expr ")") call-expr) ")\n\n")))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Main
@@ -637,8 +691,9 @@ tmg_error_std (const std::string& e) {
          ;; (scheme-name c-function foreign-symbol return-type arg-types).
          ;; spec-entries still yields the raw (name return-type arg-types)
          ;; shape at this point.
-         (entries (map (lambda (e)
-                         (let ((m (mangle (car e))))
+         (entries (map (lambda (raw-e)
+                         (let* ((e (apply-encoding-overrides raw-e))
+                                (m (mangle (car e))))
                            (list (car e) m m (cadr e) (caddr e))))
                        kept))
          ;; The core predicates keep their historical C function names but are
