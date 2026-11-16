@@ -1032,12 +1032,15 @@
 (define (tm-call-by-name name args)
   (let* ((in-trans
           (cond
-            ((member name '("cork->utf8" "cork->sourcecode" "escape-to-ascii"))
+            ((member name '("cork->utf8" "cork->sourcecode" "escape-to-ascii"
+                            "stree->tree" "stree->url" "stree->content" "stree->string"))
              recur-string->cork)
             (else recur-string->utf8)))
          (out-trans
           (cond
-            ((member name '("utf8->cork" "sourcecode->cork"))
+            ((member name '("utf8->cork" "sourcecode->cork"
+                            "tree->stree" "url->stree" "content->stree" "string->stree"
+                            "extract-preamble" "extract-body"))
              recur-cork->string)
             (else recur-utf8->string))))
     (out-trans (raw-tm-call-by-name name (in-trans args)))))
@@ -1091,12 +1094,15 @@
             (if id
                 (let* ((in-trans
                         (cond
-                          ((member name '("cork->utf8" "cork->sourcecode" "escape-to-ascii"))
+                          ((member name '("cork->utf8" "cork->sourcecode" "escape-to-ascii"
+                                          "stree->tree" "stree->url" "stree->content" "stree->string"))
                            recur-string->cork)
                           (else recur-string->utf8)))
                        (out-trans
                         (cond
-                          ((member name '("utf8->cork" "sourcecode->cork"))
+                          ((member name '("utf8->cork" "sourcecode->cork"
+                                          "tree->stree" "url->stree" "content->stree" "string->stree"
+                                          "extract-preamble" "extract-body"))
                            recur-cork->string)
                           (else recur-utf8->string))))
                   (case arity

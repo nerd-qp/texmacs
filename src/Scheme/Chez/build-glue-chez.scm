@@ -290,22 +290,24 @@
   (join " " n (lambda (i) (string-append "a" (number->string i)))))
 (define (scheme-ffi-types n) (join " " n (lambda (i) "scheme-object")))
 
-(define (scheme-in-transcoder name)
+(define (scheme-arg-transcoder name type)
   (cond
     ((raw-ffi? name) #f)
-    ((member name '("cork->utf8" "cork->sourcecode" "escape-to-ascii"))
+    ((or (memq type '(content scheme_tree))
+         (member name '("cork->utf8" "cork->sourcecode" "escape-to-ascii"
+                         "parse-texmacs" "parse-texmacs-snippet")))
      "recur-string->cork")
     (else "recur-string->utf8")))
 
-(define (scheme-out-transcoder name)
+(define (scheme-ret-transcoder name ret-type)
   (cond
     ((raw-ffi? name) #f)
-    ((member name '("utf8->cork" "sourcecode->cork"))
+    ((or (eq? ret-type 'scheme_tree)
+         (member name '("utf8->cork" "sourcecode->cork"
+                        "serialize-texmacs" "serialize-texmacs-snippet"
+                        "extract-preamble" "extract-body")))
      "recur-cork->string")
     (else "recur-utf8->string")))
-
-(define (scheme-transcoded-actuals in-trans n)
-  (join " " n (lambda (i) (string-append "(" in-trans " a" (number->string i) ")"))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; C++ artefact
@@ -556,23 +558,57 @@ tmg_error_std (const std::string& e) {
     "  (foreign-procedure \"" (e-sym entry) "\" ("
     (scheme-ffi-types (e-arity entry)) ") scheme-object))\n"))
 
+(define (scheme-arg-actual name i type)
+  (string-append "(" (scheme-arg-transcoder name type) " a" (number->string i) ")"))
+
+(define (scheme-arg-actuals name types)
+  (let loop ((i 1) (types types))
+    (if (null? types)
+        ""
+        (string-append (if (= i 1) "" " ")
+                       (scheme-arg-actual name i (car types))
+                       (loop (+ i 1) (cdr types))))))
+
+;; `string-convert' is TeXmacs's universal character-set converter (e.g. "Cork" -> "UTF-8",
+;; "UTF-8" -> "LaTeX", etc.). C++ never calls Scheme's string-convert (C++ invokes its native
+;; `convert(s, from, to)' in src/Data/String/converter.cpp directly).
+;;
+;; Unlike ordinary glue routines whose encoding is statically determined by glue type signatures,
+;; the encoding of `s` and the return value here depends dynamically on the `from' and `to' arguments:
+;;   - If `from' is "Cork", `s' holds raw 8-bit Cork bytes (must pass via recur-string->cork;
+;;     UTF-8 transcoding would corrupt bytes >= 128 into 2-byte sequences).
+;;   - If `to' is "Cork", C++ outputs raw Cork bytes (must decode via recur-cork->string into
+;;     Scheme characters 0..255).
+;;   - Otherwise, standard UTF-8 / ASCII transcoding applies.
+(define (scm-string-convert-binding alias sym)
+  (string-append
+    ";; Universal character-set converter: dynamically transcode Cork vs UTF-8 based on from/to\n"
+    "(define " alias "\n"
+    "  (foreign-procedure \"" sym "\" (scheme-object scheme-object scheme-object) scheme-object))\n\n"
+    "(define (string-convert s from to)\n"
+    "  (let* ((in-b (if (equal? from \"Cork\") (recur-string->cork s) (recur-string->utf8 s)))\n"
+    "         (f-b  (recur-string->utf8 from))\n"
+    "         (t-b  (recur-string->utf8 to))\n"
+    "         (res  (" alias " in-b f-b t-b)))\n"
+    "    (if (equal? to \"Cork\")\n"
+    "        (recur-cork->string res)\n"
+    "        (recur-utf8->string res))))\n\n"))
+
 (define (scm-transcoded-binding entry)
   (let* ((name (e-name entry))
          (sym (e-sym entry))
-         ;; Drop the tmg_ prefix from the foreign symbol: c-glue-<mangled> cannot
-         ;; collide with any kernel binding, while c-<mangled> could.
          (alias (string-append "c-glue-" (substring sym 4 (string-length sym))))
-         (n (e-arity entry))
-         (in-trans (scheme-in-transcoder name))
-         (out-trans (scheme-out-transcoder name))
-         (args (scheme-transcoded-actuals in-trans n)))
-    (string-append
-      "(define " alias "\n"
-      "  (foreign-procedure \"" (e-sym entry) "\" (" (scheme-ffi-types n) ") scheme-object))\n"
-      "\n"
-      "(define (" name (if (= n 0) "" " ") (scheme-formals n) ")\n"
-      "  (" out-trans " (" alias (if (= n 0) "" " ") args ")))\n"
-      "\n")))
+         (args (e-args entry))
+         (n (length args))
+         (out-trans (scheme-ret-transcoder name (e-ret entry)))
+         (actuals (scheme-arg-actuals name args)))
+    (if (string=? name "string-convert")
+        (scm-string-convert-binding alias sym)
+        (string-append
+          "(define " alias "\n"
+          "  (foreign-procedure \"" sym "\" (" (scheme-ffi-types n) ") scheme-object))\n\n"
+          "(define (" name (if (= n 0) "" " ") (scheme-formals n) ")\n"
+          "  (" out-trans " (" alias (if (= n 0) "" " ") actuals ")))\n\n"))))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Main
@@ -613,8 +649,8 @@ tmg_error_std (const std::string& e) {
                         (list name cfn (mangle name) 'bool (list 'object))))
                     *core-predicates*))
          (all-entries (append entries core))
-         (raw (filter (lambda (e) (not (scheme-in-transcoder (e-name e)))) all-entries))
-         (wrapped (filter (lambda (e) (scheme-in-transcoder (e-name e))) all-entries))
+         (raw (filter (lambda (e) (raw-ffi? (e-name e))) all-entries))
+         (wrapped (filter (lambda (e) (not (raw-ffi? (e-name e)))) all-entries))
          (total (length all-entries)))
 
     ;; Consistency checks:

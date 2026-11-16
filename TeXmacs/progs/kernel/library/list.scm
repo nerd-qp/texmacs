@@ -42,10 +42,7 @@
   ;; WARNING: not portable for long lists
   (apply append ls))
 
-(define-public (list-intersperse l x)
-  "Insert @x between each element of @l."
-  (if (null? l) '()
-      (cdr (list-fold-right (lambda (kar kdr) (cons* x kar kdr)) '() l))))
+;; Note: list-intersperse is provided in kernel/boot/chez-compat.scm for early base.scm use.
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 ;; Selectors
@@ -168,30 +165,8 @@
 ;; Fold, unfold & map
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(define-public (list-fold kons knil list1 . rest)
-  "Fundamental list iterator."
-  (if (null? rest)
-      (let f ((knil knil) (list1 list1))
-	(if (null? list1)
-	    knil
-	    (f (kons (car list1) knil) (cdr list1))))
-      (let f ((knil knil) (lists (cons list1 rest)))
-	(if (list-any null? lists)
-	    knil
-	    (let ((cars (map-in-order car lists))
-		  (cdrs (map-in-order cdr lists)))
-	      (f (apply kons (append! cars (list knil))) cdrs))))))
+;; Note: list-fold and list-fold-right are provided in kernel/boot/chez-compat.scm.
 
-(define-public (list-fold-right kons knil clist1 . rest)
-  "Fundamental list recursion operator."
-  (if (null? rest)
-      (let f ((list1 clist1))
-	(if (null? list1) knil
-	    (kons (car list1) (f (cdr list1)))))
-      (let f ((lists (cons clist1 rest)))
-	(if (list-any null? lists) knil
-	    (apply kons (append! (map-in-order car lists)
-				 (list (f (map-in-order cdr lists)))))))))
 
 (provide-public (pair-fold kons knil clist1 . rest)
   "Analogous to @fold but applies @kons to pairs of @clist1..."
@@ -256,12 +231,8 @@
   "Break @l at the first element not satisfying @pred?."
   (list-break l (non pred?)))
 
-(define-public (list-drop-while l pred?)
-  "Drop the first elements of @l while @pred? is satisfied."
-  (let next ((l l))
-    (cond ((null? l) '())
-	  ((pred? (car l)) (next (cdr l)))
-	  (else l))))
+;; Note: list-drop-while is provided in kernel/boot/chez-compat.scm.
+
 
 (define-public (list-scatter l pred? keep?)
   "Break @l in list of sublists at points satisfying @pred?."

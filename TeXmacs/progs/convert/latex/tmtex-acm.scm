@@ -305,7 +305,6 @@
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (logic-group latex-texmacs-3%
-  (:mode acm-style?)
   category)
 
 (smart-table latex-texmacs-macro

@@ -39,6 +39,55 @@
 
 (define-public (acons k v l) (cons (cons k v) l))
 
+;;; List traversal & recursion helpers
+;;
+;; Moved from kernel/library/list.scm to break the circular dependency with
+;; kernel/library/base.scm (which requires list-drop-while, list-intersperse,
+;; list-fold, and list-fold-right for string trimming and iteration). Because
+;; list.scm depends on ahash-table.scm and srfi.scm, it must remain loaded
+;; after them; providing these primitive list recursors early in chez-compat.scm
+;; allows base.scm to resolve them without altering pristine module tier order.
+
+(define-public (list-intersperse l x)
+  "Insert @x between each element of @l."
+  (if (or (null? l) (null? (cdr l))) l
+      (cons (car l) (cons x (list-intersperse (cdr l) x)))))
+
+(define-public (list-drop-while l pred?)
+  "Drop the first elements of @l while @pred? is satisfied."
+  (let next ((l l))
+    (cond ((null? l) '())
+          ((pred? (car l)) (next (cdr l)))
+          (else l))))
+
+(define-public (list-fold kons knil list1 . rest)
+  "Fundamental list iterator."
+  (if (null? rest)
+      (let f ((knil knil) (list1 list1))
+        (if (null? list1) knil
+            (f (kons (car list1) knil) (cdr list1))))
+      (let f ((knil knil) (lists (cons list1 rest)))
+        (if (let any-null? ((ls lists))
+              (and (pair? ls) (or (null? (car ls)) (any-null? (cdr ls)))))
+            knil
+            (let ((cars (map car lists))
+                  (cdrs (map cdr lists)))
+              (f (apply kons (append! cars (list knil))) cdrs))))))
+
+(define-public (list-fold-right kons knil clist1 . rest)
+  "Fundamental list recursion operator."
+  (if (null? rest)
+      (let f ((list1 clist1))
+        (if (null? list1) knil
+            (kons (car list1) (f (cdr list1)))))
+      (let f ((lists (cons clist1 rest)))
+        (if (let any-null? ((ls lists))
+              (and (pair? ls) (or (null? (car ls)) (any-null? (cdr ls)))))
+            knil
+            (apply kons (append! (map car lists)
+                                 (list (f (map cdr lists)))))))))
+
+
 ;;; Association lists
 ;;
 ;; `assq-ref' / `assq-set!' / `assq-remove!' had no callers; every alist in the
