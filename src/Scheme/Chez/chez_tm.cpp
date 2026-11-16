@@ -798,8 +798,6 @@ build_chez_heap () {
     bool skip_boot = (no_boot != NULL && (strcmp (no_boot, "1") == 0 || strcmp (no_boot, "true") == 0));
     if (!skip_boot) {
       const char* env_boot = getenv ("TEXMACS_BOOT_FILE");
-      if (env_boot == NULL || env_boot[0] == '\0')
-        env_boot = getenv ("TEXMACS_SO_FILE");
       if (env_boot != NULL && env_boot[0] != '\0' && exists (url (env_boot))) {
         texmacs_boot = env_boot;
       } else {
@@ -811,9 +809,7 @@ build_chez_heap () {
         }
         if (N (cand_dir) > 0) {
           string cand_boot = cand_dir * "/texmacs.boot";
-          string cand_so   = cand_dir * "/texmacs.so";
           if (exists (url (cand_boot))) texmacs_boot = cand_boot;
-          else if (exists (url (cand_so))) texmacs_boot = cand_so;
         }
       }
 
@@ -831,10 +827,8 @@ build_chez_heap () {
 #endif
         s_texmacs_boot_file = texmacs_boot;
         s_has_texmacs_boot = true;
-        fprintf (stderr, "Chez Scheme: booting from AOT image %s\n", (char*) c_string (texmacs_boot));
-        if (ends (texmacs_boot, ".boot")) {
-          Sregister_boot_file (c_string (texmacs_boot));
-        }
+        fprintf (stderr, "Chez Scheme: booting from boot file %s\n", (char*) c_string (texmacs_boot));
+        Sregister_boot_file (c_string (texmacs_boot));
       }
     }
   }
@@ -913,7 +907,7 @@ initialize_scheme () {
      uninitialized server crashes. */
   build_chez_heap ();
 
-  if (!s_has_texmacs_boot || !ends (s_texmacs_boot_file, ".boot")) {
+  if (!s_has_texmacs_boot) {
     string boot= boot_scheme_path ();
     if (!exists (url (boot)))
       boot_failed ("Chez Scheme: bootstrap file not found: " * boot);
@@ -926,10 +920,7 @@ initialize_scheme () {
   chez_cache_runtime_procedures ();
 
   if (s_has_texmacs_boot) {
-    if (ends (s_texmacs_boot_file, ".boot"))
-      eval_scheme ("(define *texmacs-boot-mode* 'boot)");
-    else
-      eval_scheme ("(define *texmacs-boot-mode* 'so)");
+    eval_scheme ("(define *texmacs-boot-mode* 'boot)");
   }
 
   if (chez_legacy_glue ()) {

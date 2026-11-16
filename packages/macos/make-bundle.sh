@@ -2,9 +2,10 @@
 #
 # Build a self-contained macOS distribution of the Chez-backed TeXmacs.
 #
-#   ./packages/macos/make-bundle.sh              # .app only, in dist/
+#   ./packages/macos/make-bundle.sh              # .app only, in dist/ (fast-boot slim bundle)
 #   ./packages/macos/make-bundle.sh --dmg        # .app + .dmg
 #   ./packages/macos/make-bundle.sh --dmg --bundle-qt
+#   ./packages/macos/make-bundle.sh --full-progs # include all .scm sources, .so modules (TEXMACS_NO_BOOT=1), and compiler/linter scripts
 #   ./packages/macos/make-bundle.sh --bundle-qt --sign "Developer ID Application: ..."
 #
 # Layout produced (matches the lookup paths already compiled into the binary):
@@ -73,6 +74,10 @@ SO_COUNT=$(find "$SRC_BOOT" -name '*.so' | wc -l | tr -d ' ')
   echo "error: no compiled modules in $SRC_BOOT" >&2
   exit 1
 }
+if [ "$FULL_PROGS" = 0 ] && [ ! -f "$SRC_BOOT/texmacs.boot" ]; then
+  echo "error: $SRC_BOOT/texmacs.boot missing. Run 'chez --script src/Scheme/Chez/make-boot.scm' first, or pass --full-progs." >&2
+  exit 1
+fi
 
 if [ -z "$VERSION" ]; then
   VERSION=$(/usr/libexec/PlistBuddy -c 'Print :CFBundleShortVersionString' \
@@ -183,34 +188,25 @@ if [ "$BUNDLE_QT" = 1 ]; then
 fi
 
 # ------------------------------------------------------------ scheme sources
-# Almost everything is already compiled into boot/*.so. Only these paths are
-# read as SOURCE at runtime, so only these are shipped:
+# By default (--full-progs unset), Fast Boot bundles only what is read or
+# checked on disk at runtime under texmacs.boot:
 #
-#   progs/init-texmacs-chez.scm   interpreter bootstrap (tm_server.cpp:145)
-#   progs/kernel/boot/boot-chez.scm  primitive-loaded by the init file itself
-#                                 (init-texmacs-chez.scm:39-42)
-#   progs/tm-mode.el              read by utils/misc/tm-keywords.scm:16
-#   progs/forms, progs/client,    server/account templates and preference
-#   progs/server                  forms, loaded on demand
+#   progs/init-texmacs-boot-file.scm  boot-file bootstrap (tm_server.cpp:149)
+#   progs/init-buffer.scm             per-buffer init (new_view.cpp:264)
+#   progs/tm-mode.el                  read by utils/misc/tm-keywords.scm
+#   progs/forms, progs/client,        server/account templates and preference
+#   progs/server                      forms, loaded on demand
 #
-# Pass --full-progs to ship all of progs/ (5.8 MB) instead.
+# Pass --full-progs to ship all of progs/ (plus all .so modules and compiler/linter scripts).
 say "copying Scheme sources"
 if [ "$FULL_PROGS" = 1 ]; then
   rsync -a --exclude '.git*' --exclude '*.o' --exclude '*.so' \
         "$ROOT/TeXmacs/progs" "$SHARE/"
 else
-  mkdir -p "$SHARE/progs/kernel/boot"
-  rsync -a "$ROOT/TeXmacs/progs/init-texmacs-chez.scm" \
-           "$ROOT/TeXmacs/progs/init-texmacs-aot.scm" \
-           "$ROOT/TeXmacs/progs/init-texmacs.scm" \
+  mkdir -p "$SHARE/progs"
+  rsync -a "$ROOT/TeXmacs/progs/init-texmacs-boot-file.scm" \
+           "$ROOT/TeXmacs/progs/init-buffer.scm" \
            "$ROOT/TeXmacs/progs/tm-mode.el" "$SHARE/progs/"
-  [ -f "$ROOT/TeXmacs/progs/init-chez-compile.scm" ] && \
-    cp "$ROOT/TeXmacs/progs/init-chez-compile.scm" "$SHARE/progs/"
-  rsync -a "$ROOT/TeXmacs/progs/kernel/boot/boot-chez.scm" \
-           "$ROOT/TeXmacs/progs/kernel/boot/chez-compat.scm" \
-           "$ROOT/TeXmacs/progs/kernel/boot/raw-ffi-table.scm" \
-           "$ROOT/TeXmacs/progs/kernel/boot/glue-chez.scm" \
-           "$SHARE/progs/kernel/boot/"
   for sub in forms client/forms server; do
     [ -d "$ROOT/TeXmacs/progs/$sub" ] || continue
     mkdir -p "$SHARE/progs/$sub"
@@ -242,44 +238,45 @@ fi
 # ------------------------------------------------------------ compiled modules
 say "copying compiled modules"
 mkdir -p "$SHARE/boot"
-rsync -a --include '*/' --include '*.so' --include '*.boot' --include 'module-deps.scm' --include 'boot-order*.scm' --exclude '*' \
-      "$SRC_BOOT/" "$SHARE/boot/"
-
-# Ensure boot-chez.so is bundled
-if [ -f "$SRC_BOOT/kernel/boot/boot-chez.so" ]; then
-  mkdir -p "$SHARE/boot/kernel/boot"
-  cp -p "$SRC_BOOT/kernel/boot/boot-chez.so" "$SHARE/boot/kernel/boot/boot-chez.so"
+if [ "$FULL_PROGS" = 1 ]; then
+  rsync -a --prune-empty-dirs \
+        --exclude 'texmacs-user.so' \
+        --include '*/' --include '*.so' --include 'texmacs.boot' --include 'module-deps.scm' --exclude '*' \
+        "$SRC_BOOT/" "$SHARE/boot/"
+else
+  # Exclude the 178 resident .so modules already baked into texmacs.boot,
+  # plus build/test-only .so artifacts.
+  sed -n '/^(define \*startup-boot-modules\*/,/^$/s/.*"\([^"]*\.so\)".*/\/\1/p' \
+    "$ROOT/src/Scheme/Chez/make-boot.scm" \
+  | rsync -a --prune-empty-dirs \
+          --exclude-from=- \
+          --exclude 'texmacs-user.so' \
+          --exclude '*-test.so' \
+          --exclude '/check/' \
+          --exclude '/utils/test/' \
+          --include '*/' --include '*.so' --include 'texmacs.boot' --include 'module-deps.scm' --exclude '*' \
+          "$SRC_BOOT/" "$SHARE/boot/"
 fi
 
 # ------------------------------------------------- Chez build & lint scripts
-# `-compile-modules` looks for its driver at
-#     $TEXMACS_PATH/../src/Scheme/Chez/compile-texmacs.scm   (texmacs.cpp:591)
-# and TEXMACS_PATH is set to <app>/Contents/Resources/share/TeXmacs
-# (texmacs.cpp:191), so the scripts must live in Resources/share/src/Scheme/Chez.
-# Without them the packaged app runs but cannot rebuild its own modules.
-say "copying Chez build/analysis scripts"
-CHEZ_SRC="$ROOT/src/Scheme/Chez"
-CHEZ_DST="$RES/share/src/Scheme/Chez"
-if [ -d "$CHEZ_SRC" ]; then
-  mkdir -p "$CHEZ_DST"
-  for f in compile-texmacs.scm compiler-db.scm compiler-scan.scm \
-           compile-graph.scm compiler-progress.scm \
-           static-analysis.scm lint-modules.scm; do
-    [ -f "$CHEZ_SRC/$f" ] && cp "$CHEZ_SRC/$f" "$CHEZ_DST/"
-  done
-  # The test suites need no TeXmacs runtime, so they double as a smoke test of
-  # a packaged tree:  chez --script .../static-analysis-test.scm
-  for f in static-analysis-test.scm compile-graph-test.scm; do
-    [ -f "$CHEZ_SRC/$f" ] && cp "$CHEZ_SRC/$f" "$CHEZ_DST/"
-  done
-  echo "    $(ls -1 "$CHEZ_DST" | wc -l | tr -d ' ') scripts in $CHEZ_DST"
-  # The linter scans progs/*.scm, so it can only see what is shipped.
-  if [ "$FULL_PROGS" = 0 ]; then
-    echo "    note: linting inside the bundle needs --full-progs (only a subset"
-    echo "          of progs/ is shipped otherwise)"
+# Only ship compiler/linter scripts when --full-progs is enabled (since default
+# bundles omit progs/*.scm sources).
+if [ "$FULL_PROGS" = 1 ]; then
+  say "copying Chez build/analysis scripts"
+  CHEZ_SRC="$ROOT/src/Scheme/Chez"
+  CHEZ_DST="$RES/share/src/Scheme/Chez"
+  if [ -d "$CHEZ_SRC" ]; then
+    mkdir -p "$CHEZ_DST"
+    for f in compile-texmacs.scm compiler-db.scm compiler-scan.scm \
+             compile-graph.scm compiler-progress.scm \
+             static-analysis.scm lint-modules.scm \
+             static-analysis-test.scm compile-graph-test.scm; do
+      [ -f "$CHEZ_SRC/$f" ] && cp "$CHEZ_SRC/$f" "$CHEZ_DST/"
+    done
+    echo "    $(ls -1 "$CHEZ_DST" | wc -l | tr -d ' ') scripts in $CHEZ_DST"
+  else
+    echo "warning: $CHEZ_SRC missing; the packaged app cannot rebuild modules" >&2
   fi
-else
-  echo "warning: $CHEZ_SRC missing; the packaged app cannot rebuild modules" >&2
 fi
 
 # Plugins ship as sources; the binary compiles nothing at runtime, but the

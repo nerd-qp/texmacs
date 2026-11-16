@@ -79,7 +79,6 @@
 ;; Routines the C++ side does not provide for Chez Scheme, because their
 ;; definitions and/or registrations in src/Scheme/Glue/glue_basic.cpp sit
 ;; inside
-;;     #if !defined(TEXMACS_ENGINE_CHEZ) && !defined(CHEZ_SCHEME)
 ;;     #ifndef TEXMACS_ENGINE_CHEZ
 ;; blocks.  Emitting a binding for any of them would either fail to link or
 ;; shadow the definition the kernel already has:
