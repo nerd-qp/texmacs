@@ -142,8 +142,10 @@ needing_update (false)
 #if defined(QT_MAC_USE_COCOA) \
   || (defined(OS_MACOS) && QT_VERSION >= 0x060000)
     //HACK: this filter is needed to overcome a bug in Qt/Cocoa
-  extern void mac_install_filter(); // defined in src/Plugins/MacOS/mac_app.mm
-  mac_install_filter();
+  if (!headless_mode && get_env ("QT_QPA_PLATFORM") != "offscreen") {
+    extern void mac_install_filter(); // defined in src/Plugins/MacOS/mac_app.mm
+    mac_install_filter();
+  }
 #endif
   
   set_output_language (get_locale_language ());
@@ -622,7 +624,8 @@ gui_open (int& argc, char** argv) {
   the_gui = tm_new<qt_gui_rep> (argc, argv);
   
 #ifdef MACOSX_EXTENSIONS
-  mac_begin_remote();
+  if (!headless_mode && get_env ("QT_QPA_PLATFORM") != "offscreen")
+    mac_begin_remote();
 #endif
 
   // Qt and Guile want to change the locale.
@@ -646,7 +649,8 @@ gui_close () {
   the_gui = NULL;
   
 #ifdef MACOSX_EXTENSIONS
-  mac_end_remote();
+  if (!headless_mode && get_env ("QT_QPA_PLATFORM") != "offscreen")
+    mac_end_remote();
 #endif
 }
 

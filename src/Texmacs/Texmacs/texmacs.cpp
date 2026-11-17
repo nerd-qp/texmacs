@@ -887,7 +887,8 @@ texmacs_entrypoint (int argc, char** argv) {
 #endif
 #ifdef MACOSX_EXTENSIONS
   // Reset TeXmacs if Alt is pressed during startup
-  if (mac_alternate_startup()) {
+  if (!headless_mode && get_env ("QT_QPA_PLATFORM") != "offscreen" &&
+      mac_alternate_startup()) {
     cout << "TeXmacs] Performing setup (Alt on startup)" << LF; 
     remove (url ("$TEXMACS_HOME_PATH/system/settings.scm"));
     remove (url ("$TEXMACS_HOME_PATH/system/setup.scm"));

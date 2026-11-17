@@ -107,14 +107,31 @@
 (define (progs-path rel-path)
   (string-append (progs-dir) "/" rel-path))
 
-(define (ensure-dir path)
+(define (dir-separator? c)
+  (or (char=? c #\/) (char=? c #\\)))
+
+(define (parent-dir path)
   (let loop ((i (- (string-length path) 1)))
-    (cond ((< i 0) (void))
-          ((char=? (string-ref path i) #\/)
-           (let ((dir (substring path 0 i)))
-             (unless (file-exists? dir)
-               (system (string-append "mkdir -p \"" dir "\"")))))
+    (cond ((<= i 0) "")
+          ((dir-separator? (string-ref path i)) (substring path 0 i))
           (else (loop (- i 1))))))
+
+(define (mkdir-p dir)
+  (unless (or (string=? dir "")
+              (string=? dir ".")
+              (string=? dir "..")
+              (and (= (string-length dir) 2) (char=? (string-ref dir 1) #\:))
+              (file-exists? dir))
+    (let ((parent (parent-dir dir)))
+      (unless (string=? parent "")
+        (mkdir-p parent)))
+    (guard (e (else (unless (file-exists? dir) (raise e))))
+      (mkdir dir))))
+
+(define (ensure-dir path)
+  (let ((dir (parent-dir path)))
+    (unless (string=? dir "")
+      (mkdir-p dir))))
 
 ;; ---- Module names and paths ----------------------------------------------
 
