@@ -23,6 +23,7 @@
 #include "qt_renderer.hpp"
 #include "QTMApplication.hpp"
 #include "QTMKeyboardEvent.hpp"
+#include "QTMInteractivePrompt.hpp"
 
 #include "config.h"
 
@@ -844,6 +845,12 @@ void QTMWidget::setFocusToLast() {
 
 void
 QTMWidget::focusInEvent (QFocusEvent * event) {
+  QTMInteractivePrompt* active_prompt =
+    window() ? window()->findChild<QTMInteractivePrompt*>() : nullptr;
+  if (active_prompt && active_prompt->isActive() && !event->spontaneous()) {
+    QTMScrollView::focusInEvent (event);
+    return;
+  }
 #if QT_VERSION >= 0x050000
   if (!is_nil (tmwid)) {
     last_focused_widget = this;

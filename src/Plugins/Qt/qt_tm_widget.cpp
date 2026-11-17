@@ -603,7 +603,7 @@ qt_tm_widget_rep::send (slot s, blackbox val) {
     {
       check_type<bool> (val, s);
       bool focus = open_box<bool> (val);
-      if (focus && canvas() && !canvas()->hasFocus())
+      if (focus && !(prompt && prompt->isActive()) && canvas() && !canvas()->hasFocus())
         canvas()->setFocus (Qt::OtherFocusReason);
     }
       break;
