@@ -71,7 +71,11 @@ load_user_preferences () {
   tree p (TUPLE);
   if (!load_string (prefs_file, s, false))
     p= block_to_scheme_tree (s);
-  while (is_func (p, TUPLE, 1)) p= p[0];
+  while (is_func (p, TUPLE, 1) &&
+         !(is_func (p[0], TUPLE, 2) &&
+           is_atomic (p[0][0]) && is_atomic (p[0][1]) &&
+           is_quoted (p[0][0]->label) && is_quoted (p[0][1]->label)))
+    p= p[0];
   for (int i=0; i<N(p); i++)
     if (is_func (p[i], TUPLE, 2) &&
         is_atomic (p[i][0]) && is_atomic (p[i][1]) &&

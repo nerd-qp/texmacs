@@ -1015,4 +1015,63 @@ configure_file (${TEXMACS_SOURCE_DIR}/misc/vscode/c_cpp_properties.json.in
   @ONLY
 )
 
+if (TEXMACS_ENGINE_CHEZ)
+  option (BUILD_CHEZ_MODULES "Compile Chez Scheme modules and boot image" ON)
+  if (BUILD_CHEZ_MODULES)
+    find_program (CHEZ_SCHEME_EXECUTABLE
+      NAMES scheme chez scheme-script
+      PATHS
+        "${CHEZ_DIR}"
+        "${CHEZ_ROOT}/bin/${CHEZ_MACHINE}"
+      NO_DEFAULT_PATH
+    )
+    if (NOT CHEZ_SCHEME_EXECUTABLE)
+      find_program (CHEZ_SCHEME_EXECUTABLE
+        NAMES scheme chez scheme-script
+      )
+    endif ()
+
+    file (GLOB_RECURSE TEXMACS_PROGS_SCM CONFIGURE_DEPENDS
+      "${CMAKE_SOURCE_DIR}/TeXmacs/progs/*.scm"
+    )
+    file (GLOB TEXMACS_CHEZ_SRCS CONFIGURE_DEPENDS
+      "${CMAKE_SOURCE_DIR}/src/Scheme/Chez/*.scm"
+    )
+
+    set (TEXMACS_CHEZ_MODULES_STAMP "${CMAKE_BINARY_DIR}/boot/init-texmacs-boot-file.so")
+    add_custom_command (
+      OUTPUT "${TEXMACS_CHEZ_MODULES_STAMP}"
+      COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/.compile-home"
+      COMMAND ${CMAKE_COMMAND} -E env
+        TEXMACS_PATH=${CMAKE_SOURCE_DIR}/TeXmacs
+        TEXMACS_BOOT_PATH=${CMAKE_BINARY_DIR}/boot
+        TEXMACS_HOME_PATH=${CMAKE_BINARY_DIR}/.compile-home
+        $<TARGET_FILE:TeXmacs> --compile-modules
+      DEPENDS TeXmacs ${TEXMACS_PROGS_SCM} ${TEXMACS_CHEZ_SRCS}
+      WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
+      COMMENT "Compiling TeXmacs Chez Scheme modules"
+      VERBATIM
+    )
+
+    if (CHEZ_SCHEME_EXECUTABLE)
+      set (TEXMACS_CHEZ_BOOT_FILE "${CMAKE_BINARY_DIR}/boot/texmacs.boot")
+      add_custom_command (
+        OUTPUT "${TEXMACS_CHEZ_BOOT_FILE}"
+        COMMAND ${CHEZ_SCHEME_EXECUTABLE} --script
+          ${CMAKE_SOURCE_DIR}/src/Scheme/Chez/make-boot.scm
+          ${CMAKE_BINARY_DIR}/boot
+          ${TEXMACS_CHEZ_BOOT_FILE}
+        DEPENDS "${TEXMACS_CHEZ_MODULES_STAMP}"
+          "${CMAKE_SOURCE_DIR}/src/Scheme/Chez/make-boot.scm"
+        COMMENT "Building Chez Scheme AOT boot image (texmacs.boot)"
+        VERBATIM
+      )
+      add_custom_target (texmacs-chez-boot ALL DEPENDS "${TEXMACS_CHEZ_BOOT_FILE}")
+    else ()
+      message (STATUS "Chez Scheme executable not found; skipping texmacs.boot generation (pass -DCHEZ_SCHEME_EXECUTABLE=...)")
+      add_custom_target (texmacs-chez-modules ALL DEPENDS "${TEXMACS_CHEZ_MODULES_STAMP}")
+    endif ()
+  endif ()
+endif ()
+
 message (STATUS "TeXmacs_Libraries" ${TeXmacs_Libraries})
