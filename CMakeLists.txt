@@ -11,9 +11,9 @@
 # in the root directory or <http://www.gnu.org/licenses/gpl-3.0.html>.
 
 
-# The name of our project is "TEXMACS". CMakeLists files in this project can 
-# refer to the root source directory of the project as ${TEXMACS_SOURCE_DIR} and 
-# to the root binary directory of the project as ${TEXMACS_BINARY_DIR}. 
+# The name of our project is "TEXMACS". CMakeLists files in this project can
+# refer to the root source directory of the project as ${TEXMACS_SOURCE_DIR} and
+# to the root binary directory of the project as ${TEXMACS_BINARY_DIR}.
 
 
 ### --------------------------------------------------------------------
@@ -43,7 +43,7 @@ endif (CCACHE_FOUND)
 
 
 ### --------------------------------------------------------------------
-### Project name 
+### Project name
 ### --------------------------------------------------------------------
 
 project (TEXMACS CXX C) # check for C/C++ compiler
@@ -533,8 +533,8 @@ set (TeXmacs_Include_Dirs
   ${TEXMACS_SOURCE_DIR}/src/Typeset/Bridge
   ${TEXMACS_SOURCE_DIR}/src/Typeset/Concat
   ${TEXMACS_SOURCE_DIR}/src/Typeset/Page
-  ${TEXMACS_SOURCE_DIR}/TeXmacs/include 
-  ${TEXMACS_BINARY_DIR}/src/System/ 
+  ${TEXMACS_SOURCE_DIR}/TeXmacs/include
+  ${TEXMACS_BINARY_DIR}/src/System/
   ${CHEZ_INCLUDE_DIR}
 )
 
@@ -698,7 +698,7 @@ if (TEXMACS_GUI MATCHES "Qt.*")
   elseif (TEXMACS_GUI STREQUAL "Qt6")
 	  find_package (Qt6 COMPONENTS Core Gui Widgets PrintSupport Svg Network Core5Compat REQUIRED)
 	  set (QT_LIBRARIES Qt6::Core Qt6::Gui Qt6::Widgets Qt6::PrintSupport Qt6::Svg Qt6::Network Qt6::Core5Compat)
-  
+
     set (TeXmacs_Include_Dirs
       ${TeXmacs_Include_Dirs}
       ${Qt6Core_INCLUDE_DIRS}
@@ -744,7 +744,7 @@ if (TEXMACS_GUI MATCHES "Qt.*")
     else (APPLE)
       find_package (Qt5 COMPONENTS Core Gui Widgets PrintSupport Svg Network REQUIRED)
     endif ()
-    
+
     if (APPLE)
       set (QT_LIBRARIES Qt5::Core Qt5::Gui Qt5::Widgets Qt5::PrintSupport Qt5::Svg Qt5::Network Qt5::MacExtras)
     else (APPLE)
@@ -1023,6 +1023,7 @@ if (TEXMACS_ENGINE_CHEZ)
       PATHS
         "${CHEZ_DIR}"
         "${CHEZ_ROOT}/bin/${CHEZ_MACHINE}"
+        "${CHEZ_ROOT}/../bin/${CHEZ_MACHINE}"
       NO_DEFAULT_PATH
     )
     if (NOT CHEZ_SCHEME_EXECUTABLE)
@@ -1038,6 +1039,14 @@ if (TEXMACS_ENGINE_CHEZ)
       "${CMAKE_SOURCE_DIR}/src/Scheme/Chez/*.scm"
     )
 
+    if (APPLE)
+      set (TEXMACS_CHEZ_EXE_TARGET TeXmacs)
+    elseif (WIN32)
+      set (TEXMACS_CHEZ_EXE_TARGET texmacs)
+    else ()
+      set (TEXMACS_CHEZ_EXE_TARGET texmacs.bin)
+    endif ()
+
     set (TEXMACS_CHEZ_MODULES_STAMP "${CMAKE_BINARY_DIR}/boot/init-texmacs-boot-file.so")
     add_custom_command (
       OUTPUT "${TEXMACS_CHEZ_MODULES_STAMP}"
@@ -1046,8 +1055,8 @@ if (TEXMACS_ENGINE_CHEZ)
         TEXMACS_PATH=${CMAKE_SOURCE_DIR}/TeXmacs
         TEXMACS_BOOT_PATH=${CMAKE_BINARY_DIR}/boot
         TEXMACS_HOME_PATH=${CMAKE_BINARY_DIR}/.compile-home
-        $<TARGET_FILE:TeXmacs> --compile-modules
-      DEPENDS TeXmacs ${TEXMACS_PROGS_SCM} ${TEXMACS_CHEZ_SRCS}
+        $<TARGET_FILE:${TEXMACS_CHEZ_EXE_TARGET}> --compile-modules
+      DEPENDS ${TEXMACS_CHEZ_EXE_TARGET} ${TEXMACS_PROGS_SCM} ${TEXMACS_CHEZ_SRCS}
       WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
       COMMENT "Compiling TeXmacs Chez Scheme modules"
       VERBATIM

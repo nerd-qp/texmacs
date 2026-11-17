@@ -798,18 +798,18 @@ build_chez_heap () {
     bool skip_boot = (no_boot != NULL && (strcmp (no_boot, "1") == 0 || strcmp (no_boot, "true") == 0));
     if (!skip_boot) {
       const char* env_boot = getenv ("TEXMACS_BOOT_FILE");
-      if (env_boot != NULL && env_boot[0] != '\0' && exists (url (env_boot))) {
+      if (env_boot != NULL && env_boot[0] != '\0' && exists (url_system (env_boot))) {
         texmacs_boot = env_boot;
       } else {
         const char* boot_env = getenv ("TEXMACS_BOOT_PATH");
         string cand_dir = (boot_env != NULL && boot_env[0] != '\0') ? string (boot_env) : "";
         if (N (cand_dir) == 0) {
           string tm_p = get_env ("TEXMACS_PATH");
-          if (N (tm_p) > 0 && exists (url (tm_p * "/boot"))) cand_dir = tm_p * "/boot";
+          if (N (tm_p) > 0 && exists (url_system (tm_p * "/boot"))) cand_dir = tm_p * "/boot";
         }
         if (N (cand_dir) > 0) {
           string cand_boot = cand_dir * "/texmacs.boot";
-          if (exists (url (cand_boot))) texmacs_boot = cand_boot;
+          if (exists (url_system (cand_boot))) texmacs_boot = cand_boot;
         }
       }
 
@@ -909,7 +909,7 @@ initialize_scheme () {
 
   if (!s_has_texmacs_boot) {
     string boot= boot_scheme_path ();
-    if (!exists (url (boot)))
+    if (!exists (url_system (boot)))
       boot_failed ("Chez Scheme: bootstrap file not found: " * boot);
     fprintf (stderr, "Chez Scheme: loading %s\n", (char*) c_string (boot));
     fflush (stderr);
@@ -934,4 +934,3 @@ initialize_scheme () {
     fflush (stderr);
   }
 }
-

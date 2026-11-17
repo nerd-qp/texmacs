@@ -155,6 +155,13 @@
 
 (define-public (getpwuid id) (getpwnam id))
 
+;; Guile provides getlogin; Chez does not.  On Windows "USER" is usually
+;; unset and the account name lives in USERNAME.  db-users.scm calls this
+;; unconditionally on every platform except macOS, so without the shim
+;; loading gpg-base.scm aborts with "variable getlogin is not bound".
+(define-public (getlogin)
+  (or (getenv "USER") (getenv "USERNAME") (getenv "LOGNAME") "user"))
+
 (define-public (passwd:name pw)
   (if (vector? pw) (vector-ref pw 0) (or (getenv "USER") "Default User")))
 
@@ -596,4 +603,3 @@
 ;; The `guile-a?' / `guile-b?' / `guile-c?' / `guile-b-c?' predicates are NOT
 ;; here: the transpiler evaluates them as compile-time `if' tests while it walks
 ;; the sources, i.e. before any module is loaded, so they stay in boot-chez.scm.
-

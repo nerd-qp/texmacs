@@ -355,6 +355,11 @@
               (fasl-write snapshot port))
             (lambda ()
               (close-port port))))
+        ;; Chez's rename-file maps to MoveFile on Windows, which fails when
+        ;; the destination already exists; POSIX rename(2) replaces it.
+        ;; Delete the old cache first so both platforms behave the same.
+        (when (file-exists? path)
+          (delete-file path))
         (rename-file tmp path)
         path)))
 )

@@ -194,6 +194,18 @@
               (equal? (cdr a) (cdr b))))
         (else (chez:equal? a b))))
 
+(define (member x l)
+  (let loop ((cur l))
+    (cond ((null? cur) #f)
+          ((equal? x (car cur)) cur)
+          (else (loop (cdr cur))))))
+
+(define (assoc x alist)
+  (let loop ((cur alist))
+    (cond ((null? cur) #f)
+          ((equal? x (caar cur)) (car cur))
+          (else (loop (cdr cur))))))
+
 (define (tm-equal-hash x)
   (cond ((and (box? x)
               (top-level-bound? 'blackbox?)

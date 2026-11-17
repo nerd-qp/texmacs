@@ -111,6 +111,30 @@ This document tracks identified architectural improvements and performance bottl
   - **Zero Compilation State Contamination**: Eliminates `*ephemeral-syms*` and `unbind-ephemerals!`.
   - **Strict Encapsulation**: Private helpers remain 100% private and cannot cross module boundaries.
 
+### [!] Windows: User Manual Crash (`0xC00000FD` Stack Overflow in `list<rectangle>::~list()`)
+- **Status**: Root cause identified via WER crash reports (`AppCrash_texmacs.exe_...`, `2026-11-17`); fix pending.
+- **Location**: [`CMakeLists.txt`](CMakeLists.txt#L260), [`src/Kernel/Containers/list.hpp`](src/Kernel/Containers/list.hpp#L39-L48), `src/Typeset/Line/typesetter.cpp`
+- **Symptom**:
+  Opening the User manual on Windows closes `texmacs.exe` before displaying anything.
+- **Evidence**:
+  - WER `Report.wer` records `Exception Code: c00000fd` (stack overflow) at offset `0xcdd8c7` in `texmacs.exe`.
+  - Symbolizing `0x140cdd8c7` in `build-win/src/texmacs.exe` gives `list<rectangle>::~list() [clone .isra.0] + 55` (originating in `typesetter.cpp`).
+  - `list_rep<T>` in `src/Kernel/Containers/list.hpp` has a recursive destructor (`list<T> next`), while `CMakeLists.txt:260` sets `-Wl,-stack,8388608` only for Cygwin — leaving MinGW/Windows `texmacs.exe` with the default 1 MB stack.
+- **Action Plan**:
+  1. Add `-Wl,--stack,16777216` (or `8388608`) for `WIN32`/`MINGW` in `CMakeLists.txt` (and/or make `list_rep::~list_rep()` iterative).
+  2. Rebuild, repackage with `packages/windows/make-bundle.sh --verify`, and verify opening the User manual in the Windows GUI.
+
+### [!] Windows: Interactive Math Display & Terminal Logging
+- **Status**: Open; needs targeted GUI investigation.
+- **Symptom**:
+  1. Typing math in the Windows GUI does not display correctly.
+  2. Launching `texmacs.exe` from `cmd`/PowerShell shows no console logs because `texmacs.exe` is built as a `WIN32` GUI subsystem binary (stdout/stderr must be redirected to a file or run from MSYS2 bash).
+- **Observations**:
+  - Scripted insertion of `(math (concat "x" (rsup "2") "+<alpha>+<sum><int>"))` in `build-win/src/texmacs.exe` loaded `cmr10`, `cmmi10`, `cmsy10`, and `texgyrepagella-math.otf` without font-open errors (one `TeXmacs] warning, missing font, loading global substitution list` was logged).
+  - `%APPDATA%\TeXmacs-chez\system\preferences.scm` showed `("look and feel" "emacs")` and `("shift-52" "$")`.
+- **Action Plan**:
+  - Reproduce interactive math typing in the Windows GUI and inspect the generated tree / font substitution / Qt glyph rendering.
+
 ### [!] `save-object` fails on the quit path: `open-output-file: ... file exists`
 - **Location**: [`TeXmacs/progs/kernel/boot/chez-compat.scm`](TeXmacs/progs/kernel/boot/chez-compat.scm) (`open-file`), [`TeXmacs/progs/kernel/boot/abbrevs.scm`](TeXmacs/progs/kernel/boot/abbrevs.scm) (`save-object`), `save-learned` → `quit-TeXmacs-scheme`
 - **Symptom** (only with a real `$HOME` that already has the file):
