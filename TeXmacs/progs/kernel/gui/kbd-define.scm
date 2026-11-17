@@ -26,11 +26,12 @@
     (set! lazy-keyboard-waiting (acons mode module lazy-keyboard-waiting))))
 
 (tm-define-macro (lazy-keyboard module . modes)
-  (for-each (lambda (mode) (lazy-keyboard-do module mode)) modes)
-  `(delayed
-     (:idle 250)
-     (ahash-set! lazy-keyboard-done ',module #t)
-     (module-provide ',module)))
+  `(begin
+     (for-each (lambda (mode) (lazy-keyboard-do ',module mode)) ',modes)
+     (delayed
+       (:idle 250)
+       (ahash-set! lazy-keyboard-done ',module #t)
+       (module-provide ',module))))
 
 (define lazy-force-all? #f)
 (define lazy-force-busy? #f)

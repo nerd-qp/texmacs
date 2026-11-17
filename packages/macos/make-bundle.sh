@@ -246,8 +246,18 @@ if [ "$FULL_PROGS" = 1 ]; then
 else
   # Exclude the 178 resident .so modules already baked into texmacs.boot,
   # plus build/test-only .so artifacts.
-  sed -n '/^(define \*startup-boot-modules\*/,/^$/s/.*"\([^"]*\.so\)".*/\/\1/p' \
-    "$ROOT/src/Scheme/Chez/make-boot.scm" \
+  CHEZ_BIN=""
+  for c in petite chez scheme /opt/homebrew/bin/petite /opt/homebrew/bin/chez /usr/local/bin/petite /usr/local/bin/chez; do
+    if command -v "$c" >/dev/null 2>&1; then
+      CHEZ_BIN="$(command -v "$c")"
+      break
+    fi
+  done
+  if [ -z "$CHEZ_BIN" ]; then
+    echo "error: Chez Scheme (petite/chez/scheme) not found; cannot query *startup-boot-modules*" >&2
+    exit 1
+  fi
+  "$CHEZ_BIN" --script "$ROOT/src/Scheme/Chez/make-boot.scm" --print-startup-excludes \
   | rsync -a --prune-empty-dirs \
           --exclude-from=- \
           --exclude 'texmacs-user.so' \

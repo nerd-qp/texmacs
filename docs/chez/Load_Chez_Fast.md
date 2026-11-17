@@ -16,20 +16,21 @@ TeXmacs on Chez Scheme keeps **only two startup options** (the intermediate Appr
 
 ## 2. Empirical Startup & Memory Benchmarks
 
-### 2.1 Chez Scheme Startup Configurations (macOS arm64)
+### 2.1 Chez Scheme Startup Configurations (macOS arm64, Apple M1 Pro VM)
 
 #### Current Two-Mode Comparison (`wip-chez`, Qt6, clean `tmp-home`, `QT_QPA_PLATFORM=offscreen`)
 
-Measured over 3 runs per configuration with `/usr/bin/time -l` after compiling all 453 `.so` modules and regenerating VFASL `texmacs.boot` (`16.69 MiB` / `17,501,531` bytes, 178 modules total = `boot-chez.so` + 177 app modules):
+Measured on an **Apple M1 Pro virtual machine** (macOS arm64) over 3 runs per configuration with `/usr/bin/time -l` after compiling all 453 `.so` modules, compiling `init-texmacs-boot-file.scm` $\to$ `init-texmacs-boot-file.so` (`466 KB`, with 77 redundant resident `use-modules`/`lazy-*` forms removed and direct `(import ...)`), and regenerating VFASL `texmacs.boot` (`16.69 MiB` / `17,501,531` bytes, 178 modules total = `boot-chez.so` + 177 app modules):
 
 | Bootstrap Configuration | Modules Loaded | `TIME-SERVER-INIT` | `TIME-OPEN-WINDOW` | `TIME-PRE-GUI-LOOP` | Chez Heap (`current-memory-bytes`) | Max RSS | Peak Memory Footprint |
 | :--- | :--- | ---: | ---: | ---: | ---: | ---: | ---: |
-| **Fast Boot (`texmacs.boot` VFASL, 50 ms idle)** | **177** app (+0 disk `.so`) | **1,194 ms** avg *(1,155–1,267)* | **487 ms** avg *(399–570)* | **1,682 ms** avg *(1,556–1,759)* | **173.2 MB** *(165.17 MiB)* | **292.3 MB** *(278.79 MiB)* | **238.3 MB** *(227.29 MiB)* |
-| **Fast Boot (`texmacs.boot` VFASL, 300 ms idle)** | **226** app (+49 lazy `.so`) | **958 ms** avg *(856–1,011)* | **408 ms** avg *(383–433)* | **1,366 ms** avg *(1,239–1,440)* | **174.3 MB** *(166.20 MiB)* | **295.5 MB** *(281.78 MiB)* | **241.2 MB** *(230.03 MiB)* |
+| **Fast Boot (`texmacs.boot` VFASL + `init-texmacs-boot-file.so`, 50 ms idle)** | **177** app (+0 disk `.so`) | **332 ms** avg *(308–379)* | **317 ms** avg *(307–330)* | **650 ms** avg *(616–709)* | **171.2 MB** *(163.30 MiB)* | **292.5 MB** *(278.99 MiB)* | **238.3 MB** *(227.24 MiB)* |
+| **Fast Boot (`texmacs.boot` VFASL + `init-texmacs-boot-file.so`, 300 ms idle)** | **226** app (+49 lazy `.so`) | **263 ms** avg *(242–301)* | **326 ms** avg *(317–332)* | **590 ms** avg *(575–619)* | **174.1 MB** *(166.03 MiB)* | **295.4 MB** *(281.70 MiB)* | **241.0 MB** *(229.82 MiB)* |
+| *Fast Boot before compiling `init` (`init-texmacs-boot-file.scm`, 50 ms idle)* | *177 app* | *1,194 ms avg (1,155–1,267)* | *487 ms avg* | *1,682 ms avg* | *173.2 MB* | *292.3 MB* | *238.3 MB* |
 | **Normal `.so` (`TEXMACS_NO_BOOT=1`, 50 ms idle)** | **172** app (all disk `.so`) | **1,266 ms** avg *(1,214–1,311)* | **541 ms** avg *(502–584)* | **1,809 ms** avg *(1,717–1,896)* | **180.6 MB** *(172.27 MiB)* | **302.1 MB** *(288.14 MiB)* | **248.0 MB** *(236.50 MiB)* |
 | **Normal `.so` (`TEXMACS_NO_BOOT=1`, 300 ms idle)** | **221** app (all disk `.so`) | **1,288 ms** avg *(1,233–1,382)* | **536 ms** avg *(508–552)* | **1,825 ms** avg *(1,743–1,935)* | **185.5 MB** *(176.86 MiB)* | **307.9 MB** *(293.67 MiB)* | **253.7 MB** *(241.98 MiB)* |
 
-*(Notes: Across all 6 runs of each mode prior to the idle timer, Fast Boot averaged `TIME-SERVER-INIT = 1,076 ms`, `TIME-OPEN-WINDOW = 447 ms`, `TIME-PRE-GUI-LOOP = 1,524 ms` vs. `1,277 ms`, `539 ms`, and `1,817 ms` for Normal `.so` Init (**-16.1% `TIME-PRE-GUI-LOOP`**, **-17.1% window open**), with **-9.7 MB to -12.5 MB lower peak footprint** and **-7.4 MB to -11.2 MB smaller Chez heap** than Normal `.so` Init. `bytes-allocated` was `78.19 MiB` / `81.40 MiB` in Fast Boot vs. `50.80 MiB` / `52.46 MiB` in Normal `.so` Init; total `/usr/bin/time` wall time at 300 ms idle averaged `2.23 s` vs. `2.84 s`, **-21.7%**.)*
+*(Notes: Across all 6 runs of each mode prior to the idle timer, Fast Boot with compiled `init-texmacs-boot-file.so` averaged `TIME-SERVER-INIT = 297 ms`, `TIME-OPEN-WINDOW = 322 ms`, `TIME-PRE-GUI-LOOP = 620 ms` vs. `1,277 ms`, `539 ms`, and `1,817 ms` for Normal `.so` Init (**4.3× faster server init**, **2.9× faster `TIME-PRE-GUI-LOOP`**), with **-9.7 MB to -12.7 MB lower peak footprint** and **-9.4 MB to -11.4 MB smaller Chez heap** than Normal `.so` Init. `bytes-allocated` was `76.73 MiB` (`80.5 MB`) / `79.85 MiB` (`83.7 MB`) in Fast Boot vs. `50.80 MiB` / `52.46 MiB` in Normal `.so` Init; total `/usr/bin/time` wall time averaged `1.13 s` @ 50 ms and `1.32 s` @ 300 ms vs. `2.47 s` and `2.84 s` for Normal `.so` Init.)*
 
 #### Historical Pre-Qt6 / Retired Approach 1 Baselines
 
@@ -52,7 +53,7 @@ From `mgubi-texmacs/src/docs/femtolisp/07-performance.md` (macOS arm64, offscree
 | **Femtolisp** | **160 MB** |
 | **s7 11.9** | **217 MB** |
 | **Chez (prior Qt5 Lazy `.so`, 172 modules)** | **138.3 MB** peak footprint (**192.3 MB** Max RSS) |
-| **Chez (current Qt6 Fast Boot VFASL, 178 modules @ 50 ms)** | **238.3 MB** peak footprint (**292.3 MB** Max RSS; Chez heap **173.2 MB**) |
+| **Chez (current Qt6 Fast Boot VFASL, 178 modules @ 50 ms)** | **238.3 MB** peak footprint (**292.5 MB** Max RSS; Chez heap **171.2 MB**) |
 | **Chez (current Qt6 Normal `.so`, 172 modules @ 50 ms)** | **248.0 MB** peak footprint (**302.1 MB** Max RSS; Chez heap **180.6 MB**) |
 | **Chez (retired Full 454-module `texmacs.so` FASL)** | **244.0 MB** peak footprint (**274.2 MB** Max RSS) |
 
@@ -209,4 +210,227 @@ Triggered only if the process remains idle past 250 ms (`kbd-define.scm:30`) or 
 - **Active Two-Mode Design**:
   1. **Normal Debug Init (`TEXMACS_NO_BOOT=1`)**: Runs `init-texmacs-chez.scm` directly from individual `.so` files for debugging and hot module iteration.
   2. **Fast Boot (`texmacs.boot` + `init-texmacs-boot-file.scm`)**: Default startup using a **178-module** VFASL `texmacs.boot` (**16.69 MiB** / **17.50 MB**; `boot-chez.so` + 172 unforced startup modules + 5 top-level menu modules `edit-menu`, `embedded-menu`, `format-menu`, `help-menu`, `math-menu`). All remaining modules (~276 modules including export converters, `tmtex.so`, `tmhtml.so`, Coq, remote client/server, GPG/wallet, and regression tests) remain lazy on disk. Legacy Approach 1 (`texmacs.so`) generation has been removed.
+
+---
+
+## 6. How to Obtain the Module Loading Order
+
+`TeXmacs/progs/init-texmacs-chez.scm` wraps `primitive-load` with `register-traced-so!`, which records every `.so` file in DFS completion order (dependencies before callers) into `*traced-so-files*`, and provides `(dump-boot-order-manifest! out-path)` to write `"kernel/boot/boot-chez.so"` followed by `(reverse *traced-so-files*)` to disk.
+
+*(Use `TEXMACS_NO_BOOT=1` so `init-texmacs-chez.scm` runs and individual `.so` files load from `TEXMACS_BOOT_PATH`; add `TEXMACS_TRACE_VERBOSE=1` to print each `[TRACE-SO]` load as it completes.)*
+
+### 6.1 Dump the Unforced First-Window Startup Order
+
+Set `TEXMACS_DUMP_BOOT_ORDER` (or call `dump-boot-order-manifest!` once the window and idle timers have settled):
+
+```zsh
+TEXMACS_NO_BOOT=1 QT_QPA_PLATFORM=offscreen \
+TEXMACS_PATH="$PWD/TeXmacs" \
+TEXMACS_BOOT_PATH="$PWD/build-texmacos/boot" \
+TEXMACS_HOME_PATH="$PWD/build-texmacos/tmp-home" \
+./build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs \
+  -x '(delayed (:idle 50) (dump-boot-order-manifest! "build-texmacos/boot/boot-order.scm") (quit-TeXmacs))'
+```
+
+*(Note: Setting `TEXMACS_TRACE_MODULES=1` or `TEXMACS_DUMP_BOOT_ORDER=/path/to/file.scm` in the environment dumps at the end of `init-texmacs-chez.scm`, before GUI window creation and `:idle` timers run; calling `dump-boot-order-manifest!` inside `(delayed (:idle 50) ...)` captures Stages 1–3.)*
+
+### 6.2 Dump the Complete All-Modules Loading Order
+
+To capture the full lazy-subsystem DFS loading order (previously triggered automatically in `init-texmacs-chez.scm` whenever `TEXMACS_TRACE_MODULES` or `TEXMACS_DUMP_BOOT_ORDER` was set), evaluate the following `force-all-lazy-initialization!` helper under `TEXMACS_NO_BOOT=1` before calling `dump-boot-order-manifest!`:
+
+```scheme
+(define (force-all-lazy-initialization!)
+  (when (top-level-bound? 'lazy-keyboard-force)
+    (lazy-keyboard-force #t))
+  (when (top-level-bound? 'converters-from)
+    (converters-from "texmacs")
+    (converters-to "texmacs"))
+  (when (top-level-bound? 'lazy-initialize-force)
+    (lazy-initialize-force))
+  (when (top-level-bound? 'lazy-plugin-force)
+    (lazy-plugin-force))
+  (for-each
+    (lambda (m)
+      (guard (e (else #f))
+        (resolve-module m)))
+    '(
+      (kernel gui menu-convert)
+      (utils library cursor)
+      (utils edit variants)
+      (utils cas cas-out)
+      (utils plugins plugin-cmd)
+      (utils test test-convert)
+      (utils automate auto-tmfs)
+      (utils misc gui-keyboard)
+      (utils automate auto-kbd)
+      (bibtex bib-complete)
+      (bibtex bib-widgets)
+      (texmacs texmacs tm-files)
+      (texmacs keyboard prefix-kbd)
+      (texmacs keyboard latex-kbd)
+      (texmacs menus file-menu)
+      (texmacs menus edit-menu)
+      (texmacs menus view-menu)
+      (texmacs menus tools-menu)
+      (texmacs menus preferences-menu)
+      (texmacs menus preferences-widgets)
+      (texmacs menus preferences-tools)
+      (generic generic-kbd)
+      (generic generic-speech-en)
+      (generic generic-speech-fr)
+      (generic generic-menu)
+      (generic format-menu)
+      (generic document-menu)
+      (generic document-part)
+      (generic insert-menu)
+      (generic document-edit)
+      (generic generic-edit)
+      (generic generic-doc)
+      (generic search-widgets)
+      (generic spell-widgets)
+      (generic format-widgets)
+      (generic pattern-selector)
+      (generic document-widgets)
+      (generic format-tools)
+      (generic document-tools)
+      (generic pattern-tools)
+      (text text-kbd)
+      (text text-speech-en)
+      (text text-speech-fr)
+      (text chinese chinese)
+      (text text-menu)
+      (text text-drd)
+      (math math-kbd)
+      (math math-sem-edit)
+      (math math-speech-en)
+      (math math-adjust-en)
+      (math math-speech-fr)
+      (math math-adjust-fr)
+      (math math-menu)
+      (math math-edit)
+      (prog prog-format)
+      (prog prog-kbd)
+      (prog prog-menu)
+      (source source-kbd)
+      (source source-menu)
+      (source macro-edit)
+      (source macro-menu)
+      (source macro-widgets)
+      (source shortcut-edit)
+      (source shortcut-widgets)
+      (table table-kbd)
+      (table table-menu)
+      (table table-edit)
+      (table table-widgets)
+      (table table-tools)
+      (graphics graphics-kbd)
+      (graphics graphics-menu)
+      (graphics graphics-object)
+      (graphics graphics-utils)
+      (graphics graphics-edit)
+      (graphics graphics-main)
+      (graphics graphics-markup)
+      (language minimal)
+      (language std-math)
+      (language natural)
+      (education edu-kbd)
+      (education edu-menu)
+      (dynamic fold-kbd)
+      (dynamic scripts-kbd)
+      (dynamic calc-kbd)
+      (dynamic fold-menu)
+      (dynamic session-menu)
+      (dynamic scripts-menu)
+      (dynamic calc-menu)
+      (dynamic animate-menu)
+      (dynamic fold-edit)
+      (dynamic session-edit)
+      (dynamic calc-edit)
+      (dynamic scripts-plot)
+      (doc tmdoc-kbd)
+      (doc apidoc-kbd)
+      (doc tmdoc-menu)
+      (doc help-menu)
+      (doc help-funcs)
+      (doc tmdoc)
+      (doc docgrep)
+      (doc tmdoc-search)
+      (doc tmweb)
+      (doc apidoc)
+      (doc apidoc-menu)
+      (convert rewrite init-rewrite)
+      (convert tmml init-tmml)
+      (convert latex init-latex)
+      (convert html init-html)
+      (convert bibtex init-bibtex)
+      (convert images init-images)
+      (convert images tmimage)
+      (convert html tmhtml)
+      (convert html tmhtml-expand)
+      (convert latex latex-drd)
+      (convert latex tmtex)
+      (convert latex latex-tools)
+      (convert latex tmtex-widgets)
+      (part part-shared)
+      (part part-menu)
+      (part part-tmfs)
+      (database db-widget)
+      (database db-menu)
+      (database db-convert)
+      (database bib-db)
+      (database bib-manage)
+      (database bib-local)
+      (database bib-kbd)
+      (database db-tmfs)
+      (security wallet wallet-menu)
+      (security wallet wallet-base)
+      (security gpg gpg-edit)
+      (security gpg gpg-widgets)
+      (security gpg gpg-base)
+      (security gpg gpg-menu)
+      (client client-base)
+      (client client-remote-config)
+      (client client-tmfs)
+      (server server-menu)
+      (client client-menu)
+      (client client-notifications)
+      (notification notification-base)
+      (link link-menu)
+      (link link-kbd)
+      (link link-edit)
+      (link link-navigate)
+      (link link-extern)
+      (link ref-menu)
+      (link ref-edit)
+      (version version-menu)
+      (version version-kbd)
+      (tools spell spell-kbd)
+      (version version-tmfs)
+      (debug debug-menu)
+      (texmacs menus developer-menu)
+      (debug debug-widgets)
+      (tools poster poster-menu)
+      (tools theme theme-menu)
+      (tools theme theme-edit)
+      (tools spell spell-edit)
+      (tools spell spell-lantool)
+      (tools ai ai-translate)
+      (fonts font-old-menu)
+      (fonts font-new-widgets)
+      (check check-master)
+    )))
+```
+
+Run it headless via `-x` after saving the snippet (e.g., to `/tmp/force-all-lazy.scm`) to produce `boot-order-full.scm`:
+
+```zsh
+TEXMACS_NO_BOOT=1 QT_QPA_PLATFORM=offscreen \
+TEXMACS_PATH="$PWD/TeXmacs" \
+TEXMACS_BOOT_PATH="$PWD/build-texmacos/boot" \
+TEXMACS_HOME_PATH="$PWD/build-texmacos/tmp-home" \
+./build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs \
+  -x '(delayed (:idle 50) (load "/tmp/force-all-lazy.scm") (force-all-lazy-initialization!) (dump-boot-order-manifest! "build-texmacos/boot/boot-order-full.scm") (quit-TeXmacs))'
+```
+
+*(Note: Any remaining leaf modules in `src/Scheme/Chez/compile-inventory.scm` that are not reachable through lazy registrations, such as standalone `*-test.so` modules, can be appended afterward if an exhaustive image is ever desired.)*
 - **Further Trim Candidate**: Removing the unconditional `(delayed (:idle 250) ...)` preload in `kbd-define.scm` prevents Stage 4's 48 non-active keyboard/converter modules from loading in the background; additionally, splitting `always?` speech/calc/fold/spell shortcuts out of eager startup could trim Stage 2 further if even smaller static memory is desired.

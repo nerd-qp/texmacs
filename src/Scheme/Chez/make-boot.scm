@@ -285,9 +285,16 @@
                   out-boot (/ sz 1048576.0) sz))))))
 
 ;; If executed directly via scheme --script, run immediately
-(when (top-level-bound? 'command-line-arguments)
-  (let ((args (command-line-arguments)))
-    (when (or (null? args)
-              (and (pair? args)
-                   (not (string=? (car args) "-compile-modules"))))
-      (apply assemble-aot-images! args))))
+(let ((args (command-line-arguments)))
+  (cond
+    ((and (pair? args) (string=? (car args) "--print-startup-excludes"))
+     (for-each
+       (lambda (rel)
+         (display "/")
+         (display rel)
+         (newline))
+       *startup-boot-modules*))
+    ((or (null? args)
+         (and (pair? args)
+              (not (string=? (car args) "-compile-modules"))))
+     (apply assemble-aot-images! args))))

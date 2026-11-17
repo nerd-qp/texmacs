@@ -51,21 +51,24 @@
 ;; compiler-helper.scm resolves the progs tree, so boot-chez is handled right
 ;; after it: check if it needs compiling; if yes, compile then load; otherwise
 ;; just load it. Safeguard: do not load twice if already loaded into this process.
-(let* ((src (progs-path "kernel/boot/boot-chez.scm"))
-       (out (boot-path "kernel/boot/boot-chez.so"))
-       (needs-compiling?
-         (or (not (file-exists? out))
-             (env-flag? "TEXMACS_RECOMPILE_ALL")
-             (and (top-level-bound? '*recompile-all?*) *recompile-all?*)
-             (and (file-exists? src)
-                  (file-exists? out)
-                  (time>? (file-modification-time src)
-                          (file-modification-time out))))))
-  (ensure-dir out)
-  (when needs-compiling?
-    (log-progress-pct "Compiling" "kernel/boot/boot-chez.scm -> boot-chez.so")
-    (compile-file src out)
-    (log-progress-pct "Verified" "boot-chez.so"))
+(define (compile-init-file! rel-path . extra-dirty?)
+  (let* ((src (progs-path rel-path))
+         (out (boot-path (scm->so rel-path)))
+         (base (path-basename out))
+         (dirty? (or (and (pair? extra-dirty?) (car extra-dirty?))
+                     (not (file-exists? out))
+                     (env-flag? "TEXMACS_RECOMPILE_ALL")
+                     (and (top-level-bound? '*recompile-all?*) *recompile-all?*)
+                     (time>? (file-modification-time src)
+                             (file-modification-time out)))))
+    (ensure-dir out)
+    (when dirty?
+      (log-progress-pct "Compiling" (string-append rel-path " -> " base))
+      (compile-file src out)
+      (log-progress-pct "Verified" base))
+    out))
+
+(let ((out (compile-init-file! "kernel/boot/boot-chez.scm")))
   (unless (top-level-bound? 'boot-chez-loaded?)
     (load out)))
 
@@ -250,7 +253,8 @@
     (build-kernel-snapshot!)
     (for-each compile-tier! (cdr inventory-tiers))
     (save-module-deps-manifest!)
-    (write-compiler-db *compiler-db* *compiler-db-file*)))
+    (write-compiler-db *compiler-db* *compiler-db-file*)
+    (compile-init-file! "init-texmacs-boot-file.scm" (> compiled-count 0))))
 
 (report-build-summary!)
 

@@ -325,29 +325,31 @@
 ;; Lazy function declations
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(define lazy-define-table (make-ahash-table))
+;; previously private.
+(define-public lazy-define-table (make-ahash-table))
 
 (define-public (not-define-option? item)
   (not (and (pair? item) (keyword? (car item)))))
 
 (define-public (lazy-define-one module opts name)
-  (let* ((old (ahash-ref lazy-define-table name))
-         (new (if old (cons module old) (list module))))
-    (ahash-set! lazy-define-table name new))
   (with name-star (string->symbol (string-append (symbol->string name) "*"))
-    `(when (not (defined? ',name))
-       (letrec ((stub #f))
-         (tm-define (,name . args)
-           ,@opts
-           (unless (module-loaded? ',module)
-             (resolve-module ',module))
-           (let ((r (and (defined? ',name) (top-level-value ',name (interaction-environment)))))
-             (if (or (not r) (eq? r stub))
-                 (texmacs-error "lazy-define"
-                                ,(string-append "Could not retrieve "
-                                                (symbol->string name))))
-             (apply r args)))
-         (set! stub (top-level-value ',name (interaction-environment)))))))
+    `(begin
+       (let* ((old (ahash-ref lazy-define-table ',name))
+              (new (if old (cons ',module old) (list ',module))))
+         (ahash-set! lazy-define-table ',name new))
+       (when (not (defined? ',name))
+         (letrec ((stub #f))
+           (tm-define (,name . args)
+             ,@opts
+             (unless (module-loaded? ',module)
+               (resolve-module ',module))
+             (let ((r (and (defined? ',name) (top-level-value ',name (interaction-environment)))))
+               (if (or (not r) (eq? r stub))
+                   (texmacs-error "lazy-define"
+                                  ,(string-append "Could not retrieve "
+                                                  (symbol->string name))))
+               (apply r args)))
+           (set! stub (top-level-value ',name (interaction-environment))))))))
 
 (define-public-macro (lazy-define module . names)
   (receive (opts real-names) (list-break names not-define-option?)

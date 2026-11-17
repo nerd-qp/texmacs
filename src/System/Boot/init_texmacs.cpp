@@ -265,15 +265,16 @@ static void
 init_guile () {
   url guile_path= "$TEXMACS_PATH/progs:$GUILE_LOAD_PATH";
 #ifdef TEXMACS_ENGINE_CHEZ
-  if (!exists (guile_path * "init-texmacs-boot-file.scm") &&
+  url boot_path= "$TEXMACS_BOOT_PATH:$TEXMACS_PATH/boot";
+  if (!exists (boot_path * "init-texmacs-boot-file.so") &&
       !exists (guile_path * "init-texmacs-chez.scm")) {
     boot_error << "\n";
     boot_error << "Installation problem: please send a bug report.\n";
-    boot_error << "The initialization file init-texmacs-boot-file.scm"
+    boot_error << "The initialization file init-texmacs-boot-file.so"
                << " could not be found.\n";
     boot_error << "Please check the value of the environment variable\n";
-    boot_error << "TEXMACS_PATH. init-texmacs-boot-file.scm should\n";
-    boot_error << "be readable and in the directory $TEXMACS_PATH/progs\n";
+    boot_error << "TEXMACS_PATH. init-texmacs-boot-file.so should\n";
+    boot_error << "be readable and in the directory $TEXMACS_PATH/boot\n";
     boot_error << "\n";
     FAILED ("scheme initialization file could not be found");
   }
