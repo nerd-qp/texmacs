@@ -1,6 +1,6 @@
 # TeXmacs / Chez Scheme — Architecture & Developer Guide
 
-**Current tree:** `~/Documents/GitHub/texmacs`, branch `wip-chez`, HEAD `dc683be7e` (2026-11-06: `linter.scm` phase 4 installs the macro dependency closure proactively — see §4.1; the change is unstaged, together with the new `src/Scheme/Chez/macro-closure*.scm`). Chez Scheme **10.4.1**, Qt **6.12.0** (macOS arm64) / Qt **6.10.2** (Ubuntu 26.04 arm64). **453/453** Scheme modules transpile and compile to native `.so` with 0 failures. GUI launch verified: `texmacs-version` = 2.1.5, `(top-level-bound? 'current-buffer)` = `#t`, no `ERROR` / `LOAD-ERROR` / segfault in the log. Runtime suite: only the documented `regtest-tmhtml` fixture mismatch and the `regtest-xmltm` encoding mismatch (§5.9) remain.
+**Current tree:** branch `wip-chez`, Chez Scheme **10.4.1**, Qt **6.12.0** (macOS arm64) / Qt **6.10.2** (Ubuntu 26.04 arm64). **453/453** Scheme modules transpile and compile to native `.so` with 0 failures (`texmacs.boot` VFASL fast boot + 1176 static C glue procedures via `build-glue-chez.scm`). GUI launch verified: `texmacs-version` = 2.1.5, `(top-level-bound? 'current-buffer)` = `#t`, no `ERROR` / `LOAD-ERROR` / segfault in the log. Runtime suite: only the documented `regtest-tmhtml` fixture mismatch and the `regtest-xmltm` encoding mismatch (§5.9) remain.
 
 This is a condensed replacement for the 2854-line chronological handoff. Historical checkpoints, completed roadmaps, disproven designs, and references to artifacts that existed only in an earlier, different Chez tree have been removed (§10). The earlier "embedded engine" port (Chez 10.5.0-pre-release.1, `docker-sandbox-opencode` workspace, `chez-harness`, `build-chez-macos/`) is a **different project**; none of its paths or commands apply here.
 
@@ -24,7 +24,7 @@ This is a condensed replacement for the 2854-line chronological handoff. Histori
 
    **Where the Guile shims live (2026-11-13).** `boot-chez.scm` is now the pre-glue bootstrap only. Pure Guile compatibility helpers — `object->string`, `display-to-string`, `map-in-order`, `symbol-append`, `open-file` / `OPEN_READ` / `OPEN_WRITE`, the `call-with-*-string` pair, `string->char-set` / `char-set-adjoin`, `record-accessor` with symbolic field names, `server-mode?`, `scm-error`, `random`, `hash`, the macro-expansion helpers (`ca*r`, `ca*adr`, `apply*`, `listify`, `and*`, `begin*`, `unlambda`), `fresh-tm-dummy` and the `on-entry` / `on-exit` macros — are `define-public`s in `kernel/boot/chez-compat.scm`, the first Tier 1 module. `filter`, `last-pair`, `1+` and `1-` were not moved but deleted: `(chezscheme)` exports all four with identical semantics (verified against the `filter` / `last-pair` shims on proper, empty and improper lists), so the shims only shadowed a builtin with itself. Anything with no caller at all was deleted rather than moved — `assq-ref` / `assq-set!` / `assq-remove!`, `char-set:letter` / `char-set:letter+digit`, `delete!` / `delq` / `delv!`, `sort!`, `string->keyword`, `write*`, `record-modifier` / `old-record-mutator`, `temp-module` / `temp-value` — and the same audit removed `module-available?`, `load-module`, `module-ref`, `with-module` and `*base-kernel-env*` from `boot-chez.scm` (reachable only from the dead Guile `boot.scm`), plus its `and-with` / `with-define` / `with-result` copies, which `abbrevs.scm` shadows one file later. `with` itself stays: `abbrevs.scm` deliberately leaves its own copy commented out so that the hygienic transformer in `boot-chez.scm` is the one in use. Four groups must stay in `boot-chez.scm` regardless: the engine globals, `eval` / `tm-blackbox` record & RTD equality/hash hooks / the hash-table constructors the module registry uses, the io hooks, and `quit-TeXmacs-scheme`. The io hooks are why `display` / `write` capture into a string port directly instead of calling `display-to-string`: the module loader reports a missing `module-deps.scm` through `display` while it is still loading `chez-compat` itself. `has-look-and-feel?` also stays, because `tm-preferences.scm:174` replaces it with a top-level `(set! has-look-and-feel? test-look-and-feel)`, and a `set!` at top level only reaches the interaction-environment cell that `boot-chez.scm` defines — a `define-public` in `chez-compat` would make the override silently ineffective for modules that import it. The `guile-a?` / `guile-b?` / `guile-c?` / `guile-b-c?` predicates stay for a different reason — the transpiler evaluates `(if (guile-c?) ...)` as a compile-time test while walking the sources (`abbrevs.scm:63`), i.e. before any module is loaded; moving them makes `abbrevs.scm` fail with `invalid context for definition (export save-object)`. Two names must not be duplicated: `lambda*` is exported by `tm-define.scm`, and a second export from `chez-compat` makes the `texmacs-user` aggregate fail with `multiple definitions for lambda* in body`.
 
-   **Kernel boot sequencing & SRFI-8 `receive` migration (2026-11-14).** `kernel/library/list.scm` was moved from position #8 to position #4 in Tier 1 (immediately after `abbrevs.scm` and ahead of `debug.scm` and `srfi.scm`). In Guile's legacy `init-texmacs.scm`, all `kernel/boot/*` modules were inherited in a batch before all `kernel/library/*` modules, relying on Guile's late-bound runtime interpreter: `debug.scm`'s `regression-test-group` macro uses `first`/`second`/`third`/`fourth` (defined in `list.scm`), but was never evaluated at boot time. Under Chez Scheme AOT compilation, forward macro references cause immediate compile-time errors. The only prerequisite preventing `list.scm` from preceding `debug.scm` was its use of SRFI-8 `receive` in `list-partition` / `list-break`, which was historically provided by `srfi.scm` (module #5). `receive` was commented out in `srfi.scm` and moved into `kernel/boot/chez-compat.scm` (module #1) as standard R6RS syntax, breaking the cycle and allowing `list.scm` to compile cleanly before `debug.scm`. See detailed documentation in [PHASING_AND_MIGRATION_LOG.md](PHASING_AND_MIGRATION_LOG.md).
+   **Kernel boot sequencing & SRFI-8 `receive` migration (2026-11-14).** `kernel/library/list.scm` was moved from position #8 to position #4 in Tier 1 (immediately after `abbrevs.scm` and ahead of `debug.scm` and `srfi.scm`). In Guile's legacy `init-texmacs.scm`, all `kernel/boot/*` modules were inherited in a batch before all `kernel/library/*` modules, relying on Guile's late-bound runtime interpreter: `debug.scm`'s `regression-test-group` macro uses `first`/`second`/`third`/`fourth` (defined in `list.scm`), but was never evaluated at boot time. Under Chez Scheme AOT compilation, forward macro references cause immediate compile-time errors. The only prerequisite preventing `list.scm` from preceding `debug.scm` was its use of SRFI-8 `receive` in `list-partition` / `list-break`, which was historically provided by `srfi.scm` (module #5). `receive` was commented out in `srfi.scm` and moved into `kernel/boot/chez-compat.scm` (module #1) as standard R6RS syntax, breaking the cycle and allowing `list.scm` to compile cleanly before `debug.scm`. See detailed documentation in [CHEZ_MIGRATION_LOG.md](CHEZ_MIGRATION_LOG.md).
 
    Dead weight dropped from the bootstrap on 2026-11-05 (160 lines): the per-form / source-loader path (`tm-load-forms-itemized`, `tm-load-from-source`, `tm-read-all-forms`, `tm-compile-eval`, `tm-form-diagnose`, `tm-collect-keywords`, `tm-bind-keywords`) and the compiled-module candidate search (`tm-so-candidates`, `tm-find-so-file`), plus the `tm-load-probe` stub. All of it was unreachable — `tm-load-file` is only `(load f)`, `load-module-file` resolves `.so` files through `module-so-file`, and `compile-texmacs.scm` defines its own `tm-collect-keywords` / `tm-bind-keywords`. Consequence: the `LOAD-START` / `LOAD-SUMMARY` / `FORM-STILL-FAILS` / `LOAD-BATCH-FALLBACK` diagnostic tokens no longer exist; a failing file reports `LOAD-ERROR` with its condition and backtrace, and nothing reports per form.
 
@@ -59,16 +59,18 @@ Two fatal configure pitfalls:
 - `CMakeLists.txt:337/339` defaults `CHEZ_ROOT=/usr/lib/csv10.5.0-pre-release.1` and `CHEZ_MACHINE=tarm64le` → `Chez Scheme kernel library not found`. Override both.
 - `Qt6Config.cmake` is in `qtbase` but Svg/Core5Compat are separate kegs; `CMAKE_PREFIX_PATH` alone fails with `Failed to find required Qt component "Svg"`. Set `QT_ADDITIONAL_PACKAGES_PREFIX_PATH` to all three.
 
-Then compile the Scheme modules:
+With `BUILD_CHEZ_MODULES=ON` (the default in `CMakeLists.txt:1019`), `cmake --build` also compiles all Chez Scheme modules (`--compile-modules`) and, when `CHEZ_SCHEME_EXECUTABLE` (`scheme` / `chez` / `scheme-script`) is found, generates `build-texmacos/boot/texmacs.boot` (`texmacs-chez-boot` target). Pass `-DBUILD_CHEZ_MODULES=OFF` to build only the C++ binary.
+
+For a manual or clean Scheme-only rebuild (see §4):
 
 ```bash
 HOME="$PWD/fakehome" \
 SCHEMEHEAPDIRS="/opt/homebrew/Cellar/chezscheme/10.4.1/lib/csv10.4.1/tarm64osx" \
 TEXMACS_PATH="$PWD/TeXmacs" \
-build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -compile-modules
+build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -recompile-modules
 ```
 
-Cold build measured here: 604/604 C++ targets in ~9 min; 453/453 modules in ~10 min, 0 failures (pre-rework pipeline; the single-environment compiler rebuilds all 453 modules in ~30 s, §7.1).
+The single-environment compiler builds all 453 modules in ~30 s with 0 failures (§7.1).
 
 ## 3. Running, packaging, Linux
 
@@ -95,7 +97,7 @@ Screenshot verification from a shell is unreliable on current macOS (Screen Reco
 ```bash
 cd ~/texmacs
 brew install cmake pkg-config qt chezscheme freetype jpeg libpng gnutls gmp
-# ... configure/build and -compile-modules as in §2 ...
+# ... configure and build as in §2 (cmake --build compiles Scheme modules and texmacs.boot) ...
 ./packages/macos/make-bundle.sh --bundle-qt --dmg
 ```
 
@@ -130,11 +132,9 @@ Linux needs no `CMAKE_PREFIX_PATH` / `QT_ADDITIONAL_PACKAGES_PREFIX_PATH` (the d
 
 `CMakeLists.txt` writes `TeXmacs/SVNREV` from `ALTERNATIVE_VERSION` (`CMakeLists.txt:407`) at configure time when missing or stale; the file is untracked (`.gitignore:26`). On older trees generate it with `grep -o 'ALTERNATIVE_VERSION "[^"]*"' CMakeLists.txt | cut -d'"' -f2 > TeXmacs/SVNREV`. A missing SVNREV produces "does not contain a valid TeXmacs installation" **without** the "incompatible version" line.
 
-Compile and run:
+`cmake --build` already runs `--compile-modules` (and builds `texmacs.boot` if `chez` is on `PATH` or `-DCHEZ_SCHEME_EXECUTABLE=...` is passed). Run directly (or pass `-recompile-modules` first for a clean Scheme rebuild):
 
 ```bash
-SCHEMEHEAPDIRS="$HOME/chez/lib/csv10.4.1/$MACH" HOME="$PWD/fakehome" \
-TEXMACS_PATH="$PWD/TeXmacs" ./build-texmacos/src/texmacs.bin -compile-modules
 SCHEMEHEAPDIRS="$HOME/chez/lib/csv10.4.1/$MACH" HOME="$PWD/fakehome" \
 TEXMACS_PATH="$PWD/TeXmacs" TEXMACS_BOOT_PATH="$PWD/build-texmacos/boot" \
 ./build-texmacos/src/texmacs.bin
@@ -202,10 +202,10 @@ The compilation pipeline in `src/Scheme/Chez/compile-texmacs.scm` operates entir
 Batch modes:
 
 ```bash
-# 0. Recompile C++ binary if commits touch C++ or glue files:
+# 0. Recompile C++ binary and incrementally update Scheme modules + texmacs.boot (BUILD_CHEZ_MODULES=ON):
 ninja -C build-texmacos                                                    # or: cmake --build build-texmacos -j 10
 
-# 1. Module compiler invocation:
+# 1. Manual module compiler invocation:
 build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -compile-modules          # incremental (default)
 build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -recompile-modules        # full clean rebuild (~30 s, §7.1)
 TEXMACS_RECOMPILE_ALL=1 build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -compile-modules
@@ -219,34 +219,12 @@ TEXMACS_RECOMPILE_ALL=1 build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -compi
 
 Historical 181/186-module timings came from the retired workspace and are not comparable to this tree.
 
-### 4.2 Static analysis: `TeXmacs -lint`
+### 4.2 Macro dependency oracle (`compiler-oracle.scm`)
 
-`texmacs.cpp:819` sets `lint_mode`, which makes `tm_server` boot `progs/init-linter.scm` instead of `progs/init-texmacs-chez.scm` (compile mode similarly boots `progs/init-chez-compile.scm`) — kernel only, no GUI, no editor program. `init-linter.scm` loads `src/Scheme/Chez/linter.scm`, which runs five phases over the progs tree and writes four TSVs:
+`src/Scheme/Chez/compiler-oracle.scm` computes, before anything runs and with no environment, the transitive closure of every name a form needs, and installs it in dependency order (replacing the old reactive `&assertion` / message-scraping retry loop).
 
-```bash
-SCHEMEHEAPDIRS="/opt/homebrew/Cellar/chezscheme/10.4.1/lib/csv10.4.1/tarm64osx" \
-HOME="$PWD/fakehome" TEXMACS_PATH="$PWD/TeXmacs" TEXMACS_HOME_PATH="$PWD/.sandbox-texmacs" \
-TEXMACS_LINT_CLOSURE_OUT=/tmp/macro-closure.tsv \
-  ./build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -lint
-```
-
-| phase | what | measured 2026-11-06 |
-|---|---|---|
-| 1 | index every definition site | 459 files, 14431 top-level forms, 11710 definitions |
-| 2 | select macro sites by hardcoded head rule | 387 (280 kernel, 107 analysed) |
-| 3 | expand each with the kernel only, harvest free names | 106 ok, 1 fail, 82 distinct deps |
-| 4 | install the proactive closure, expand, evaluate | 106 ok, 1 fail, 402 installed |
-| 5 | syntactic module dependency graph | 408 nodes / 1929 edges, 209 SCCs, 7 waves |
-
-Outputs: `$TEXMACS_LINT_OUT` (per macro: status + deps), `_DEPS_OUT` (dependency demand), `_MODULES_OUT` (edges), `_CLOSURE_OUT` (per macro: its transitive helper set).
-
-**Dependency resolution is proactive, not reactive.** The old model trapped `&assertion`, parsed `"variable <name> is not bound"` out of the message, evaluated the definition and retried up to 400 times. That cannot work for a missing *macro*: `expand` does not raise for an unbound identifier, it lowers it to `($primitive n $top-level-value)`, so `(for (i l) ...)` stayed a procedure call and `i` was reported as a free variable. `src/Scheme/Chez/compiler-oracle.scm` instead computes, before anything runs and with no environment, the transitive closure of every name a form needs, and installs it in dependency order.
-
-**The relation is a DAG of SCCs, not a tree.** 117 mutually recursive groups exist here (largest 62 names: the `Big-*` / `And-*` symbol tables). Two mechanisms handle that: the DFS keeps a three-state mark per node and stops at any node it is already inside — the "no revisit" rule, which terminates the walk and yields the install order; and Tarjan's condensation makes the recorded *set* exact, so every member of a cycle reports the whole cycle rather than whichever part the walk reached first. The walker also reads `syntax-rules` templates (pattern variables, literals and `...` excluded), because a template's helper identifiers are invisible to the definer-headed walk and a missing one silently misparses at the consumer.
-
-Phase 4's *outcome* is unchanged at 106/1 — the kernel already sufficed — so the gain is structural: the retry loop and the message scraping are gone, and macro dependencies classified "defined but not installed" fell **10 → 1**. The closure is 1194 definitions, 117 SCCs, stop rule fired 62 times; 402 install in 415 ms with 8 failures (`graphical-tag-list`, `graphical-group-tag-list` need runtime state `-lint` does not create).
-
-`compiler-oracle.scm` is plain definitions loaded with `primitive-load` (a TeXmacs process has no library search path into `src/Scheme/Chez`), so `src/Scheme/Chez/macro-closure-report.scm` can also run it standalone: `chez --script src/Scheme/Chez/macro-closure-report.scm /tmp/closure.tsv` indexes the tree and records 345 closures in **0.7 s**, no build and no TeXmacs. That script is a recorder, not a build-order tool: a closure says what must be *live* before a macro expands, not which module compiles first, and a form still needs its own module context to expand at all.
+- **The relation is a DAG of SCCs, not a tree.** 117 mutually recursive groups exist (largest 62 names: the `Big-*` / `And-*` symbol tables). Two mechanisms handle that: the DFS keeps a three-state mark per node and stops at any node it is already inside — the "no revisit" rule, which terminates the walk and yields the install order; and Tarjan's condensation makes the recorded *set* exact, so every member of a cycle reports the whole cycle rather than whichever part the walk reached first. The walker also reads `syntax-rules` templates (pattern variables, literals and `...` excluded), because a template's helper identifiers are invisible to the definer-headed walk and a missing one silently misparses at the consumer.
+- `compiler-oracle.scm` is plain definitions loaded with `primitive-load` (a TeXmacs process has no library search path into `src/Scheme/Chez`), so `src/Scheme/Chez/macro-closure-report.scm` can also run it standalone: `chez --script src/Scheme/Chez/macro-closure-report.scm /tmp/closure.tsv` indexes the tree and records 345 closures in **0.7 s**, no build and no TeXmacs. That script is a recorder, not a build-order tool: a closure says what must be *live* before a macro expands, not which module compiles first, and a form still needs its own module context to expand at all.
 
 ## 5. Engine invariants (C++ ↔ Chez)
 
@@ -270,7 +248,7 @@ Phase 4's *outcome* is unchanged at 106/1 — the kernel already sufficed — so
 4. **Guile→Chez reader differences:** `#{symbol}#` → `|symbol|`; bare `'|` → `(string->symbol "|")`; octal `#\00` → `#\x00`; `#\cr` → `#\return`.
 5. **FFI exceptions.** C++ `string` exceptions cannot be caught by Scheme `guard`; shims must screen preconditions (e.g. `file-exists?`) before invoking C++ routines.
 6. **Top-level variable cells.** A bare symbol inside a running top-level procedure resolves through a mutable cell; if that procedure triggers redefinition of its own symbol (`lazy-define-force`), later reads see the **new** value. Never use `(eq? proc ,name)` for self-identity; use lexical bindings or explicit state flags.
-7. **Introspection is stubbed.** Chez provides no `procedure-name` / `procedure-source` / `procedure-documentation`; `init-texmacs-chez.scm:297-300` stubs them to `#f` (and `func?` to `procedure?`). Guile-side code assumes a form comes back: `promise-source` (`menu-widget.scm:402`) would `(car #f)` and break all menu construction; `replace-procedures` injects `#f`; shortcut hints, check marks, `:applicable` greying and balloon/synopsis help are silently disabled. Guarded 2026-10-04 with `(pair? source)` in `promise-source` — crash gone, features still missing. Correct fix: capture the `(lambda ...)` form at definition time in `tm-define`, and store it in a procedure-keyed side table.
+7. **Introspection is stubbed.** Chez provides no `procedure-name` / `procedure-source` / `procedure-documentation`; `init-texmacs-chez.scm` stubs them to `#f`. Guile-side code assumes a form comes back: `promise-source` (`menu-widget.scm:402`) would `(car #f)` and break all menu construction; `replace-procedures` injects `#f`; shortcut hints, check marks, `:applicable` greying and balloon/synopsis help are silently disabled. Guarded 2026-10-04 with `(pair? source)` in `promise-source` — crash gone, features still missing. Correct fix: capture the `(lambda ...)` form at definition time in `tm-define`, and store it in a procedure-keyed side table.
 8. **Pure-expression `tm-define`.** It is expression-only (no local definitions), installing values with `define-top-level-value` and syntax with `define-top-level-syntax` in `(interaction-environment)`. This avoids closing the definition context prematurely in R6RS module bodies, and is why `define-macro-trace` / `define-public-macro-trace` are **gone**: both were removed on 2026-11-05, together with the `'macro-transformer` property they recorded, because no module used the macros and nothing in the toolchain read the property. The transpiler still expands `tm-define` / `tm-define-macro` / `tm-property` in interpreter style on its own.
 9. **String encoding duality (OPEN — raw bytes on the bridge, by design).** The bridge in `chez_tm.cpp` is byte-for-byte: `string_to_tmscm` stores `(unsigned char) s[i]` per byte, `tmscm_to_string` casts `Sstring_ref` back to `char`. One Scheme character = one C++ byte, in both directions.
    - **Why it is not a UTF-8 bridge.** TeXmacs reuses Scheme strings for two conflicting roles, and Guile 1.8 (byte arrays) let it get away with that. `string-load` / `string-save` and the tmfs handlers move PNG and embedded-object data through Scheme strings (`utils/misc/artwork.scm`, `generic/embedded-edit.scm`). Decoding/encoding UTF-8 here expands PNG magic `0x89` to `0xC2 0x89`, which inflates and corrupts image data.
@@ -387,6 +365,9 @@ A full-window repaint is 1,228,800; every other repaint is ≤ 36 ms. Mechanism:
 |---|---|---|
 | `manual.scm` | full manual regeneration, per phase + page count | `-x '(load "docs/chez/bench/manual.scm")'` |
 | `ui.scm` | interactive: menus, typing, opening a document | `-x '(load "docs/chez/bench/ui.scm")'` |
+| `ui-profile.scm` | per-phase timing + gross Scheme heap (`sstats-bytes`) for `ui.scm` tasks | `-x '(load "docs/chez/bench/ui-profile.scm")'` |
+| `conversions.scm` | document conversion (HTML/LaTeX/TMML) timing + churn | `-x '(load "docs/chez/bench/conversions.scm")'` |
+| `memory.scm` | Chez heap + OS RSS/footprint across startup, manual, and 50-step undo/redo | `TEXMACS_MEM_STATE=... -x '(load "docs/chez/bench/memory.scm")'` |
 
 Run from the repository root with the §3.1 environment plus `TEXMACS_DOC_PATH`. `ui.scm` is ported from mgubi's `docs/femtolisp/bench/ui.scm` (commit `1fb56ec`) and reports cold + median of three warm runs; a key is driven exactly as the event loop drives it, including typesetting:
 
@@ -459,7 +440,7 @@ Ruled out: Chez↔C++ dispatch (no Scheme on the per-frame path), player speed/e
 
 ## 8. Test suites
 
-Native toolchain tests (`src/Scheme/Chez/*-test.scm`), **231 checks, 0 failures**:
+Native toolchain tests (`src/Scheme/Chez/*-test.scm`), **195 checks, 0 failures**:
 
 | suite | checks | covers |
 |---|---|---|
@@ -467,16 +448,15 @@ Native toolchain tests (`src/Scheme/Chez/*-test.scm`), **231 checks, 0 failures*
 | `compile-graph-test.scm` | 41 | dependency waves, topological sort, SCC, cycle breaking |
 | `compiler-db-test.scm` | 50 | FASL compiler DB, record serialization, interface/source hashing, corrupt cache invalidation |
 | `compiler-scan-test.scm` | 29 | AST parsing of `tm-define` / `define-macro` / `define-public`, exports, module headers |
-| `static-analysis-test.scm` | 36 | whole-program call graph, unbound variables, dead code |
 | `macro-closure-test.scm` | 58 | dependency closure: chain / diamond / 2- and 3-cycle / self-edge, exactness inside a cycle, install-order validity, free-name walker on source *and* core AST, `syntax-rules` template deps |
 
 ```bash
 cd texmacs
-for t in src/Scheme/Chez/*-test.scm; do /opt/homebrew/bin/chez -q "$t"; done   # 2 of 6 need the cwd below
+for t in src/Scheme/Chez/*-test.scm; do /opt/homebrew/bin/chez -q "$t"; done   # 2 of 5 need the cwd below
 cd src/Scheme/Chez && for t in compiler-db-test.scm compiler-scan-test.scm; do /opt/homebrew/bin/chez -q "$t"; done
 ```
 
-`compiler-db-test.scm` and `compiler-scan-test.scm` locate `compiler-db.scm` relative to the working directory, so the single-line loop above reports `cannot find compiler-db.scm` for both; run them from `src/Scheme/Chez` (verified 2026-11-06: 17 + 41 + 36 + 50 + 29 + 58 = 231 checks, 0 failures). `macro-closure-test.scm` finds `compiler-oracle.scm` by searching up from the cwd, so it runs from either.
+`compiler-db-test.scm` and `compiler-scan-test.scm` locate `compiler-db.scm` relative to the working directory, so the single-line loop above reports `cannot find compiler-db.scm` for both; run them from `src/Scheme/Chez` (17 + 41 + 50 + 29 + 58 = 195 checks, 0 failures). `macro-closure-test.scm` finds `compiler-oracle.scm` by searching up from the cwd, so it runs from either.
 
 TeXmacs runtime suite: `(run-all-tests)` in `TeXmacs/progs/check/check-master.scm` covers `regtest-htmltm`, `regtest-xmltm`, `regtest-tmlength`, `regtest-environment`, `regtest-mathtm`, `regtest-tmhtml`, `regtest-tmmltm`, `regtest-prog-format`, `regtest-cite-sort`. Fixes applied: `non` moved into `kernel/boot/chez-compat.scm` and `kernel/library/list.scm` compiled before `base.scm` (`list-drop-while`); `(:use (prog prog-format-test))` → `(:use (prog prog-format))` typo fixed. Known open mismatches: **`regtest-xmltm`** — one character in the `Bx` row of `latin1-chart` (`U+03BC μ` is truncated to `0xBC ¼` by the byte-oriented string bridge, §5.9; confirmed pre-existing by A/B against a stashed tree); **`regtest-tmhtml`** `<img class="image">` — the runtime converter is modern, but the test fixture `make-expected-sub` in `tmhtml-test.scm` omits `(class "image")`.
 
@@ -502,11 +482,7 @@ Not wired into `run-all-tests`: `regtest-tm-convert` (`kernel/texmacs/tm-convert
 6. Do not trust `TODO_CHEZ.md` as a status source (see header note).
 7. Resolve the string encoding duality (§5.9). Phase 1 complete: `string-load` and `tmfs-load` now return R6RS `bytevector` for binary assets (PNG, JPEG, fonts), passing directly to C++ without string serialization. Next: migrate remaining `raw-data` paths to bytevectors before migrating text to a pure UTF-8 bridge. A UTF-8 bridge over *all* strings was tried on 2026-11-05 and reverted — see §5.9 for why the `U+F0000+b` escape is not sufficient.
 8. The bootstrap now hard-depends on `TEXMACS_PATH` being resolvable when `initialize_scheme()` runs. If the packaged `.app` or a future Windows build fails with `bootstrap file not found`, check `boot_scheme_path()` in `chez_tm.cpp` before anything else.
-9. **`func?` has the wrong arity in both bootstraps.** `init-texmacs-chez.scm:122` and `init-linter.scm:133` both declare `(define (func? p kind) (procedure? p))`, while `kernel/library/base.scm:273` is `(define-public (func? x f . opts) ...)`. Any `(func? x 'tag n)` — e.g. `convert/tools/tmconcat.scm:90` — raises `incorrect number of arguments` instead of returning `#f`. Fix the stubs to `(lambda (x f . opts) (procedure? x))`. Not urgent for the editor, but it costs the linter and every standalone harness a whole class of spurious failures.
-10. **Linter phase 4 leaves 8 install failures**, all `graphical-tag-list` / `graphical-group-tag-list`: they read `graphics-state`, which `-lint` never creates. Decide whether to model that state in the linter or to keep reporting them as expected.
-11. **The closure has no consumer yet.** Its only effect so far is a recorded TSV plus the removal of the retry loop — phase 4's outcome did not move. The natural consumer is `compile-texmacs.scm`'s eager-evaluation step: gating it by default already took that step from 51 s of the 52 s transpile budget (§7.1) down to 2.5 s; installing a definition once, in closure order, instead of per-file on demand is the remaining thing to try there, and it must be measured against the §7.1 table before it is believed.
-12. **Do not quote numbers from the older exploratory scripts.** `macro-lazy-install.scm`, `macro-helpers.scm`, `macro-inventory.scm` and `macro-expand-inventory.scm` predate `compiler-oracle.scm` and re-implement a partial TeXmacs bootstrap by hand. That bootstrap is where their numbers come from, not the macro layer: they need the transpiler's three eval rewrites (uncurry, strip docstring, unwrap a top-level `if`) and still hit stub limits. `macro-lazy-install.scm` is worth keeping only as the record of what the reactive model did.
-13. **Animation frame cost is O(document).** `animate()` and `draw_text()` walk the entire box tree every frame via `anim_invalid()` / `anim_next()`, so Fig. 9.5's animations in the full manual run at a collapsing frame rate (§7.5). Track animated boxes per view instead of recursing from the root.
+9. **Animation frame cost is O(document).** `animate()` and `draw_text()` walk the entire box tree every frame via `anim_invalid()` / `anim_next()`, so Fig. 9.5's animations in the full manual run at a collapsing frame rate (§7.5). Track animated boxes per view instead of recursing from the root.
 
 ## 10. What was removed, and where to recover it
 

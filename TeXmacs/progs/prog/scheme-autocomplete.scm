@@ -51,7 +51,10 @@
   '(texmacs-user))
 
 (tm-define (all-used-symbols)
-  (list-fold obarray-fold-sub '() (all-used-modules)))
+  (cond ((equal? (scheme-dialect) "chez")
+         (map symbol->string (environment-symbols (interaction-environment))))
+        (else
+         (list-fold obarray-fold-sub '() (all-used-modules)))))
 
 (tm-define (scheme-completions-add str)
   (set! completions (pt-add completions str)))
