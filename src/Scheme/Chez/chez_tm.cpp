@@ -30,7 +30,6 @@ tmscm tm_null= 0;
 tmscm tm_blackbox_guardian= 0;
 tmscm tm_blackbox_rtd= 0;
 tmscm tm_make_blackbox= 0;
-static ptr tm_install_proc= 0;      /* (tm-install-procedure! name)           */
 tmscm tm_eval_string_proc= 0;
 tmscm tm_load_file_proc= 0;
 tmscm tm_apply_proc= 0;
@@ -226,146 +225,7 @@ reap_blackboxes () {
   }
 }
 
-/* ------------------------------------------------------------------------
- * Registry of C++ procedures callable from Scheme
- *
- * Scheme side: boot-chez.scm defines
- *     (define (tm-install-procedure! name)
- *       (define-top-level-value (string->symbol name)
- *         (lambda args (tm-call-by-name name args)) ...))
- * where tm-call-by-name is a foreign procedure into tm_call_by_name below.
- * The Chez FFI brackets the foreign call with Sactivate_thread /
- * Sdeactivate_thread automatically, which is required by the threaded
- * kernel.
- * ---------------------------------------------------------------------- */
-
-struct tm_proc_entry {
-  void* fn;
-  int   arity;
-};
-
-static std::map<string, tm_proc_entry> tm_proc_registry;
 const char* current_glue_proc = NULL;
-
-struct tm_fast_proc_entry {
-  const char* name;
-  void*       fn;
-  int         arity;
-};
-
-static tm_fast_proc_entry tm_fast_table[2048];
-static int tm_fast_proc_count = 0;
-
-#define TM_FAST_CALL_BODY(call_expr) \
-  if (__builtin_expect (id < 0 || id >= tm_fast_proc_count, 0)) return Sboolean (0); \
-  current_glue_proc = tm_fast_table[id].name; \
-  try { \
-    return (call_expr); \
-  } catch (const std::string& e) { \
-    return Scons (Sboolean (1), \
-                  Scons (Sstring_of_length (e.c_str (), (iptr) e.size ()), tm_null)); \
-  } catch (...) { \
-    return Scons (Sboolean (1), \
-                  Scons (Sstring_of_length ("<exception>", 11), tm_null)); \
-  }
-
-extern "C" ptr tm_fast_call_0 (int id) {
-  TM_FAST_CALL_BODY (((tmscm (*)()) tm_fast_table[id].fn) ())
-}
-extern "C" ptr tm_fast_call_1 (int id, ptr a1) {
-  TM_FAST_CALL_BODY (((tmscm (*)(tmscm)) tm_fast_table[id].fn) (a1))
-}
-extern "C" ptr tm_fast_call_2 (int id, ptr a1, ptr a2) {
-  TM_FAST_CALL_BODY (((tmscm (*)(tmscm, tmscm)) tm_fast_table[id].fn) (a1, a2))
-}
-extern "C" ptr tm_fast_call_3 (int id, ptr a1, ptr a2, ptr a3) {
-  TM_FAST_CALL_BODY (((tmscm (*)(tmscm, tmscm, tmscm)) tm_fast_table[id].fn) (a1, a2, a3))
-}
-extern "C" ptr tm_fast_call_4 (int id, ptr a1, ptr a2, ptr a3, ptr a4) {
-  TM_FAST_CALL_BODY (((tmscm (*)(tmscm, tmscm, tmscm, tmscm)) tm_fast_table[id].fn) (a1, a2, a3, a4))
-}
-extern "C" ptr tm_fast_call_5 (int id, ptr a1, ptr a2, ptr a3, ptr a4, ptr a5) {
-  TM_FAST_CALL_BODY (((tmscm (*)(tmscm, tmscm, tmscm, tmscm, tmscm)) tm_fast_table[id].fn) (a1, a2, a3, a4, a5))
-}
-extern "C" ptr tm_fast_call_6 (int id, ptr a1, ptr a2, ptr a3, ptr a4, ptr a5, ptr a6) {
-  TM_FAST_CALL_BODY (((tmscm (*)(tmscm, tmscm, tmscm, tmscm, tmscm, tmscm)) tm_fast_table[id].fn) (a1, a2, a3, a4, a5, a6))
-}
-extern "C" ptr tm_fast_call_7 (int id, ptr a1, ptr a2, ptr a3, ptr a4, ptr a5, ptr a6, ptr a7) {
-  TM_FAST_CALL_BODY (((tmscm (*)(tmscm, tmscm, tmscm, tmscm, tmscm, tmscm, tmscm)) tm_fast_table[id].fn) (a1, a2, a3, a4, a5, a6, a7))
-}
-extern "C" ptr tm_fast_call_8 (int id, ptr a1, ptr a2, ptr a3, ptr a4, ptr a5, ptr a6, ptr a7, ptr a8) {
-  TM_FAST_CALL_BODY (((tmscm (*)(tmscm, tmscm, tmscm, tmscm, tmscm, tmscm, tmscm, tmscm)) tm_fast_table[id].fn) (a1, a2, a3, a4, a5, a6, a7, a8))
-}
-extern "C" ptr tm_fast_call_9 (int id, ptr a1, ptr a2, ptr a3, ptr a4, ptr a5, ptr a6, ptr a7, ptr a8, ptr a9) {
-  TM_FAST_CALL_BODY (((tmscm (*)(tmscm, tmscm, tmscm, tmscm, tmscm, tmscm, tmscm, tmscm, tmscm)) tm_fast_table[id].fn) (a1, a2, a3, a4, a5, a6, a7, a8, a9))
-}
-extern "C" ptr tm_fast_call_10 (int id, ptr a1, ptr a2, ptr a3, ptr a4, ptr a5, ptr a6, ptr a7, ptr a8, ptr a9, ptr a10) {
-  TM_FAST_CALL_BODY (((tmscm (*)(tmscm, tmscm, tmscm, tmscm, tmscm, tmscm, tmscm, tmscm, tmscm, tmscm)) tm_fast_table[id].fn) (a1, a2, a3, a4, a5, a6, a7, a8, a9, a10))
-}
-
-extern "C" ptr
-tm_call_by_name (const char* name, ptr args) {
-  current_glue_proc = name;
-  std::map<string, tm_proc_entry>::iterator it= tm_proc_registry.find (name);
-  if (it == tm_proc_registry.end ()) {
-    return Sboolean (0);
-  }
-  void* fn= it->second.fn;
-  int   arity= it->second.arity;
-
-  ptr a[10];
-  int n= 0;
-  while (Spairp (args) && n < 10) {
-    a[n++]= Scar (args);
-    args= Scdr (args);
-  }
-  if (n != arity) return Sboolean (0);
-
-  union {
-    void* from;
-    tmscm (*to0) ();
-    tmscm (*to1) (tmscm);
-    tmscm (*to2) (tmscm, tmscm);
-    tmscm (*to3) (tmscm, tmscm, tmscm);
-    tmscm (*to4) (tmscm, tmscm, tmscm, tmscm);
-    tmscm (*to5) (tmscm, tmscm, tmscm, tmscm, tmscm);
-    tmscm (*to6) (tmscm, tmscm, tmscm, tmscm, tmscm, tmscm);
-    tmscm (*to7) (tmscm, tmscm, tmscm, tmscm, tmscm, tmscm, tmscm);
-    tmscm (*to8) (tmscm, tmscm, tmscm, tmscm, tmscm, tmscm, tmscm, tmscm);
-    tmscm (*to9) (tmscm, tmscm, tmscm, tmscm, tmscm, tmscm, tmscm, tmscm, tmscm);
-    tmscm (*to10)(tmscm, tmscm, tmscm, tmscm, tmscm, tmscm, tmscm, tmscm, tmscm, tmscm);
-  } cast;
-  cast.from= fn;
-
-  /* C++ glue functions throw std::string on failure (e.g. "no current
-     editor"); through the FFI such an exception would escape into the
-     kernel and abort the process. Contain it and return the Guile-style
-     error pair (tag . (msg)) that TeXmacs Scheme code already handles. */
-  try {
-    switch (arity) {
-      case 0: return cast.to0 ();
-      case 1: return cast.to1 (a[0]);
-      case 2: return cast.to2 (a[0], a[1]);
-      case 3: return cast.to3 (a[0], a[1], a[2]);
-      case 4: return cast.to4 (a[0], a[1], a[2], a[3]);
-      case 5: return cast.to5 (a[0], a[1], a[2], a[3], a[4]);
-      case 6: return cast.to6 (a[0], a[1], a[2], a[3], a[4], a[5]);
-      case 7: return cast.to7 (a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
-      case 8: return cast.to8 (a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7]);
-      case 9: return cast.to9 (a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8]);
-      case 10: return cast.to10 (a[0], a[1], a[2], a[3], a[4], a[5], a[6], a[7], a[8], a[9]);
-      default: return Sboolean (0);
-    }
-  }
-  catch (const std::string& e) {
-    return Scons (Sboolean (1),
-                  Scons (Sstring_of_length (e.c_str (), (iptr) e.size ()), tm_null));
-  }
-  catch (...) {
-    return Scons (Sboolean (1), Scons (Sstring_of_length ("<exception>", 11), tm_null));
-  }
-  /* normal path */
-}
 
 /* ------------------------------------------------------------------------
  * Scheme bootstrap
@@ -415,31 +275,6 @@ load_scheme_file (string file) {
   Slock_object (str);
   Scall1 (load_proc, str);
   Sunlock_object (str);
-}
-
-/* TODO: Sstring_of_length converts 'name' into a Chez Scheme Sstring by
- * treating raw 8-bit bytes as Unicode scalar values (Latin-1 mapping). If a
- * procedure name ever contained non-ASCII UTF-8 characters, this would corrupt
- * the symbol name (Sstring_utf8 or interning via Sstring_to_symbol would be needed).
- * In addition, passing an Sstring across this boundary deviates from the rule
- * that TeXmacs strings over FFI are pure bytevectors (Sbytevectorp). It is currently
- * safe only because 'name' is an internal ASCII identifier passed once to
- * (tm-install-procedure! name) to be interned with string->symbol during glue setup. */
-void
-chez_install_procedure (const char* name, void* fn, int arity) {
-  int id = tm_fast_proc_count++;
-  if (id >= 2048)
-    FAILED ("Chez Scheme: tm_fast_table overflow");
-  tm_fast_table[id]= tm_fast_proc_entry { name, fn, arity };
-  tm_proc_registry[name]= tm_proc_entry { fn, arity };
-  /* (tm-install-procedure! "name" id arity) defines the Scheme wrapper that forwards
-     its arguments directly to tm_fast_call_N. */
-  if (tm_install_proc == 0)
-    FAILED ("Chez Scheme: tm-install-procedure! is not available");
-  Scall3 (tm_install_proc,
-          Sstring_of_length (name, (iptr) strlen (name)),
-          Sinteger (id),
-          Sinteger (arity));
 }
 
 /* ------------------------------------------------------------------------
@@ -697,18 +532,6 @@ static void
 register_foreign_symbols () {
   Sforeign_symbol ("chez_heap_built", (void*) chez_heap_built);
   Sforeign_symbol ("chez_cache_runtime_procedures", (void*) chez_cache_runtime_procedures);
-  Sforeign_symbol ("tm-call-by-name", (void*) tm_call_by_name);
-  Sforeign_symbol ("tm_fast_call_0", (void*) tm_fast_call_0);
-  Sforeign_symbol ("tm_fast_call_1", (void*) tm_fast_call_1);
-  Sforeign_symbol ("tm_fast_call_2", (void*) tm_fast_call_2);
-  Sforeign_symbol ("tm_fast_call_3", (void*) tm_fast_call_3);
-  Sforeign_symbol ("tm_fast_call_4", (void*) tm_fast_call_4);
-  Sforeign_symbol ("tm_fast_call_5", (void*) tm_fast_call_5);
-  Sforeign_symbol ("tm_fast_call_6", (void*) tm_fast_call_6);
-  Sforeign_symbol ("tm_fast_call_7", (void*) tm_fast_call_7);
-  Sforeign_symbol ("tm_fast_call_8", (void*) tm_fast_call_8);
-  Sforeign_symbol ("tm_fast_call_9", (void*) tm_fast_call_9);
-  Sforeign_symbol ("tm_fast_call_10", (void*) tm_fast_call_10);
   Sforeign_symbol ("tmscm_delete_blackbox", (void*) tmscm_delete_blackbox);
   Sforeign_symbol ("tmscm_blackbox_equal", (void*) tmscm_blackbox_equal);
   Sforeign_symbol ("tmscm_blackbox_hash", (void*) tmscm_blackbox_hash);
@@ -842,17 +665,6 @@ start_scheme (int argc, char** argv, void (*call_back) (int, char**)) {
  * Initialization
  * ---------------------------------------------------------------------- */
 
-/* The native glue path installs every C++ routine as a foreign symbol in
-   custom_init(); boot-chez.scm then binds the names with foreign-procedure
-   (see TeXmacs/progs/kernel/boot/glue-chez.scm).  Set this to 1 to fall back
-   to the old run-time installation, which is kept only as an escape hatch
-   for bisecting regressions. */
-static bool
-chez_legacy_glue () {
-  const char* v= getenv ("TEXMACS_CHEZ_LEGACY_GLUE");
-  return v != NULL && (strcmp (v, "1") == 0 || strcmp (v, "true") == 0);
-}
-
 extern "C" void
 chez_cache_runtime_procedures () {
   // Only run once, can be invoked from scheme or C++.
@@ -909,10 +721,6 @@ chez_cache_runtime_procedures () {
   Slock_object (tm_string_to_utf8_proc);
   object_stack= Stop_level_value (Sstring_to_symbol ("object-stack"));
   Slock_object (object_stack);
-  tm_install_proc= Stop_level_value (Sstring_to_symbol ("tm-install-procedure!"));
-  ASSERT (tm_install_proc != 0 && Sprocedurep (tm_install_proc),
-          "tm-install-procedure! must be a procedure");
-  Slock_object (tm_install_proc);
 }
 
 void
@@ -939,14 +747,7 @@ initialize_scheme () {
     eval_scheme ("(define *texmacs-boot-mode* 'boot)");
   }
 
-  if (chez_legacy_glue ()) {
-    fprintf (stderr, "Chez Scheme: initialize_glue (legacy dynamic registration)\n");
-    fflush (stderr);
-    initialize_glue ();
-  }
-  else {
-    fprintf (stderr, "Chez Scheme: %d native glue procedures registered\n",
-             chez_glue_procedure_count ());
-    fflush (stderr);
-  }
+  fprintf (stderr, "Chez Scheme: %d native glue procedures registered\n",
+           chez_glue_procedure_count ());
+  fflush (stderr);
 }

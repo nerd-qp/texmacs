@@ -145,8 +145,6 @@ tmscm_as_fn (T func) {
   return cast.to;
 }
 
-void chez_install_procedure (const char* name, void* fn, int arity);
-
 /* -- native glue registration (src/Scheme/Chez/glue_chez.cpp) ------------- */
 
 /* Record every C++ glue entry point in Chez's foreign symbol table with
@@ -158,8 +156,7 @@ void initialize_glue_chez ();
 /* Number of registered entry points, for the start-up diagnostic. */
 int chez_glue_procedure_count ();
 
-#define tmscm_install_procedure(name, func, args, p0, p1) \
-  chez_install_procedure (name, (void*) tmscm_as_fn (func), args)
+#define tmscm_install_procedure(name, func, args, p0, p1) (void) 0
 
 void tmscm_wrong_type_arg (tmscm arg, int pos, const char* subr);
 #define TMSCM_ASSERT(_cond, _arg, _pos, _subr) \
