@@ -412,6 +412,41 @@ tree_remove_node (tree r, int pos) {
 
 #define TMSCM_ASSERT_SCHEME_TREE(p,arg,rout)
 
+#ifdef TEXMACS_ENGINE_CHEZ
+/* Chez's copying GC does not scan the C stack: holding an unrooted tmscm tail
+   pointer across allocating calls (e.g. Scall1 in blackbox_to_tmscm) can lose
+   or corrupt the partial list.  Store elements in a locked vector instead and
+   materialize the list in Scheme via vector->list. */
+template <typename Array, typename Conv>
+static tmscm
+chez_array_to_tmscm (Array& a, Conv conv) {
+  iptr n= N(a);
+  if (n == 0) return tmscm_null ();
+  tmscm vec= Smake_vector (n, Sfalse);
+  Slock_object (vec);
+  for (iptr i= 0; i < n; i++)
+    Svector_set (vec, i, conv (a[(int) i]));
+  tmscm res= Scall1 (tm_vector_to_list_proc, vec);
+  Sunlock_object (vec);
+  return res;
+}
+
+template <typename List, typename Conv>
+static tmscm
+chez_list_to_tmscm (List l, Conv conv) {
+  iptr n= N(l);
+  if (n == 0) return tmscm_null ();
+  tmscm vec= Smake_vector (n, Sfalse);
+  Slock_object (vec);
+  iptr i= 0;
+  for (; !is_nil (l); l= l->next, i++)
+    Svector_set (vec, i, conv (l->item));
+  tmscm res= Scall1 (tm_vector_to_list_proc, vec);
+  Sunlock_object (vec);
+  return res;
+}
+#endif
+
 tmscm 
 scheme_tree_to_tmscm (scheme_tree t) {
   if (is_atomic (t)) {
@@ -427,11 +462,15 @@ scheme_tree_to_tmscm (scheme_tree t) {
     return symbol_to_tmscm (s);
   }
   else {
+#ifdef TEXMACS_ENGINE_CHEZ
+    return chez_array_to_tmscm (t, scheme_tree_to_tmscm);
+#else
     int i;
     tmscm p= tmscm_null ();
     for (i=N(t)-1; i>=0; i--)
       p= tmscm_cons (scheme_tree_to_tmscm (t[i]), p);
     return p;
+#endif
   }
 }
 
@@ -833,10 +872,14 @@ TMSCM_ASSERT (tmscm_is_array_int (p), p, arg, rout)
 
 /* static */ tmscm 
 array_int_to_tmscm (array<int> a) {
+#ifdef TEXMACS_ENGINE_CHEZ
+  return chez_array_to_tmscm (a, int_to_tmscm);
+#else
   int i, n= N(a);
   tmscm p= tmscm_null ();
   for (i=n-1; i>=0; i--) p= tmscm_cons (int_to_tmscm (a[i]), p);
   return p;
+#endif
 }
 
 /* static */ array<int>
@@ -869,10 +912,14 @@ TMSCM_ASSERT (tmscm_is_array_SI (p), p, arg, rout)
 
 /* static */ tmscm 
 array_SI_to_tmscm (array<SI> a) {
+#ifdef TEXMACS_ENGINE_CHEZ
+  return chez_array_to_tmscm (a, SI_to_tmscm);
+#else
   int i, n= N(a);
   tmscm p= tmscm_null ();
   for (i=n-1; i>=0; i--) p= tmscm_cons (SI_to_tmscm (a[i]), p);
   return p;
+#endif
 }
 
 /* static */ array<SI>
@@ -907,10 +954,14 @@ TMSCM_ASSERT (tmscm_is_array_double (p), p, arg, rout)
 
 /* static */ tmscm 
 array_double_to_tmscm (array<double> a) {
+#ifdef TEXMACS_ENGINE_CHEZ
+  return chez_array_to_tmscm (a, double_to_tmscm);
+#else
   int i, n= N(a);
   tmscm p= tmscm_null();
   for (i=n-1; i>=0; i--) p= tmscm_cons (double_to_tmscm (a[i]), p);
   return p;
+#endif
 }
 
 /* static */ array<double>
@@ -936,10 +987,14 @@ TMSCM_ASSERT (tmscm_is_array_array_double (p), p, arg, rout)
 
 /* static */ tmscm 
 array_array_double_to_tmscm (array<array_double> a) {
+#ifdef TEXMACS_ENGINE_CHEZ
+  return chez_array_to_tmscm (a, array_double_to_tmscm);
+#else
   int i, n= N(a);
   tmscm p= tmscm_null ();
   for (i=n-1; i>=0; i--) p= tmscm_cons (array_double_to_tmscm (a[i]), p);
   return p;
+#endif
 }
 
 /* static */ array<array_double>
@@ -965,10 +1020,14 @@ TMSCM_ASSERT (tmscm_is_array_array_array_double (p), p, arg, rout)
 
 /* static */ tmscm 
 array_array_array_double_to_tmscm (array<array_array_double> a) {
+#ifdef TEXMACS_ENGINE_CHEZ
+  return chez_array_to_tmscm (a, array_array_double_to_tmscm);
+#else
   int i, n= N(a);
   tmscm p= tmscm_null ();
   for (i=n-1; i>=0; i--) p= tmscm_cons (array_array_double_to_tmscm (a[i]), p);
   return p;
+#endif
 }
 
 /* static */ array<array_array_double>
@@ -991,10 +1050,14 @@ TMSCM_ASSERT (tmscm_is_array_string (p), p, arg, rout)
 
 /* static */ tmscm 
 array_string_to_tmscm (array<string> a) {
+#ifdef TEXMACS_ENGINE_CHEZ
+  return chez_array_to_tmscm (a, string_to_tmscm);
+#else
   int i, n= N(a);
   tmscm p= tmscm_null ();
   for (i=n-1; i>=0; i--) p= tmscm_cons (string_to_tmscm (a[i]), p);
   return p;
+#endif
 }
 
 /* static */ array<string>
@@ -1020,10 +1083,14 @@ TMSCM_ASSERT (tmscm_is_array_tree (p), p, arg, rout)
 
 /* static */ tmscm 
 array_tree_to_tmscm (array<tree> a) {
+#ifdef TEXMACS_ENGINE_CHEZ
+  return chez_array_to_tmscm (a, tree_to_tmscm);
+#else
   int i, n= N(a);
   tmscm p= tmscm_null ();
   for (i=n-1; i>=0; i--) p= tmscm_cons (tree_to_tmscm (a[i]), p);
   return p;
+#endif
 }
 
 /* static */ array<tree>
@@ -1049,10 +1116,14 @@ TMSCM_ASSERT (tmscm_is_array_widget (p), p, arg, rout)
 
 /* static */ tmscm 
 array_widget_to_tmscm (array<widget> a) {
+#ifdef TEXMACS_ENGINE_CHEZ
+  return chez_array_to_tmscm (a, widget_to_tmscm);
+#else
   int i, n= N(a);
   tmscm p= tmscm_null ();
   for (i=n-1; i>=0; i--) p= tmscm_cons (widget_to_tmscm (a[i]), p);
   return p;
+#endif
 }
 
 /* static */ array<widget>
@@ -1079,10 +1150,14 @@ TMSCM_ASSERT (tmscm_is_array_url (p), p, arg, rout)
 
 /* static */ tmscm 
 array_url_to_tmscm (array<url> a) {
+#ifdef TEXMACS_ENGINE_CHEZ
+  return chez_array_to_tmscm (a, url_to_tmscm);
+#else
   int i, n= N(a);
   tmscm p= tmscm_null ();
   for (i=n-1; i>=0; i--) p= tmscm_cons (url_to_tmscm (a[i]), p);
   return p;
+#endif
 }
 
 /* static */ array<url>
@@ -1109,10 +1184,14 @@ TMSCM_ASSERT (tmscm_is_array_patch (p), p, arg, rout)
 
 /* static */ tmscm 
 array_patch_to_tmscm (array<patch> a) {
+#ifdef TEXMACS_ENGINE_CHEZ
+  return chez_array_to_tmscm (a, patch_to_tmscm);
+#else
   int i, n= N(a);
   tmscm p= tmscm_null ();
   for (i=n-1; i>=0; i--) p= tmscm_cons (patch_to_tmscm (a[i]), p);
   return p;
+#endif
 }
 
 /* static */ array<patch>
@@ -1173,9 +1252,13 @@ TMSCM_ASSERT (tmscm_is_list_string (p), p, arg, rout)
 
 tmscm 
 list_string_to_tmscm (list_string l) {
+#ifdef TEXMACS_ENGINE_CHEZ
+  return chez_list_to_tmscm (l, string_to_tmscm);
+#else
   if (is_nil (l)) return tmscm_null ();
   return tmscm_cons (string_to_tmscm (l->item),
            list_string_to_tmscm (l->next));
+#endif
 }
 
 list_string
@@ -1200,9 +1283,13 @@ TMSCM_ASSERT (tmscm_is_list_tree (p), p, arg, rout)
 
 tmscm 
 list_tree_to_tmscm (list_tree l) {
+#ifdef TEXMACS_ENGINE_CHEZ
+  return chez_list_to_tmscm (l, tree_to_tmscm);
+#else
   if (is_nil (l)) return tmscm_null ();
   return tmscm_cons (tree_to_tmscm (l->item),
            list_tree_to_tmscm (l->next));
+#endif
 }
 
 list_tree

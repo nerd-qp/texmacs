@@ -41,6 +41,7 @@ tmscm tm_call_4_proc= 0;
 tmscm tm_call_n_proc= 0;
 tmscm tm_list_pred= 0;
 tmscm tm_equal_pred= 0;
+tmscm tm_vector_to_list_proc= 0;
 tmscm tm_string_to_utf8_proc= 0;
 tmscm object_stack= 0;
 
@@ -715,6 +716,10 @@ chez_cache_runtime_procedures () {
   ASSERT (tm_equal_pred != 0 && Sprocedurep (tm_equal_pred),
           "equal? must be a procedure");
   Slock_object (tm_equal_pred);
+  tm_vector_to_list_proc= Stop_level_value (Sstring_to_symbol ("vector->list"));
+  ASSERT (tm_vector_to_list_proc != 0 && Sprocedurep (tm_vector_to_list_proc),
+          "vector->list must be a procedure");
+  Slock_object (tm_vector_to_list_proc);
   tm_string_to_utf8_proc= Stop_level_value (Sstring_to_symbol ("string->utf8"));
   ASSERT (tm_string_to_utf8_proc != 0 && Sprocedurep (tm_string_to_utf8_proc),
           "string->utf8 must be a procedure");
