@@ -36,6 +36,8 @@ typedef ptr tmscm;
 
 extern tmscm tm_null;              /* the value of '()                        */
 extern tmscm tm_blackbox_guardian;  /* Guardian procedure for blackboxes      */
+extern tmscm tm_blackbox_rtd;       /* RTD for tm-blackbox records            */
+extern tmscm tm_make_blackbox;      /* (tm-make-blackbox addr)                */
 extern "C" void chez_cache_runtime_procedures ();
 extern tmscm tm_eval_string_proc;  /* (tm-eval-string s)                      */
 extern tmscm tm_load_file_proc;    /* (tm-load-file file)                     */
@@ -101,12 +103,14 @@ string tmscm_to_string (tmscm obj);
 string tmscm_to_symbol (tmscm obj);
 
 /* -- blackboxes (opaque C++ values kept inside Scheme objects) ------------ */
-/* We represent a blackbox as a Chez Scheme Box (Sbox) containing an integer
-   address token: Sbox (Sinteger ((iptr) ptr)), where ptr is the address of
-   a heap-allocated copy of the C++ blackbox.
-   Because a Box is a first-class, non-pair, non-list Chez Scheme datatype,
+/* We represent a blackbox as a Chez Scheme record (tm-blackbox) containing an
+   integer address token (ptr) pointing to a heap-allocated copy of the C++
+   blackbox.
+   Because a record is a first-class, non-pair, non-list Chez Scheme datatype,
    polymorphic Scheme functions (e.g. tm-car, tm-cdr, pair?, list?) correctly
-   distinguish blackboxes from lists and pairs.
+   distinguish blackboxes from lists and pairs, and Chez's native equal? /
+   equal-hash dispatch to C++ equality/hashing via record-type-equal-procedure
+   and record-type-hash-procedure.
    Lifetime is managed via a Chez Guardian (tm_blackbox_guardian): upon
    creation, every blackbox is registered with the guardian, and reclaimed
    when unreachable by invoking tmscm_delete_blackbox in Scheme / C++. */
@@ -157,7 +161,9 @@ int chez_glue_procedure_count ();
 #define tmscm_install_procedure(name, func, args, p0, p1) \
   chez_install_procedure (name, (void*) tmscm_as_fn (func), args)
 
-#define TMSCM_ASSERT(_cond, _arg, _pos, _subr) (void) 0
+void tmscm_wrong_type_arg (tmscm arg, int pos, const char* subr);
+#define TMSCM_ASSERT(_cond, _arg, _pos, _subr) \
+  do { if (!(_cond)) tmscm_wrong_type_arg ((_arg), (_pos), (_subr)); } while (0)
 
 #define TMSCM_ARG1 1
 #define TMSCM_ARG2 2

@@ -28,6 +28,8 @@
 
 tmscm tm_null= 0;
 tmscm tm_blackbox_guardian= 0;
+tmscm tm_blackbox_rtd= 0;
+tmscm tm_make_blackbox= 0;
 static ptr tm_install_proc= 0;      /* (tm-install-procedure! name)           */
 tmscm tm_eval_string_proc= 0;
 tmscm tm_load_file_proc= 0;
@@ -82,25 +84,23 @@ tmscm_is_list (tmscm obj) {
   return false;
 }
 
+void
+tmscm_wrong_type_arg (tmscm arg, int pos, const char* subr) {
+  (void) arg;
+  string msg= "Wrong type argument in " * string (subr ? subr : "unknown")
+            * " at position " * as_string (pos);
+  tm_throw ((char*) c_string (msg));
+}
+
 bool
 tmscm_is_equal (tmscm o1, tmscm o2) {
-  /* Blackboxes must be compared by the C++ value they wrap, not by the address
-     token standing in for it: two conversions of the same value are distinct
-     conses, so Chez's equal? would compare the addresses and report #f.
-
-     This check MUST come first.  The tm_equal_pred branch below is always
-     taken (the handle is fetched at init and never cleared), so a blackbox
-     check placed after it would never run.
-
-     This is the Chez counterpart of Guile's scm_set_smob_equalp handler
-     (guile_tm.cpp cmp_blackbox), which does exactly this unwrap-and-compare.
-     Chez has no per-type hook on equal?, so the decision has to be made here,
-     on the C++ side, before delegating. */
+  /* Fast path: when comparing two top-level blackboxes from C++, unwrap and
+     compare directly without crossing into Scheme.  Nested blackboxes inside
+     pairs, vectors, or records are handled by Chez's native equal? via
+     record-type-equal-procedure on tm-blackbox-rtd. */
   if (tmscm_is_blackbox (o1) && tmscm_is_blackbox (o2))
     return tmscm_to_blackbox (o1) == tmscm_to_blackbox (o2);
-  if (tm_equal_pred != 0 && Sprocedurep (tm_equal_pred))
-    return Sboolean_value (Scall2 (tm_equal_pred, o1, o2));
-  return o1 == o2;
+  return Sboolean_value (Scall2 (tm_equal_pred, o1, o2));
 }
 
 /* ------------------------------------------------------------------------
@@ -167,24 +167,22 @@ tmscm_to_symbol (tmscm s) {
 
 bool
 tmscm_is_blackbox (tmscm t) {
-  return Sboxp (t)
-      && tmscm_is_int (Sunbox (t))
-      && (Sinteger_value (Sunbox (t)) != 0);
+  return Srecordp (t)
+      && (Srecord_type (t) == tm_blackbox_rtd)
+      && tmscm_is_int (Srecord_uniform_ref (t, 0))
+      /* ptr is zeroed when reaped by the guardian; reject dead wrappers. */
+      && (Sinteger_value (Srecord_uniform_ref (t, 0)) != 0);
 }
 
 tmscm
 blackbox_to_tmscm (blackbox b) {
   blackbox* p= tm_new<blackbox> (b);
-  tmscm box= Sbox (Sinteger ((iptr) p));
-  if (tm_blackbox_guardian) {
-    Scall1 (tm_blackbox_guardian, box);
-  }
-  return box;
+  return Scall1 (tm_make_blackbox, Sinteger ((iptr) p));
 }
 
 blackbox
 tmscm_to_blackbox (tmscm t) {
-  void* p= (void*) Sinteger_value (Sunbox (t));
+  void* p= (void*) Sinteger_value (Srecord_uniform_ref (t, 0));
   if (!p) return blackbox ();
   return *((blackbox*) p);
 }
@@ -194,20 +192,15 @@ tmscm_delete_blackbox (void* p) {
   if (p) tm_delete ((blackbox*) p);
 }
 
-extern "C" ptr
-tmscm_blackbox_equal (ptr b1, ptr b2) {
-  if (!Sboxp (b1) || !Sboxp (b2)) return Sboolean (0);
-  void* p1= (void*) Sinteger_value (Sunbox (b1));
-  void* p2= (void*) Sinteger_value (Sunbox (b2));
-  if (p1 == p2) return Sboolean (1);
-  if (!p1 || !p2) return Sboolean (0);
-  return Sboolean (*((blackbox*) p1) == *((blackbox*) p2));
+extern "C" bool
+tmscm_blackbox_equal (uptr p1, uptr p2) {
+  if (p1 == p2) return true;
+  if (!p1 || !p2) return false;
+  return *((blackbox*) p1) == *((blackbox*) p2);
 }
 
 extern "C" iptr
-tmscm_blackbox_hash (ptr b) {
-  if (!Sboxp (b)) return 0;
-  void* p= (void*) Sinteger_value (Sunbox (b));
+tmscm_blackbox_hash (uptr p) {
   if (!p) return 0;
   blackbox* bb= (blackbox*) p;
   if (type_box (*bb) == type_helper<tree>::id) {
@@ -218,17 +211,16 @@ tmscm_blackbox_hash (ptr b) {
 
 void
 reap_blackboxes () {
-  if (!tm_blackbox_guardian) {
-    FAILED ("reap_blackboxes called but tm_blackbox_guardian is null");
-  }
+  ASSERT (tm_blackbox_guardian != 0,
+          "reap_blackboxes called before tm_blackbox_guardian is initialized");
   while (true) {
     tmscm b= Scall0 (tm_blackbox_guardian);
     if (b == Sboolean (0)) break;
-    if (Sboxp (b)) {
-      void* p= (void*) Sinteger_value (Sunbox (b));
+    if (Srecordp (b) && Srecord_type (b) == tm_blackbox_rtd) {
+      void* p= (void*) Sinteger_value (Srecord_uniform_ref (b, 0));
       if (p) {
         tm_delete ((blackbox*) p);
-        Sset_box (b, Sinteger (0));
+        Srecord_uniform_ref (b, 0)= Sfixnum (0);
       }
     }
   }
@@ -868,12 +860,28 @@ chez_cache_runtime_procedures () {
   tm_null= Stop_level_value (Sstring_to_symbol ("tmscm-null"));
   Slock_object (tm_null);
   tm_blackbox_guardian= Stop_level_value (Sstring_to_symbol ("tm-blackbox-guardian"));
+  ASSERT (tm_blackbox_guardian != 0 && Sprocedurep (tm_blackbox_guardian),
+          "tm-blackbox-guardian must be a procedure");
   Slock_object (tm_blackbox_guardian);
+  tm_blackbox_rtd= Stop_level_value (Sstring_to_symbol ("tm-blackbox-rtd"));
+  ASSERT (tm_blackbox_rtd != 0 && Srecordp (tm_blackbox_rtd),
+          "tm-blackbox-rtd must be a record type descriptor");
+  Slock_object (tm_blackbox_rtd);
+  tm_make_blackbox= Stop_level_value (Sstring_to_symbol ("tm-make-blackbox"));
+  ASSERT (tm_make_blackbox != 0 && Sprocedurep (tm_make_blackbox),
+          "tm-make-blackbox must be a procedure");
+  Slock_object (tm_make_blackbox);
   tm_eval_string_proc= Stop_level_value (Sstring_to_symbol ("tm-eval-string"));
+  ASSERT (tm_eval_string_proc != 0 && Sprocedurep (tm_eval_string_proc),
+          "tm-eval-string must be a procedure");
   Slock_object (tm_eval_string_proc);
   tm_load_file_proc= Stop_level_value (Sstring_to_symbol ("tm-load-file"));
+  ASSERT (tm_load_file_proc != 0 && Sprocedurep (tm_load_file_proc),
+          "tm-load-file must be a procedure");
   Slock_object (tm_load_file_proc);
   tm_apply_proc= Stop_level_value (Sstring_to_symbol ("tm-apply"));
+  ASSERT (tm_apply_proc != 0 && Sprocedurep (tm_apply_proc),
+          "tm-apply must be a procedure");
   Slock_object (tm_apply_proc);
   tm_call_0_proc= Stop_level_value (Sstring_to_symbol ("tm-call-0"));
   Slock_object (tm_call_0_proc);
@@ -888,14 +896,22 @@ chez_cache_runtime_procedures () {
   tm_call_n_proc= Stop_level_value (Sstring_to_symbol ("tm-call-n"));
   Slock_object (tm_call_n_proc);
   tm_list_pred= Stop_level_value (Sstring_to_symbol ("list?"));
+  ASSERT (tm_list_pred != 0 && Sprocedurep (tm_list_pred),
+          "list? must be a procedure");
   Slock_object (tm_list_pred);
   tm_equal_pred= Stop_level_value (Sstring_to_symbol ("equal?"));
+  ASSERT (tm_equal_pred != 0 && Sprocedurep (tm_equal_pred),
+          "equal? must be a procedure");
   Slock_object (tm_equal_pred);
   tm_string_to_utf8_proc= Stop_level_value (Sstring_to_symbol ("string->utf8"));
+  ASSERT (tm_string_to_utf8_proc != 0 && Sprocedurep (tm_string_to_utf8_proc),
+          "string->utf8 must be a procedure");
   Slock_object (tm_string_to_utf8_proc);
   object_stack= Stop_level_value (Sstring_to_symbol ("object-stack"));
   Slock_object (object_stack);
   tm_install_proc= Stop_level_value (Sstring_to_symbol ("tm-install-procedure!"));
+  ASSERT (tm_install_proc != 0 && Sprocedurep (tm_install_proc),
+          "tm-install-procedure! must be a procedure");
   Slock_object (tm_install_proc);
 }
 

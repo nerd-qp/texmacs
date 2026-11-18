@@ -50,7 +50,7 @@
 (define primitive-eval (if (top-level-bound? 'primitive-eval) primitive-eval (top-level-value 'eval (scheme-environment))))
 
 (define (tm-quote-eval-literals x)
-  (cond ((or (box? x) (procedure? x)) (list 'quote x))
+  (cond ((or (record? x) (box? x) (procedure? x)) (list 'quote x))
         ((pair? x)
          (if (eq? (car x) 'quote)
              x
@@ -131,7 +131,7 @@
                  (primitive-eval form* e)))))
         ;; 5. General fallback
         (else
-         (let ((form* (if (or (box? form) (procedure? form) (pair? form))
+         (let ((form* (if (or (record? form) (box? form) (procedure? form) (pair? form))
                           (tm-quote-eval-literals form)
                           form)))
            (primitive-eval form* e)))))))
@@ -148,29 +148,52 @@
 ;;; --- C++ hooks for blackbox objects ---------------------------------------
 ;; The only foreign procedures the kernel needs before the glue layer is bound:
 ;; the guardian installed just below reclaims blackboxes through
-;; c-delete-blackbox, and equal? / tm-equal-hash dispatch through the other two.
+;; c-delete-blackbox, and Chez's native equal? / equal-hash dispatch through
+;; the other two via record-type-equal-procedure / record-type-hash-procedure.
 ;; They are defined here, ahead of those consumers, so a collection that fires
 ;; while this file is still being evaluated cannot find them unbound.
 (define c-delete-blackbox
   (foreign-procedure "tmscm_delete_blackbox" (uptr) void))
 
 (define c-blackbox-equal?
-  (foreign-procedure "tmscm_blackbox_equal" (scheme-object scheme-object) scheme-object))
+  (foreign-procedure "tmscm_blackbox_equal" (uptr uptr) boolean))
 
 (define c-blackbox-hash
-  (foreign-procedure "tmscm_blackbox_hash" (scheme-object) iptr))
+  (foreign-procedure "tmscm_blackbox_hash" (uptr) iptr))
 
 (define chez-heap-built?
   (foreign-procedure "chez_heap_built" () boolean))
+
+;; Wrap C++ blackbox pointers in a Chez record type so native equal?, member,
+;; assoc, remove, subst, and equal-hash dispatch to C++ equality/hashing
+;; everywhere (including inside vectors, records, and cyclic structures).
+;; ptr is mutable so the guardian reaper can zero it after tm_delete.
+(define-record-type tm-blackbox
+  (fields (mutable ptr)))
+
+(define tm-blackbox-rtd (record-type-descriptor tm-blackbox))
+
+(define (tm-make-blackbox addr)
+  (let ((b (make-tm-blackbox addr)))
+    (tm-blackbox-guardian b)
+    b))
+
+(record-type-equal-procedure tm-blackbox-rtd
+  (lambda (b1 b2 eql?)
+    (c-blackbox-equal? (tm-blackbox-ptr b1) (tm-blackbox-ptr b2))))
+
+(record-type-hash-procedure tm-blackbox-rtd
+  (lambda (b hash)
+    (c-blackbox-hash (tm-blackbox-ptr b))))
 
 (define (reap-blackboxes!)
   (let loop ()
     (let ((b (tm-blackbox-guardian)))
       (when b
-        (let ((addr (unbox b)))
+        (let ((addr (tm-blackbox-ptr b)))
           (when (not (= addr 0))
             (c-delete-blackbox addr)
-            (set-box! b 0)))
+            (tm-blackbox-ptr-set! b 0)))
         (loop)))))
 
 (let ((old-crh (collect-request-handler)))
@@ -179,44 +202,8 @@
       (old-crh)
       (reap-blackboxes!))))
 
-(define chez:equal?
-  (if (top-level-bound? 'chez:equal?) chez:equal? (top-level-value 'equal? (scheme-environment))))
-(define (equal? a b)
-  (cond ((eq? a b) #t)
-        ((and (box? a) (box? b))
-         (if (and (top-level-bound? 'blackbox?)
-                  (blackbox? a)
-                  (blackbox? b))
-             (c-blackbox-equal? a b)
-             (chez:equal? (unbox a) (unbox b))))
-        ((and (pair? a) (pair? b))
-         (and (equal? (car a) (car b))
-              (equal? (cdr a) (cdr b))))
-        (else (chez:equal? a b))))
-
-(define (member x l)
-  (let loop ((cur l))
-    (cond ((null? cur) #f)
-          ((equal? x (car cur)) cur)
-          (else (loop (cdr cur))))))
-
-(define (assoc x alist)
-  (let loop ((cur alist))
-    (cond ((null? cur) #f)
-          ((equal? x (caar cur)) (car cur))
-          (else (loop (cdr cur))))))
-
-(define (tm-equal-hash x)
-  (cond ((and (box? x)
-              (top-level-bound? 'blackbox?)
-              (blackbox? x))
-         (c-blackbox-hash x))
-        ((pair? x)
-         (+ (tm-equal-hash (car x)) (tm-equal-hash (cdr x))))
-        (else (equal-hash x))))
-
-(define (make-hash-table . _) (make-hashtable tm-equal-hash equal?))
-(define (make-ahash-table . _) (make-hashtable tm-equal-hash equal?))
+(define (make-hash-table . _) (make-hashtable equal-hash equal?))
+(define (make-ahash-table . _) (make-hashtable equal-hash equal?))
 
 
 ;; Pre-bind common TeXmacs option keywords so unquoted keywords evaluate without error
