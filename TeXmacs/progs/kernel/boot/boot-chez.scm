@@ -788,65 +788,53 @@
 (define (utf8-bytes->string bv) (utf8->string bv))
 (define (string->utf8-bytes s)  (string->utf8 s))
 
+(define-syntax recur-transcoder
+  (syntax-rules ()
+    ((_ leaf? transform)
+     (lambda (x)
+       (define (transcode-vec v)
+         (let ((n (vector-length v)))
+           (let vprobe ((i 0))
+             (if (fx= i n)
+                 v
+                 (let* ((el (vector-ref v i))
+                        (el2 (loop el)))
+                   (if (eq? el2 el)
+                       (vprobe (fx+ i 1))
+                       (let ((v2 (make-vector n)))
+                         (do ((j 0 (fx+ j 1))) ((fx= j i))
+                           (vector-set! v2 j (vector-ref v j)))
+                         (vector-set! v2 i el2)
+                         (do ((j (fx+ i 1) (fx+ j 1))) ((fx= j n) v2)
+                           (vector-set! v2 j (loop (vector-ref v j)))))))))))
+       (define (loop x)
+         (cond
+           ((leaf? x) (transform x))
+           ((pair? x)
+            (let ((a (loop (car x)))
+                  (d (loop (cdr x))))
+              (if (and (eq? a (car x)) (eq? d (cdr x)))
+                  x
+                  (cons a d))))
+           ((vector? x) (transcode-vec x))
+           (else x)))
+       (loop x)))))
+
 (define (recur-transcode-bytevector transform)
-  (lambda (x)
-    (let loop ((x x))
-      (cond
-        ((bytevector? x) (transform x))
-        ((pair? x)
-         (let ((a (loop (car x)))
-               (d (loop (cdr x))))
-           (if (and (eq? a (car x)) (eq? d (cdr x)))
-               x
-               (cons a d))))
-        ((vector? x)
-         (let* ((n (vector-length x))
-                (v2 (make-vector n))
-                (changed? #f))
-           (let vloop ((i 0))
-             (if (= i n)
-                 (if changed? v2 x)
-                 (let ((val (loop (vector-ref x i))))
-                   (unless (eq? val (vector-ref x i))
-                     (set! changed? #t))
-                   (vector-set! v2 i val)
-                   (vloop (+ i 1)))))))
-        (else x)))))
+  (recur-transcoder bytevector? transform))
 
 (define (recur-transcode-string transform)
-  (lambda (x)
-    (let loop ((x x))
-      (cond
-        ((string? x) (transform x))
-        ((pair? x)
-         (let ((a (loop (car x)))
-               (d (loop (cdr x))))
-           (if (and (eq? a (car x)) (eq? d (cdr x)))
-               x
-               (cons a d))))
-        ((vector? x)
-         (let* ((n (vector-length x))
-                (v2 (make-vector n))
-                (changed? #f))
-           (let vloop ((i 0))
-             (if (= i n)
-                 (if changed? v2 x)
-                 (let ((val (loop (vector-ref x i))))
-                   (unless (eq? val (vector-ref x i))
-                     (set! changed? #t))
-                   (vector-set! v2 i val)
-                   (vloop (+ i 1)))))))
-        (else x)))))
+  (recur-transcoder string? transform))
 
-(define recur-utf8->string (recur-transcode-bytevector utf8-bytes->string))
-(define recur-string->utf8 (recur-transcode-string     string->utf8-bytes))
+(define recur-utf8->string (recur-transcoder bytevector? utf8-bytes->string))
+(define recur-string->utf8 (recur-transcoder string?     string->utf8-bytes))
 
 ;; NOTE on Cork transcoders:
 ;; The Scheme string handled by `recur-string->cork` and `recur-cork->string` does
 ;; not store a semantic Unicode string, but raw 8-bit Cork encoding packed inside
 ;; a 32-bit Unicode string (code points U+0000-U+00FF).
-(define recur-cork->string (recur-transcode-bytevector cork-bytes->string))
-(define recur-string->cork (recur-transcode-string     string->cork-bytes))
+(define recur-cork->string (recur-transcoder bytevector? cork-bytes->string))
+(define recur-string->cork (recur-transcoder string?     string->cork-bytes))
 
 ;;; ---------------------------------------------------------------------------
 ;;; Native file loading
@@ -960,8 +948,8 @@
         (display "no continuation in condition\n"))))
 
 ;; [C++] Fixed-arity entry points for call_scheme.
-;; Resolves symbols to top-level procedures and contains exceptions without
-;; allocating Scheme argument lists or performing redundant full-tree transcodings.
+;; Resolves symbols to top-level procedures, contains exceptions, and
+;; transcodes C++ bytevectors <-> Scheme strings at the Scheme boundary.
 (define (tm-handle-call-error e fun args)
   (display (list 'TM-CALL-ERROR (tm-error-message e) 'FUN: fun 'ARGS: args))
   (newline)
@@ -971,34 +959,46 @@
   (cons #t (list (tm-error-message e))))
 
 (define (tm-call-0 fun)
-  (guard (e (else (tm-handle-call-error e fun '())))
-    (let ((proc (if (symbol? fun) (top-level-value fun (interaction-environment)) fun)))
-      (proc))))
+  (recur-string->utf8
+    (guard (e (else (tm-handle-call-error e fun '())))
+      (let ((proc (if (symbol? fun) (top-level-value fun (interaction-environment)) fun)))
+        (proc)))))
 
 (define (tm-call-1 fun a1)
-  (guard (e (else (tm-handle-call-error e fun (list a1))))
-    (let ((proc (if (symbol? fun) (top-level-value fun (interaction-environment)) fun)))
-      (proc a1))))
+  (recur-string->utf8
+    (guard (e (else (tm-handle-call-error e fun (list a1))))
+      (let ((proc (if (symbol? fun) (top-level-value fun (interaction-environment)) fun)))
+        (proc (recur-utf8->string a1))))))
 
 (define (tm-call-2 fun a1 a2)
-  (guard (e (else (tm-handle-call-error e fun (list a1 a2))))
-    (let ((proc (if (symbol? fun) (top-level-value fun (interaction-environment)) fun)))
-      (proc a1 a2))))
+  (recur-string->utf8
+    (guard (e (else (tm-handle-call-error e fun (list a1 a2))))
+      (let ((proc (if (symbol? fun) (top-level-value fun (interaction-environment)) fun)))
+        (proc (recur-utf8->string a1)
+              (recur-utf8->string a2))))))
 
 (define (tm-call-3 fun a1 a2 a3)
-  (guard (e (else (tm-handle-call-error e fun (list a1 a2 a3))))
-    (let ((proc (if (symbol? fun) (top-level-value fun (interaction-environment)) fun)))
-      (proc a1 a2 a3))))
+  (recur-string->utf8
+    (guard (e (else (tm-handle-call-error e fun (list a1 a2 a3))))
+      (let ((proc (if (symbol? fun) (top-level-value fun (interaction-environment)) fun)))
+        (proc (recur-utf8->string a1)
+              (recur-utf8->string a2)
+              (recur-utf8->string a3))))))
 
 (define (tm-call-4 fun a1 a2 a3 a4)
-  (guard (e (else (tm-handle-call-error e fun (list a1 a2 a3 a4))))
-    (let ((proc (if (symbol? fun) (top-level-value fun (interaction-environment)) fun)))
-      (proc a1 a2 a3 a4))))
+  (recur-string->utf8
+    (guard (e (else (tm-handle-call-error e fun (list a1 a2 a3 a4))))
+      (let ((proc (if (symbol? fun) (top-level-value fun (interaction-environment)) fun)))
+        (proc (recur-utf8->string a1)
+              (recur-utf8->string a2)
+              (recur-utf8->string a3)
+              (recur-utf8->string a4))))))
 
 (define (tm-call-n fun args)
-  (guard (e (else (tm-handle-call-error e fun args)))
-    (let ((proc (if (symbol? fun) (top-level-value fun (interaction-environment)) fun)))
-      (apply proc args))))
+  (recur-string->utf8
+    (guard (e (else (tm-handle-call-error e fun args)))
+      (let ((proc (if (symbol? fun) (top-level-value fun (interaction-environment)) fun)))
+        (apply proc (map recur-utf8->string args))))))
 
 (define (tm-apply fun args)
   (tm-call-n fun args))

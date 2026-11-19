@@ -17,6 +17,9 @@
 (define chez-root-cap
   (foreign-procedure "chez_root_stack_capacity" () iptr))
 
+(define chez-call-scheme-1
+  (foreign-procedure "chez_call_scheme_1" (scheme-object scheme-object) scheme-object))
+
 (define *stress-pass* 0)
 (define *stress-fail* 0)
 (define *gc-fires* 0)
@@ -258,7 +261,96 @@
               (when (= round 20) (set! mem20 (current-memory-bytes))))
             (stress-assert "test7-memory-stability"
               (and depths-ok mem5 mem20 (<= mem20 (* 2 mem5)) (= (chez-root-depth) 0))
-              (list 'mem5 mem5 'mem20 mem20 'total-gcs *gc-fires* 'depth (chez-root-depth))))))
+              (list 'mem5 mem5 'mem20 mem20 'total-gcs *gc-fires* 'depth (chez-root-depth)))))
+
+        ;; Test 8: to_scheme_arg / from_scheme_result / call_scheme UTF-8 & ChezRoot stress
+        (guard (e (else (stress-assert "test8-call-scheme-utf8-gc" #f (list 'exception (tm-error-message e)))))
+          (let* ((s-empty "")
+                 (s-ascii "ascii-hello-123")
+                 (s-2b "café-μ-αβγ")
+                 (s-3b "中文-日本語-한국어")
+                 (s-4b (string #\x1F600 #\x1F389 #\x1F680))
+                 (unmod (list 'a 1 #t (vector 2 (cons 3 4))))
+                 (unmod-res (chez-call-scheme-1 (lambda (x) x) unmod))
+                 (ok-share (eq? unmod-res unmod))
+                 (make-bv-tree
+                   (lambda (tag)
+                     (list 'prefix 42 #f
+                           (string->utf8 s-empty)
+                           (string->utf8 s-ascii)
+                           (vector 10 (string->utf8 s-2b) (cons 20 (string->utf8 s-4b)))
+                           (cons 1 (cons 2 (string->utf8 s-3b)))
+                           (cons 3 (cons 4 (vector 5 (string->utf8 tag)))))))
+                 (make-str-tree
+                   (lambda (tag)
+                     (list 'prefix 42 #f
+                           s-empty
+                           s-ascii
+                           (vector 10 s-2b (cons 20 s-4b))
+                           (cons 1 (cons 2 s-3b))
+                           (cons 3 (cons 4 (vector 5 tag))))))
+                 (expected-str (make-str-tree "tag-ok"))
+                 (expected-bv (make-bv-tree "tag-ok"))
+                 (in-bv (make-bv-tree "tag-ok"))
+                 (seen-ok #f)
+                 (out-bv
+                   (chez-call-scheme-1
+                     (lambda (x)
+                       (set! seen-ok (equal? x expected-str))
+                       (collect (collect-maximum-generation))
+                       x)
+                     in-bv))
+                 (ok-roundtrip (and seen-ok (equal? out-bv expected-bv)))
+                 (apply-seen #f)
+                 (apply-args
+                   (list 1
+                         'sym
+                         (string->utf8 s-2b)
+                         (list 'a (string->utf8 s-3b) (vector (string->utf8 s-4b)))
+                         (cons 9 (string->utf8 s-ascii))
+                         (vector (string->utf8 s-empty) (string->utf8 s-2b))))
+                 (apply-expected
+                   (list 1
+                         'sym
+                         s-2b
+                         (list 'a s-3b (vector s-4b))
+                         (cons 9 s-ascii)
+                         (vector s-empty s-2b)))
+                 (_ (command-apply
+                      (object->command
+                        (lambda args
+                          (set! apply-seen (equal? args apply-expected))
+                          (collect (collect-maximum-generation))
+                          args))
+                      apply-args))
+                 (gc0 *gc-fires*)
+                 (bulk-ok #t))
+            (do ((r 0 (+ r 1))) ((= r 40))
+              (let* ((items (map (lambda (i)
+                                   (list i 'sym
+                                         (vector (string->utf8 s-2b)
+                                                 (cons (string->utf8 s-3b)
+                                                       (string->utf8 s-4b)))))
+                                 (iota-list 60)))
+                     (exp-items (map (lambda (i)
+                                       (list i 'sym
+                                             (vector s-2b (cons s-3b s-4b))))
+                                     (iota-list 60)))
+                     (got (chez-call-scheme-1
+                            (lambda (x)
+                              (unless (equal? x exp-items)
+                                (set! bulk-ok #f))
+                              x)
+                            items)))
+                (unless (equal? got items)
+                  (set! bulk-ok #f))))
+            (let ((gc1 *gc-fires*))
+              (stress-assert "test8-call-scheme-utf8-gc"
+                (and ok-share ok-roundtrip apply-seen bulk-ok
+                     (> (- gc1 gc0) 0)
+                     (= (chez-root-depth) 0))
+                (list 'share ok-share 'rt ok-roundtrip 'apply apply-seen
+                      'bulk bulk-ok 'gcs (- gc1 gc0) 'depth (chez-root-depth)))))))
       (lambda ()
         (collect-trip-bytes orig-trip)
         (collect-request-handler orig-crh)))
