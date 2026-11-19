@@ -54,11 +54,8 @@ iptr  chez_root_stack_cap= 0;
 
 static const iptr CHEZ_ROOT_STACK_INIT_CAP= 512;
 
-void
-chez_root_stack_grow () {
-  iptr new_cap= (chez_root_stack_cap == 0)
-                ? CHEZ_ROOT_STACK_INIT_CAP
-                : (chez_root_stack_cap * 2);
+static void
+chez_root_stack_resize (iptr new_cap) {
   tmscm old_vec= chez_root_stack_vec;
   tmscm new_vec= Smake_vector (new_cap, Sfixnum (0));
   /* Smake_vector is a pure C allocation and never synchronously runs GC.
@@ -70,6 +67,22 @@ chez_root_stack_grow () {
   chez_root_stack_cap= new_cap;
   if (old_vec != 0)
     Sunlock_object (old_vec);
+}
+
+void
+chez_root_stack_grow () {
+  iptr new_cap= (chez_root_stack_cap == 0)
+                ? CHEZ_ROOT_STACK_INIT_CAP
+                : (chez_root_stack_cap * 2);
+  chez_root_stack_resize (new_cap);
+}
+
+void
+chez_root_stack_shrink () {
+  if (chez_root_stack_top != 0 ||
+      chez_root_stack_cap <= CHEZ_ROOT_STACK_SHRINK_THRESHOLD)
+    return;
+  chez_root_stack_resize (CHEZ_ROOT_STACK_INIT_CAP);
 }
 
 extern "C" iptr

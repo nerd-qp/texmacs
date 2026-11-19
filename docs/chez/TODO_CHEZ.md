@@ -1150,4 +1150,50 @@ This document tracks identified architectural improvements and performance bottl
      - Menus like `(texmacs-menu)` return static trees that are re-expanded repeatedly when traversing submenus.
      - Adding short-lived caching or hash-consing for static submenus during a single menu-bar refresh cycle avoids re-expanding unchanged subtrees on every key press.
 
+### [ ] Harden `from_scheme_result` / `to_scheme_arg` / `call_scheme` with `ChezRoot` & Pure C++ UTF-8 Encoding
+- **Priority**: High (GC Correctness / Crash Safety + Performance)
+- **Location**: [`src/Scheme/Chez/chez_tm.cpp:371-551`](src/Scheme/Chez/chez_tm.cpp#L371-L551)
+- **Problem**:
+  - `sstring_to_bytevector` (`chez_tm.cpp:433-436`) invokes `Scall1 (tm_string_to_utf8_proc, str)` on every string leaf while `from_scheme_result` (`chez_tm.cpp:439-497`) holds `r`, `p`, `a`, `head`, `tail`, and `v` unrooted on the C++ stack — a live GC hazard if collection triggers mid-traversal.
+  - `to_scheme_arg` (`chez_tm.cpp:371-431`) and `call_scheme (tmscm fun, array<tmscm> a)` (`chez_tm.cpp:546-551`) similarly hold unrooted `ptr` locals across allocating calls (`Scons`, `Smake_vector`, `Sstring_utf8`).
+  - In `from_scheme_result` and `to_scheme_arg`, Phase 1 (structural-sharing probe) discards converted elements that Phase 2 then converts a second time once a modification is detected.
+- **Action Plan**:
+  1. Replace `sstring_to_bytevector`'s `Scall1 (tm_string_to_utf8_proc, str)` with a pure C++ UCS-4 (`Sstring_ref`) -> UTF-8 encoder writing directly into `Smake_bytevector`, removing `tm_string_to_utf8_proc` and per-string C-to-Scheme callback overhead.
+  2. Root live compound values in `from_scheme_result`, `to_scheme_arg`, and `call_scheme (fun, array<tmscm>)` using `ChezRoot` (and avoid redundant Phase 1/Phase 2 conversions where practical).
+  3. Extend `docs/chez/bench/gc-roots-stress.scm` to stress nested lists/vectors containing strings across `call_scheme` under aggressive GC.
+
+### [ ] Add Missing `tmscm_is_pair` Guard in `tmscm_is_path`
+- **Priority**: High (Crash Safety)
+- **Location**: [`src/Scheme/Scheme/glue.cpp:569-573`](src/Scheme/Scheme/glue.cpp#L569-L573)
+- **Problem**:
+  - `tmscm_is_path` currently calls `tmscm_car (p)` without first checking `tmscm_is_pair (p)`:
+    ```cpp
+    if (tmscm_is_null (p)) return true;
+    else return tmscm_is_int (tmscm_car (p)) && tmscm_is_path (tmscm_cdr (p));
+    ```
+  - Passing a non-pair (e.g. a string or integer, such as `(tree-search-tree "a" "b" "bad-path" 10)`) to any `TMSCM_ASSERT_PATH` routine triggers a `SIGSEGV` instead of a clean wrong-type exception (discovered while writing `docs/chez/bench/gc-roots-stress.scm`).
+- **Action Plan**:
+  - Change line 572 to:
+    ```cpp
+    else return tmscm_is_pair (p) && tmscm_is_int (tmscm_car (p)) && tmscm_is_path (tmscm_cdr (p));
+    ```
+  - Safe for all Scheme backends (shared `glue.cpp` path).
+
+### [ ] Forward Cursor-Pair Path for Long Arrays (`n >= 8`) in `chez_array_to_tmscm`
+- **Priority**: Low (Optional Micro-Optimization)
+- **Location**: [`src/Scheme/Scheme/glue.cpp:422-438`](src/Scheme/Scheme/glue.cpp#L422-L438)
+- **Problem**:
+  - Because `chez_root_stack_vec` lives in gen >= 1 after boot, each `acc.set (tail)` in the backward loop hits Chez's `S_dirty_set` write barrier (`alloc_mutex` acquisition).
+- **Optimization**:
+  - For long arrays (`n >= 8`), build forward using a single rooted gen-0 cursor pair `(head . tail)` so `Sset_cdr` updates stay in gen-0 (skipping `alloc_mutex`), reducing mutex acquisitions from `n - 1` to `1`.
+  - Minor impact on typical TeXmacs AST trees (average arity is ~2.65); mainly benefits large flat arrays/tables.
+
+### [ ] Avoid Double Sublist Walk in `tmscm_to_scheme_tree`
+- **Priority**: Low (Optional Micro-Optimization)
+- **Location**: [`src/Scheme/Scheme/glue.cpp:503-520`](src/Scheme/Scheme/glue.cpp#L503-L520)
+- **Problem**:
+  - `tmscm_to_scheme_tree` calls `tmscm_is_list (p)` (which invokes Chez `list?` and walks the entire sublist spine) before walking the exact same pairs a second time to convert children.
+- **Optimization**:
+  - Check `tmscm_is_pair (p)` (and `'()` explicitly) and validate proper list termination in a single pass, trimming overhead from `stree->tree` (`c-glue-stree_2tree`, ~7.6–8.0 ms in `conversions.scm`).
+
 

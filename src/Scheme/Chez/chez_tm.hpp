@@ -56,7 +56,9 @@ extern tmscm tm_equal_pred;        /* equal?                                   *
 extern tmscm chez_root_stack_vec;  /* permanently locked Scheme vector      */
 extern iptr  chez_root_stack_top;  /* next free slot index (0-based)        */
 extern iptr  chez_root_stack_cap;  /* current vector length                 */
+static const iptr CHEZ_ROOT_STACK_SHRINK_THRESHOLD= 16384;
 void chez_root_stack_grow ();      /* cold path: lazy-init or double size   */
+void chez_root_stack_shrink ();    /* cold path: shrink back to init size   */
 
 #if defined(__GNUC__) || defined(__clang__)
 #define CHEZ_UNLIKELY(x) __builtin_expect (!!(x), 0)
@@ -93,6 +95,9 @@ public:
     }
     Svector_set (chez_root_stack_vec, slot, Sfixnum (0));
     chez_root_stack_top= slot;
+    if (CHEZ_UNLIKELY (chez_root_stack_top == 0 &&
+                       chez_root_stack_cap > CHEZ_ROOT_STACK_SHRINK_THRESHOLD))
+      chez_root_stack_shrink ();
   }
   inline tmscm get () const { return Svector_ref (chez_root_stack_vec, slot); }
   inline void set (tmscm val) { Svector_set (chez_root_stack_vec, slot, val); }
