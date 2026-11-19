@@ -148,14 +148,15 @@
 
 (export with-global)
 (define-syntax with-global
-  (syntax-rules ()
-    ((_ var val body ...)
-     (let ((old var)
-           (new val))
-       (dynamic-wind
-         (lambda () (set! var new))
-         (lambda () body ...)
-         (lambda () (set! var old)))))))
+  (lambda (x)
+    (syntax-case x ()
+      ((_ var val . body)
+       #'(let ((old var)
+               (new val))
+           (dynamic-wind
+             (lambda () (set! var new))
+             (lambda () (begin . body))
+             (lambda () (set! var old))))))))
 
 (define-public-macro (and-with var val . body)
   `(with ,var ,val

@@ -252,70 +252,17 @@
     :winpath
     :< :> :/ :<lsub :<lsup :<lprime :<rsub :<rsup :<rprime :<not :<long-arrow :<Prefix :<Postfix :<left :<right :<mid :<big :<around :<around* :<row :<big-around :<frac :<sqrt :<wide :<table))
 
-(define (tm-catch-runtime key handler thunk)
-  (guard (e (else
-             (let* ((msg (if (condition? e) (condition-message e) e))
-                    (irr (if (and (condition? e) (condition-irritants e))
-                             (condition-irritants e)
-                             '()))
-                    (payload (list key #f msg irr '())))
-               (if (procedure? handler) (apply handler payload) #f))))
-    (thunk)))
-(define-syntax catch
-  (syntax-rules ()
-    ((_ key thunk handler) (tm-catch-runtime key handler thunk))))
-(define-syntax lazy-catch
-  (syntax-rules ()
-    ((_ key thunk handler) (tm-catch-runtime key handler thunk))))
-(define (throw key . args)
-  (raise (condition
-           (make-error)
-           (make-message-condition
-             (if (and (pair? args) (string? (car args)))
-                 (car args)
-                 (format "~s" (cons key args))))
-           (make-irritants-condition args))))
-
+;; Stays in boot-chez.scm because Pass 1 (`transpile-conditional') evaluates
+;; `(if (not (defined? 'filter)) ...)' in compat.scm before any module loads.
 (define (defined? sym) (top-level-bound? sym))
 
-(define-syntax with
-  (lambda (x)
-    (syntax-case x ()
-      ((_ var val body ...)
-       (let ((v (syntax->datum #'var)))
-         (if (and (or (pair? v) (null? v))
-                  (not (and (pair? v)
-                            (symbol? (car v))
-                            (let ((s (symbol->string (car v))))
-                              (and (> (string-length s) 0)
-                                   (char=? (string-ref s 0) #\:))))))
-             #'(apply (lambda var body ...) val)
-             #'(let ((var val)) body ...)))))))
-
-;; `with' must stay: abbrevs.scm deliberately leaves its own copy commented out
-;; so that this hygienic transformer is the one in use (see the long note at
-;; abbrevs.scm:98).  `and-with', `with-define' and `with-result' are NOT here --
-;; they are define-public-macros in kernel/boot/abbrevs.scm, which is loaded
-;; right after this file and whose equivalent definitions shadowed these copies
-;; anyway.
-(define-syntax while
-  (syntax-rules ()
-    ((_ test body ...)
-     (let loop ()
-       (when test
-         body ...
-         (loop))))))
-
-
 ;; Guile compatibility shims that are only needed once a module is running now
-;; live in kernel/boot/chez-compat.scm: the list helpers (`map-in-order',
-;; `symbol-append'), the port and file helpers (`open-file',
-;; `OPEN_READ'/`OPEN_WRITE', the `call-with-*-string' pair), the char-set
-;; constructors, symbolic record field names (`record-accessor' /
-;; `record-modifier' with a symbol instead of an index), `server-mode?',
-;; `scm-error', `random', `hash' and the macro-expansion helpers.  `filter',
-;; `last-pair', `1+' and `1-' were not moved but dropped: `(chezscheme)' already
-;; exports all four with identical semantics.
+;; live in kernel/boot/chez-compat.scm: `catch', `lazy-catch', `throw', `with',
+;; `while', the list helpers (`map-in-order', `symbol-append'), the port and
+;; file helpers (`open-file', `OPEN_READ'/`OPEN_WRITE', `call-with-*-string'),
+;; char-sets, `record-accessor', `server-mode?', `scm-error', `random', `hash',
+;; and the macro-expansion helpers.  `filter', `last-pair', `1+' and `1-' are
+;; already exported by `(chezscheme)'.
 
 (define-syntax with-wallet
   (syntax-rules ()

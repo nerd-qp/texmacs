@@ -7,34 +7,6 @@
 
 (texmacs-module (kernel boot chez-compat))
 
-(import
-  (except (chezscheme)
-          sort current-time random record-accessor)
-  (rename (only (chezscheme)
-                sort current-time random record-accessor
-                display write)
-          (sort chez:sort)
-          (current-time chez:current-time)
-          (random chez-sys-random)
-          (record-accessor old-record-accessor)
-          (display chez:display)
-          (write chez:write)))
-
-(define-syntax define-public
-  (syntax-rules ()
-    ((_ (name . args) body ...) (define (name . args) body ...))
-    ((_ name val) (define name val))))
-
-(define-syntax define-public-macro
-  (lambda (x)
-    (syntax-case x ()
-      ((_ (nm . formals) body ...)
-       #'(define-syntax nm
-           (lambda (stx)
-             (datum->syntax (car (syntax->list stx))
-               (apply (lambda formals body ...)
-                      (cdr (syntax->datum stx))))))))))
-
 ;; Everything here is a Guile-ism that the rest of the tree still relies on.
 ;; This module is compiled first (Tier 1) and loaded before any other module,
 ;; so a shim may live here rather than in kernel/boot/boot-chez.scm provided the
@@ -616,6 +588,67 @@
 (define-public-macro (receive vars vals . body)
   `(call-with-values (lambda () ,vals)
      (lambda ,vars ,@body)))
+
+;;; Core control-flow & exception shims (also in boot-chez.scm for pre-module bootstrap)
+(define-public noop
+  (case-lambda
+    (() #f)
+    ((x) x)
+    ((x . _) x)))
+
+(define-public (defined? sym)
+  (top-level-bound? sym))
+
+(define-public (tm-catch-runtime key handler thunk)
+  (guard (e (else
+             (let* ((msg (if (condition? e) (condition-message e) e))
+                    (irr (if (and (condition? e) (condition-irritants e))
+                             (condition-irritants e)
+                             '()))
+                    (payload (list key #f msg irr '())))
+               (if (procedure? handler) (apply handler payload) #f))))
+    (thunk)))
+
+(export catch lazy-catch with while)
+
+(define-syntax catch
+  (syntax-rules ()
+    ((_ key thunk handler) (tm-catch-runtime key handler thunk))))
+
+(define-syntax lazy-catch
+  (syntax-rules ()
+    ((_ key thunk handler) (tm-catch-runtime key handler thunk))))
+
+(define-public (throw key . args)
+  (raise (condition
+           (make-error)
+           (make-message-condition
+             (if (and (pair? args) (string? (car args)))
+                 (car args)
+                 (format "~s" (cons key args))))
+           (make-irritants-condition args))))
+
+(define-syntax with
+  (lambda (x)
+    (syntax-case x ()
+      ((_ var val body ...)
+       (let ((v (syntax->datum #'var)))
+         (if (and (or (pair? v) (null? v))
+                  (not (and (pair? v)
+                            (symbol? (car v))
+                            (let ((s (symbol->string (car v))))
+                              (and (> (string-length s) 0)
+                                   (char=? (string-ref s 0) #\:))))))
+             #'(apply (lambda var body ...) val)
+             #'(let ((var val)) body ...)))))))
+
+(define-syntax while
+  (syntax-rules ()
+    ((_ test body ...)
+     (let loop ()
+       (when test
+         body ...
+         (loop))))))
 
 ;;; Guile boot placeholders
 ;;

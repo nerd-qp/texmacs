@@ -522,6 +522,10 @@
        (eq? (caar forms) 'texmacs-module)
        (car forms)))
 
+(define *r6rs-library-modules*
+  '(kernel:boot:chez-compat
+    kernel:boot:abbrevs))
+
 (define (module-link-forms mod-name deps options public local)
   (define imports '())
   (define exports (if (null? public) '() (list `(export ,@public))))
@@ -557,9 +561,12 @@
                         (mod-name->symbol mod-name)
                         module))))
 
-  (when (and (not (equal? mod-name '(kernel boot chez-compat)))
-             (memq 'kernel:boot:chez-compat *transpiled-modules*))
-    (use-module! 'kernel:boot:chez-compat))
+  (for-each
+    (lambda (auto-mod)
+      (when (and (not (eq? (mod-name->symbol mod-name) auto-mod))
+                 (memq auto-mod *transpiled-modules*))
+        (use-module! auto-mod)))
+    *r6rs-library-modules*)
 
   (for-each
     (lambda (option)
@@ -581,23 +588,105 @@
   (map (lambda (keyword) `(define ,keyword ',keyword))
        (tm-collect-keywords forms '())))
 
-(define (write-module-file out-path rel-path mod-sym imports exports keywords
-                           definitions dep-provides expressions)
+;; R6RS libraries have no fallback to `(interaction-environment)', so bridge free
+;; references to C++ glue and later modules via `top-level-value' shims.
+(define (library-top-level-shims forms local imported)
+  (let ((seen '())
+        (shims '()))
+    (let walk ((x forms))
+      (cond
+        ((pair? x)
+         (if (eq? (car x) 'quote)
+             (void)
+             (begin (walk (car x)) (walk (cdr x)))))
+        ((and (symbol? x)
+              (not (keyword? x))
+              (not (memq x seen))
+              (not (memq x local))
+              (not (memq x imported))
+              (not (memq x '(define-public provide-public define-public-macro
+                             _ unquote unquote-splicing quasiquote)))
+              (not (top-level-bound? x (scheme-environment)))
+              (not (top-level-syntax? x (scheme-environment)))
+              (or (top-level-bound? x (interaction-environment))
+                  (hashtable-ref *oracle-defs* x #f)))
+         (set! seen (cons x seen))
+         (set! shims
+               (cons `(define-syntax ,x
+                        (identifier-syntax (top-level-value ',x)))
+                     shims)))))
+    (reverse shims)))
+
+;; Each R6RS library's `(import ...)' header depends on the `(chezscheme)'
+;; builtins overridden/redefined in that .scm file and earlier libraries used.
+(define (library-import-form mod-sym)
+  (cond
+    ((eq? mod-sym 'kernel:boot:chez-compat)
+     '(import
+        (except (chezscheme)
+                sort current-time random record-accessor)
+        (rename (only (chezscheme)
+                      sort current-time random record-accessor
+                      display write)
+                (sort chez:sort)
+                (current-time chez:current-time)
+                (random chez-sys-random)
+                (record-accessor old-record-accessor)
+                (display chez:display)
+                (write chez:write))))
+    ((eq? mod-sym 'kernel:boot:abbrevs)
+     '(import
+        (except (chezscheme)
+                sort current-time random record-accessor ...)
+        (kernel boot chez-compat)))
+    (else
+     (error 'library-import-form "unknown library module" mod-sym))))
+
+(define (write-module-file out-path rel-path mod-name mod-sym imports exports
+                           keywords local definitions dep-provides expressions)
   (call-with-output-file out-path
     (lambda (port)
       (format port ";;; Auto-generated native Chez Scheme module from ~a~%"
               rel-path)
-      (if (eq? mod-sym 'kernel:boot:chez-compat)
+      (if (memq mod-sym *r6rs-library-modules*)
           (begin
-            (write `(library (kernel boot chez-compat)
+            (write `(library ,mod-name
                       ,@exports
+                      ,(library-import-form mod-sym)
+                      (define-syntax define-public
+                        (lambda (x)
+                          (syntax-case x ()
+                            ((_ (name . args) . body) #'(define (name . args) . body))
+                            ((_ name val) #'(define name val)))))
+                      (define-syntax provide-public
+                        (lambda (x)
+                          (syntax-case x ()
+                            ((_ (name . args) . body) #'(define (name . args) . body))
+                            ((_ name val) #'(define name val)))))
+                      (define-syntax define-public-macro
+                        (lambda (x)
+                          (syntax-case x ()
+                            ((_ (nm . formals) . body)
+                             (with-syntax ((lib-== (datum->syntax #'nm '==)))
+                               #'(define-syntax nm
+                                   (lambda (stx)
+                                     (let ((lib-== equal?))
+                                       (datum->syntax (car (syntax->list stx))
+                                         (apply (lambda formals . body)
+                                                (cdr (syntax->datum stx))))))))))))
+                      ,@(if (eq? mod-sym 'kernel:boot:chez-compat)
+                            '()
+                            (library-top-level-shims
+                              definitions
+                              local
+                              (get-module-exports 'kernel:boot:chez-compat)))
                       ,@definitions
                       ,@expressions)
                    port)
             (newline port)
-            (write '(module kernel:boot:chez-compat ()
-                      (import (kernel boot chez-compat))
-                      (export (import (kernel boot chez-compat))))
+            (write `(module ,mod-sym ()
+                      (import ,mod-name)
+                      (export (import ,mod-name)))
                    port))
           (write `(module ,mod-sym ()
                     ,@imports
@@ -647,9 +736,10 @@
                  (let-values (((definitions expressions)
                                (partition def-form? prepared)))
                    (write-module-file
-                     out-path rel-path mod-sym
+                     out-path rel-path mod-name mod-sym
                      imports exports
                      (keyword-definitions forms)
+                     local
                      definitions
                      (map (lambda (dep) `(module-provide ',dep)) deps)
                      expressions))
