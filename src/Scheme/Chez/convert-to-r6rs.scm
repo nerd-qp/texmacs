@@ -557,6 +557,10 @@
                         (mod-name->symbol mod-name)
                         module))))
 
+  (when (and (not (equal? mod-name '(kernel boot chez-compat)))
+             (memq 'kernel:boot:chez-compat *transpiled-modules*))
+    (use-module! 'kernel:boot:chez-compat))
+
   (for-each
     (lambda (option)
       (when (and (pair? option) (memq (car option) '(:use :inherit)))
@@ -583,14 +587,26 @@
     (lambda (port)
       (format port ";;; Auto-generated native Chez Scheme module from ~a~%"
               rel-path)
-      (write `(module ,mod-sym ()
-                ,@imports
-                ,@exports
-                ,@keywords
-                ,@definitions
-                ,@dep-provides
-                ,@expressions)
-             port)
+      (if (eq? mod-sym 'kernel:boot:chez-compat)
+          (begin
+            (write `(library (kernel boot chez-compat)
+                      ,@exports
+                      ,@definitions
+                      ,@expressions)
+                   port)
+            (newline port)
+            (write '(module kernel:boot:chez-compat ()
+                      (import (kernel boot chez-compat))
+                      (export (import (kernel boot chez-compat))))
+                   port))
+          (write `(module ,mod-sym ()
+                    ,@imports
+                    ,@exports
+                    ,@keywords
+                    ,@definitions
+                    ,@dep-provides
+                    ,@expressions)
+                 port))
       (newline port))
     'replace))
 

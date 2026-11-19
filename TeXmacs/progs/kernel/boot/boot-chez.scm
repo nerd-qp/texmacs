@@ -695,6 +695,10 @@
 (define (procedure-source p)
   (if (procedure? p) (hashtable-ref procedure-source-table p #f) #f))
 
+;; Stays in boot-chez.scm because kernel/texmacs/tm-define.scm:95 replaces it
+;; via a top-level `(set! procedure-name ...)`.
+(define (procedure-name p) #f)
+
 (define (promise-source action)
   (and (procedure? action)
        (let ((source (procedure-source action)))

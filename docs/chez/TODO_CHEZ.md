@@ -169,6 +169,70 @@ This document tracks remaining open bugs, architectural improvements, and perfor
   - `docs/chez/bench/CONVERSIONS_PROFILING.md` §3.5 measured `==` and `func?` wrapper overhead at only **~6–9 ms out of 1.7 s** (≈0.4%) in LaTeX conversion, so this is primarily a compile-flow enabler for broader inlining, not an immediate hot-path fix.
   - Verify with `-compile-modules` (0 failures), normal startup, and the conversions benchmark after changing the bootstrap order.
 
+### [ ] Multi-Stage Plan: Turn `chez-compat` and `boot-chez` into Auto-Imported R6RS `(library ...)` Units for Cross-Module `cp0` Inlining
+- **Locations**:
+  - [`TeXmacs/progs/kernel/boot/chez-compat.scm`](../../TeXmacs/progs/kernel/boot/chez-compat.scm)
+  - [`TeXmacs/progs/kernel/boot/boot-chez.scm`](../../TeXmacs/progs/kernel/boot/boot-chez.scm)
+  - [`TeXmacs/progs/kernel/boot/glue-chez.scm`](../../TeXmacs/progs/kernel/boot/glue-chez.scm)
+  - [`src/Scheme/Chez/convert-to-r6rs.scm`](../../src/Scheme/Chez/convert-to-r6rs.scm)
+  - [`src/Scheme/Chez/compile-texmacs.scm`](../../src/Scheme/Chez/compile-texmacs.scm)
+- **Compiler Root-Cause Discovery (`(module ...)` vs. R6RS `(library ...)` in Chez Scheme `cp0`)**:
+  - [`docs/chez/bench/CONVERSIONS_PROFILING.md` §3.5](bench/CONVERSIONS_PROFILING.md) observed that Chez Scheme did not inline `==` or other imported helpers across separately compiled `.so` files even at `optimize-level 2`, attributing this to separate compilation. Inspecting Chez's compiler internals reveals the actual mechanism:
+    - [`src/Scheme/Chez/convert-to-r6rs.scm:586-593`](../../src/Scheme/Chez/convert-to-r6rs.scm#L586-L593) currently emits Chez top-level `(module <mod-sym> () ...)` forms, and [`TeXmacs/progs/kernel/boot/boot-chez.scm`](../../TeXmacs/progs/kernel/boot/boot-chez.scm) is a plain top-level file.
+    - In Chez Scheme (`ChezScheme/s/syntax.ss`), top-level `(module ...)` exports compile as mutable top-level value cells (`(#3%$set-top-level-value! '#{sym ...} (lambda ...))`). Because top-level bindings in `(interaction-environment)` are not guaranteed immutable, Chez **never** attaches `cte-optimization-loc` boxes to `(module ...)` exports (even intra-module calls between two `define-public` procedures in the same `(module ...)` compile to indirect `(#2%$top-level-value '#{sym ...})` lookups).
+    - In contrast, for R6RS `(library ...)` forms (`ChezScheme/s/syntax.ss:844-858`, `build-library-body` + `ChezScheme/s/cp0.ss:5801-5846`), R6RS export immutability lets Chez compile the entire library body inside one lexical `letrec*` and attach `(cte-optimization-loc box ...)` to every exported variable.
+    - With `(enable-cross-library-optimization)` active (`#t` by default), `compile-file` serializes integrable `case-lambda` ASTs (`$install-library-clo-info`) directly into the `.so` FASL's `library/ct-info` record.
+    - Any subsequent old-style `(module ...)` that imports that `(library ...)` in a separate `compile-file` pass reads the serialized `cte-info` and **inlines exported procedures at call sites** (even at default `optimize-level 0`), while keeping first-class procedure values for higher-order uses (`map`, `apply`) and propagating single-valued metadata (`cte-info-procedure-single-valued?`) and unchecked library-global references (`#3%$top-level-value`) for larger non-inlined procedures.
+- **Empirical Verification (`expand/optimize` in a fresh Chez 10.4.1 process loading a compiled `.so` library)**:
+  - `(delq! x l)` $\to$ `(#2%remq! x l)`
+  - `(acons k v l)` $\to$ `(#2%cons (#2%cons k v) l)`
+  - `(assoc-ref alist k)` $\to$ `(let ((t (#2%assoc k alist))) (if t (#2%cdr t) #f))`
+  - `(string-null? s)` $\to$ `(#2%string=? s "")`
+  - `(hash-set! t k v)` $\to$ `(#2%hashtable-set! t k v)`
+  - `(hash-remove! t k)` $\to$ `(#2%hashtable-delete! t k)`
+  - `(defined? x)` $\to$ `(#2%top-level-bound? x)`
+  - `(noop x)` $\to$ `x`
+  - `(keyword->symbol k)`, `(keyword->string k)`, `(ca*adr x)` $\to$ inlined directly to primitives.
+- **Stage 1 (DONE — 2026-11-19): Make `chez-compat.scm` an Auto-Imported R6RS Library (`(library (kernel boot chez-compat) ...)`)**:
+  - *Why `chez-compat` first*:
+    - 100% Chez-specific file with 0 `:use` dependencies; compiled first in Tier 1 (`compile-inventory.scm:40`).
+    - **0 downstream definition/overload collisions** (and only one downstream `set!`, handled by keeping `procedure-name` in `boot-chez.scm`): Full-tree audit across all 453 modules via `compiler-scan.scm` confirms **0** of `chez-compat.scm`'s exports are redefined or overloaded by `define-public` or `tm-define` in any downstream module, and only `procedure-name` was mutated via `set!` (`tm-define.scm:95`).
+  - *Implemented Changes*:
+    1. **`TeXmacs/progs/kernel/boot/chez-compat.scm` & `TeXmacs/progs/kernel/boot/boot-chez.scm`**:
+       - Kept `(texmacs-module (kernel boot chez-compat))` and all `define-public` / `define-public-macro` definitions (so no manual `(export ...)` list is required in source and `compiler-scan.scm` needs 0 changes), and placed `(import (except (chezscheme) ...) (rename ...))` plus local `define-public` / `define-public-macro` `syntax-rules`/`syntax-case` shims at [`chez-compat.scm:10-36`](../../TeXmacs/progs/kernel/boot/chez-compat.scm#L10-L36).
+       - **Moved `procedure-name` stub to `boot-chez.scm:700`**: `kernel/texmacs/tm-define.scm:94-98` mutates `procedure-name` via top-level `(set! procedure-name ...)`, which fails on immutable R6RS library exports (`Exception: attempt to assign immutable variable procedure-name`). Moving `(define (procedure-name p) #f)` to `boot-chez.scm` (alongside `has-look-and-feel?` and `quit-TeXmacs-scheme`) keeps it mutable in `(interaction-environment)`.
+       - **4 `(chezscheme)` builtins overridden by `chez-compat`**: `sort`, `current-time`, `random`, `record-accessor`. Excluded in the library import clause via `(except (chezscheme) sort current-time random record-accessor)` and rebound via `(rename (only (chezscheme) sort current-time random record-accessor display write) ...)` instead of `top-level-value` lookups.
+       - **External references inside `chez-compat.scm`**:
+         - `keyword->string`, `keyword->number`, and `number->keyword` operate directly on `symbol->string` / `string->symbol` instead of calling `boot-chez.scm`'s `keyword->symbol` / `symbol->keyword`.
+         - `display*` routes via `(top-level-value 'display)` so 1-arg `display*` continues to flow through `boot-chez.scm`'s `tm-output` hook.
+         - `server-mode?` calls `((top-level-value 'server-started?))`, and `on-exit` wraps `(top-level-value 'quit-TeXmacs-scheme)` via `set-top-level-value!`.
+       - **`hash-ref` `case-lambda` optimization (`chez-compat.scm:396-402`)**:
+         Replaced variadic `(define-public (hash-ref t k . default) ...)` with `case-lambda`, letting 2-argument `(hash-ref t k)` inline down to `(#2%hashtable-ref t k #f)` (one lookup, zero rest-list consing).
+    2. **`src/Scheme/Chez/convert-to-r6rs.scm`**:
+       - In `write-module-file` (`convert-to-r6rs.scm:590-601`), `kernel/boot/chez-compat.scm` emits `(library (kernel boot chez-compat) ,@exports ,@definitions ,@expressions)` followed immediately by `(module kernel:boot:chez-compat () (import (kernel boot chez-compat)) (export (import (kernel boot chez-compat))))` (since `import`, `define-syntax`, `define-public`, and `define-public-macro` are already placed into `definitions` by `prepare-forms` + `partition def-form?`). Because `(export (import (kernel boot chez-compat)))` re-exports the library bindings directly, Chez preserves `cte-optimization-loc` cross-library inlining metadata for callers importing `kernel:boot:chez-compat` without changing `boot-chez.scm`, `init-texmacs-chez.scm`, `init-texmacs-boot-file.scm`, `compile-texmacs.scm`, or `texmacs-user.scm`.
+       - In `module-link-forms` (`convert-to-r6rs.scm:560-562`), `(kernel boot chez-compat)` is auto-imported via `use-module!` for all subsequent modules, automatically excluding colliding local private definitions via `(except kernel:boot:chez-compat ,@clash)` (e.g. in `tm-define.scm`, `math-edit.scm`, `graphics-markup.scm`, `db-users.scm`, `menu-convert.scm`).
+  - *Verification (2026-11-19)*:
+    - All 5 compiler unit test suites in `src/Scheme/Chez/*-test.scm`: **206 checks, 0 failures** (50 + 29 + 17 + 41 + 69).
+    - Full clean `-recompile-modules`: **453/453 modules recompiled, 0 failures** (`init-texmacs-boot-file.so` verified).
+    - Cross-library `cp0` inlining verified via `expand/optimize` loading `build-texmacos/boot/kernel/boot/chez-compat.so`: `string-null?`, 2-arg `hash-ref`, `hash-set!`, `delq!`, `acons`, and `keyword->string` inline directly to `#2%string=?`, `#2%hashtable-ref`, `#2%hashtable-set!`, `#2%remq!`, `#2%cons`, and `#2%symbol->string` / `#2%substring` / `#3%string-length`.
+    - Rebuilt VFASL `texmacs.boot` via `make-boot.scm` (`17.00 MB`, 178/178 modules) and verified headless startup (`-H -x`) in both Fast Boot (`TIME-SERVER-INIT: 490 ms`) and `TEXMACS_NO_BOOT=1` Normal `.so` Init (`TIME-SERVER-INIT: 1398 ms`, `TIME-PRE-GUI-LOOP: 1497 ms`), exercising `keyword->string`, `keyword->number`, `number->keyword`, `display*`, `display-to-string`, `hash-ref`, `receive`, `on-entry`, `on-exit`, and `tm-define`'s `procedure-name` override.
+- **Stage 2: Turn `boot-chez.scm` + `glue-chez.scm` into `(library (kernel boot boot-chez) ...)` + Thin Top-Level Bootstrap**:
+  - *Benefit*:
+    - Currently, all **732 transcoded C++ glue procedures** in `glue-chez.scm` emit a top-level `(define c-glue-foo (foreign-procedure ...))` and `(define (foo a1) (recur-utf8->string (c-glue-foo (recur-string->utf8 a1))))`. At top level, Chez cannot inline `c-glue-foo` into `foo`, incurring 3 mutable top-level lookups (`recur-string->utf8`, `c-glue-foo`, `recur-utf8->string`) and an extra closure call per FFI invocation.
+    - Inside `(library (kernel boot boot-chez) ...)`, `c-glue-*` are unexported lexical `letrec*` bindings: Chez inlines the `$foreign-procedure` call directly into `foo` (eliminating 732 closures and 732 global symbols from `texmacs.boot`) and compiles `recur-string->utf8` / `recur-utf8->string` as direct known-procedure calls (~20% faster wrapper execution in microbenchmarks: `132.8 ms` $\to$ `106.9 ms` for 20M calls).
+    - Replacing `(define chez:symbol? (top-level-value 'symbol? (scheme-environment)))` with `(import (rename (only (chezscheme) symbol?) (symbol? chez:symbol?)))` allows `cp0` to recognize `chez:symbol?` as a primitive inside `symbol?` and `keyword?`.
+  - *Constraints & Exclusions (8 symbols must remain mutable top-level bindings in `(interaction-environment)`)*:
+    1. **2 `set!` targets**: `has-look-and-feel?` (mutated in `tm-preferences.scm:174`) and `quit-TeXmacs-scheme` (mutated by `on-exit`).
+    2. **4 glue procedures overloaded via `tm-define`**: `select-all` (`generic/generic-edit.scm`), `url-last-modified`, `url-newer?`, `buffer-last-save` (`texmacs/texmacs/tm-files.scm:23-39`).
+    3. **2 `boot-chez` procedures redefined downstream**: `promise-source` (`kernel/gui/menu-widget.scm`) and `module-dependencies` (`doc/apidoc-funcs.scm`).
+    4. **Top-level re-import**: The thin top-level `boot-chez.scm` loader must still run `(import (kernel boot boot-chez))` into `(interaction-environment)` before calling `chez_cache_runtime_procedures` so C++ `Stop_level_value` (`chez_tm.cpp:779-832`) and dynamic `(eval ... tm-user-env)` resolve all runtime bindings.
+- **Stage 3: Extend Auto-Imported `(library ...)` Emission to Foundational Acyclic Tier-1 Kernel Modules (`abbrevs.scm`, `ahash-table.scm`, `base.scm`, `list.scm`)**:
+  - As measured in [`CONVERSIONS_PROFILING.md` §3.2–§3.5](bench/CONVERSIONS_PROFILING.md), the highest-frequency small wrappers across TeXmacs live in:
+    - `kernel/boot/abbrevs.scm`: `==` (1.88M calls in LaTeX export), `nlist?` (192k), `list>0?` (183k), `in?` (137k), `!=` (74k in HTML export), `nnull?`, `npair?`, `safe-car`, `safe-cdr`.
+    - `kernel/boot/ahash-table.scm`: `ahash-ref` (82k+ calls in LaTeX export), `ahash-set!`, `ahash-remove!`.
+    - `kernel/library/base.scm`: `func?` (660k calls in LaTeX export + 302k calls in HTML export).
+  - Emitting these acyclic Tier-1 modules as `(library ...)` (plus the 2-line `(module <flat-sym> () (import (<lib-spec>)) (export (import (<lib-spec>))))` alias) and auto-importing them into downstream module headers enables `cp0` to inline `==`, `!=`, `nnull?`, `npair?`, `safe-car`, `safe-cdr`, `ahash-ref`, `ahash-set!`, and `func?` system-wide while keeping pristine upstream sources untouched.
+
 ### [ ] Refactor `define-table` and `define-collection` (Post Pure-Expression `tm-define` Simplification)
 - **Location**: [`src/Scheme/Chez/convert-to-r6rs.scm:392-393`](src/Scheme/Chez/convert-to-r6rs.scm#L392-L393), [`src/Scheme/Chez/compiler-helper.scm:216-245`](src/Scheme/Chez/compiler-helper.scm#L216-L245), [`TeXmacs/progs/kernel/boot/ahash-table.scm`](TeXmacs/progs/kernel/boot/ahash-table.scm)
 - **Problem**: `define-table` and `define-collection` are still special-cased in `prepare-forms` and `eval-eager-form!` to avoid Chez Scheme multiple-definition errors during forward declarations (`(define-table style-synopsis)`) and ensure tables are exported to `texmacs-user-kernel`.

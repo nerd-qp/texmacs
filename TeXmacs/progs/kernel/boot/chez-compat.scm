@@ -7,6 +7,34 @@
 
 (texmacs-module (kernel boot chez-compat))
 
+(import
+  (except (chezscheme)
+          sort current-time random record-accessor)
+  (rename (only (chezscheme)
+                sort current-time random record-accessor
+                display write)
+          (sort chez:sort)
+          (current-time chez:current-time)
+          (random chez-sys-random)
+          (record-accessor old-record-accessor)
+          (display chez:display)
+          (write chez:write)))
+
+(define-syntax define-public
+  (syntax-rules ()
+    ((_ (name . args) body ...) (define (name . args) body ...))
+    ((_ name val) (define name val))))
+
+(define-syntax define-public-macro
+  (lambda (x)
+    (syntax-case x ()
+      ((_ (nm . formals) body ...)
+       #'(define-syntax nm
+           (lambda (stx)
+             (datum->syntax (car (syntax->list stx))
+               (apply (lambda formals body ...)
+                      (cdr (syntax->datum stx))))))))))
+
 ;; Everything here is a Guile-ism that the rest of the tree still relies on.
 ;; This module is compiled first (Tier 1) and loaded before any other module,
 ;; so a shim may live here rather than in kernel/boot/boot-chez.scm provided the
@@ -124,7 +152,7 @@
 ;; that is used, 293 times).
 (define-public (display* . l)
   "Display all objects in @l."
-  (for-each display l))
+  (for-each (top-level-value 'display) l))
 
 (define-public (read-line . opt)
   (get-line (if (null? opt) (current-input-port) (car opt))))
@@ -135,15 +163,15 @@
 (define-public (make-soft-port . _) #f)
 
 ;;; Introspection
-(define-public (procedure-name p) #f)
+;; `procedure-name' lives in boot-chez.scm: kernel/texmacs/tm-define.scm:95
+;; mutates it at top level with `(set! procedure-name ...)', which requires a
+;; mutable interaction-environment binding rather than an R6RS library export.
 (define-public (procedure-documentation p) #f)
 
 ;;; POSIX compatibility
 (define-public (getpid)
   (cond ((top-level-bound? 'get-process-id) (get-process-id))
         (else 1000)))
-
-(define chez:current-time (top-level-value 'current-time (scheme-environment)))
 
 (define-public (current-time)
   (time-second (chez:current-time)))
@@ -365,10 +393,13 @@
                       (loop (+ i 1) in-string?))))))))))
 
 ;;; Hash tables (Guile compatibility)
-(define-public (hash-ref t k . default)
-  (if (hashtable-contains? t k)
-      (hashtable-ref t k #f)
-      (if (null? default) #f (car default))))
+(define-public hash-ref
+  (case-lambda
+    ((t k) (hashtable-ref t k #f))
+    ((t k default)
+     (if (hashtable-contains? t k)
+         (hashtable-ref t k #f)
+         default))))
 
 (define-public (hash-set! t k v)
   (hashtable-set! t k v)
@@ -406,22 +437,21 @@
 ;; `string->keyword' had no callers (the tree only ever goes the other way,
 ;; keyword -> string/number).
 (define-public (keyword->string x)
-  (symbol->string (keyword->symbol x)))
+  (let ((s (symbol->string x)))
+    (substring s 1 (string-length s))))
 (define-public (keyword->number x)
-  (let ((s (symbol->string (keyword->symbol x))))
-    (string->number (substring s 1 (string-length s)))))
+  (let ((s (symbol->string x)))
+    (string->number (substring s 2 (string-length s)))))
 (define-public (number->keyword x)
-  (symbol->keyword (string->symbol (string-append "%" (number->string x)))))
+  (string->symbol (string-append ":%" (number->string x))))
 
 ;;; Output capture
 ;;
 ;; `display' and `write' are rebound by boot-chez.scm so that single-object
 ;; output is routed through the C++ `tm-output' hook, and `tm-output' is itself
-;; replaced by the glue.  Fetch Chez's own writers from the scheme environment
-;; so that a capture always writes into the port we hand it.
-
-(define chez:display (top-level-value 'display (scheme-environment)))
-(define chez:write (top-level-value 'write (scheme-environment)))
+;; replaced by the glue.  In R6RS library mode, `chez:display' and `chez:write'
+;; are bound via `import' `rename' from `(chezscheme)` so capture always writes
+;; into the port we hand it.
 
 (define-public (display-to-string x)
   "Display @x into a fresh string."
@@ -482,7 +512,7 @@
 ;;; Process and error reporting
 (define-public (server-mode?)
   (if (top-level-bound? 'server-started?)
-      (server-started?)
+      ((top-level-value 'server-started?))
       #f))
 
 (define-public (scm-error key subr message args rest)
@@ -491,11 +521,6 @@
       (error subr (format "~a: ~a" key message))))
 
 ;;; Random numbers and hashing
-(define chez-sys-random
-  (if (top-level-bound? 'random (scheme-environment))
-      (top-level-value 'random (scheme-environment))
-      (lambda (n) (modulo (abs (texmacs-time)) n))))
-
 (define-public (random n . state)
   (chez-sys-random n))
 
@@ -514,9 +539,6 @@
 ;; (8 calls) with a symbol field name.  The Guile mutator spelling
 ;; `record-modifier' had no callers -- Chez calls it `record-mutator' -- so it
 ;; is not shimmed.
-(define old-record-accessor
-  (top-level-value 'record-accessor (scheme-environment)))
-
 (define-public (record-accessor rtd field)
   (if (integer? field)
       (old-record-accessor rtd field)
@@ -583,8 +605,8 @@
   `(begin ,@cmd))
 
 (define-public-macro (on-exit . cmd)
-  `(let ((old-quit quit-TeXmacs-scheme))
-     (set! quit-TeXmacs-scheme
+  `(let ((old-quit (top-level-value 'quit-TeXmacs-scheme)))
+     (set-top-level-value! 'quit-TeXmacs-scheme
        (lambda () ,@cmd (old-quit)))))
 
 ;;; SRFI-8 binding syntax
