@@ -414,36 +414,62 @@ tree_remove_node (tree r, int pos) {
 
 #ifdef TEXMACS_ENGINE_CHEZ
 /* Chez's copying GC does not scan the C stack: holding an unrooted tmscm tail
-   pointer across allocating calls (e.g. Scall1 in blackbox_to_tmscm) can lose
-   or corrupt the partial list.  Store elements in a locked vector instead and
-   materialize the list in Scheme via vector->list. */
+   pointer across allocating or Scheme-calling conversions (e.g. Scall1 in
+   blackbox_to_tmscm) can lose or corrupt partially built lists.  Root the
+   accumulator on the permanently-locked shadow root stack (ChezRoot) and
+   build cons cells directly -- zero per-node locking, zero temporary
+   vectors, and zero C-to-Scheme callbacks. */
 template <typename Array, typename Conv>
 static tmscm
 chez_array_to_tmscm (Array& a, Conv conv) {
   iptr n= N(a);
   if (n == 0) return tmscm_null ();
-  tmscm vec= Smake_vector (n, Sfalse);
-  Slock_object (vec);
-  for (iptr i= 0; i < n; i++)
-    Svector_set (vec, i, conv (a[(int) i]));
-  tmscm res= Scall1 (tm_vector_to_list_proc, vec);
-  Sunlock_object (vec);
-  return res;
+  if (n == 1) return Scons (conv (a[0]), tmscm_null ());
+  ChezRoot acc;
+  tmscm tail= Scons (conv (a[(int) (n - 1)]), tmscm_null ());
+  acc.set (tail);
+  for (iptr i= n - 2; i >= 1; i--) {
+    tmscm elem= conv (a[(int) i]);
+    tail= Scons (elem, acc.get ());
+    acc.set (tail);
+  }
+  tmscm first= conv (a[0]);
+  return Scons (first, acc.get ());
 }
 
 template <typename List, typename Conv>
 static tmscm
 chez_list_to_tmscm (List l, Conv conv) {
-  iptr n= N(l);
-  if (n == 0) return tmscm_null ();
-  tmscm vec= Smake_vector (n, Sfalse);
-  Slock_object (vec);
-  iptr i= 0;
-  for (; !is_nil (l); l= l->next, i++)
-    Svector_set (vec, i, conv (l->item));
-  tmscm res= Scall1 (tm_vector_to_list_proc, vec);
-  Sunlock_object (vec);
-  return res;
+  if (is_nil (l)) return tmscm_null ();
+  tmscm first= Scons (conv (l->item), tmscm_null ());
+  l= l->next;
+  if (is_nil (l)) return first;
+  ChezRoot head (first);
+  ChezRoot tail (first);
+  for (; !is_nil (l); l= l->next) {
+    tmscm elem= conv (l->item);
+    tmscm cell= Scons (elem, tmscm_null ());
+    Sset_cdr (tail.get (), cell);
+    if (!is_nil (l->next)) tail.set (cell);
+  }
+  return head.get ();
+}
+
+template <typename Map, typename KeyConv, typename ValConv>
+static tmscm
+chez_hashmap_to_tmscm (Map& t, KeyConv key_conv, ValConv val_conv) {
+  auto it= iterate (t);
+  if (!it->busy ()) return tmscm_null ();
+  ChezRoot acc (tmscm_null ());
+  ChezRoot key;
+  while (it->busy ()) {
+    auto s= it->next ();
+    key.set (key_conv (s));
+    tmscm val= val_conv (t[s]);
+    tmscm entry= Scons (key.get (), val);
+    acc.set (Scons (entry, acc.get ()));
+  }
+  return acc.get ();
 }
 #endif
 
@@ -551,8 +577,12 @@ TMSCM_ASSERT (tmscm_is_path (p), p, arg, rout)
 
 tmscm 
 path_to_tmscm (path p) {
+#ifdef TEXMACS_ENGINE_CHEZ
+  return chez_list_to_tmscm (p, int_to_tmscm);
+#else
   if (is_nil (p)) return tmscm_null ();
   else return tmscm_cons (int_to_tmscm (p->item), path_to_tmscm (p->next));
+#endif
 }
 
 path
@@ -816,6 +846,9 @@ TMSCM_ASSERT (tmscm_is_table_string_string (p), p, arg, rout)
 
 tmscm 
 table_string_string_to_tmscm (hashmap<string,string> t) {
+#ifdef TEXMACS_ENGINE_CHEZ
+  return chez_hashmap_to_tmscm (t, string_to_tmscm, string_to_tmscm);
+#else
   tmscm p= tmscm_null ();
   iterator<string> it= iterate (t);
   while (it->busy ()) {
@@ -824,6 +857,7 @@ table_string_string_to_tmscm (hashmap<string,string> t) {
     p= tmscm_cons (n, p);
   }
   return p;
+#endif
 }
 
 hashmap<string,string>
@@ -1217,10 +1251,14 @@ TMSCM_ASSERT (tmscm_is_array_path (p), p, arg, rout)
 
 /* static */ tmscm 
 array_path_to_tmscm (array<path> a) {
+#ifdef TEXMACS_ENGINE_CHEZ
+  return chez_array_to_tmscm (a, path_to_tmscm);
+#else
   int i, n= N(a);
   tmscm p= tmscm_null ();
   for (i=n-1; i>=0; i--) p= tmscm_cons (path_to_tmscm (a[i]), p);
   return p;
+#endif
 }
 
 /* static */ array<path>

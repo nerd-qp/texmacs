@@ -762,16 +762,29 @@
 
 ;;; ---------------------------------------------------------------------------
 ;;; Cork Encoding & FFI Transcoding
-;;; Raw 8-bit Cork bytes (0x00-0xFF) are tunneled through Chez Scheme strings via
-;;; `latin-1-codec` with `(eol-style none)` to preserve Guile 1.8 compatibility
-;;; (`string-length`, `substring`, `string=?`) without EOL translation of 0x0D (‚).
+;;; Raw 8-bit Cork bytes (0x00-0xFF) are tunneled through Chez Scheme strings
+;;; (code points U+0000-U+00FF, no EOL translation of 0x0D) to preserve Guile
+;;; 1.8 compatibility (`string-length`, `substring`, `string=?`).
+;;; Implemented as direct fixnum loops rather than R6RS `bytevector->string` /
+;;; `string->bytevector`, which allocate a fresh transcoded port per string.
 ;;; Detailed rationale, traps, and bytevector roadmap: see docs/chez/README.md §5.9b.
 ;;; ---------------------------------------------------------------------------
 
-(define *latin1-tc* (make-transcoder (latin-1-codec) (eol-style none)))
+(define (cork-bytes->string bv)
+  (let* ((n (bytevector-length bv))
+         (s (make-string n)))
+    (do ((i 0 (fx+ i 1)))
+        ((fx= i n) s)
+      (string-set! s i (integer->char (bytevector-u8-ref bv i))))))
 
-(define (cork-bytes->string bv) (bytevector->string bv *latin1-tc*))
-(define (string->cork-bytes s)  (string->bytevector s *latin1-tc*))
+(define (string->cork-bytes s)
+  (let* ((n (string-length s))
+         (bv (make-bytevector n)))
+    (do ((i 0 (fx+ i 1)))
+        ((fx= i n) bv)
+      (let ((c (char->integer (string-ref s i))))
+        (bytevector-u8-set! bv i (if (fx<= c 255) c 63))))))
+
 (define (utf8-bytes->string bv) (utf8->string bv))
 (define (string->utf8-bytes s)  (string->utf8 s))
 

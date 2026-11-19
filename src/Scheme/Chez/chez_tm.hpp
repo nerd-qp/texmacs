@@ -50,7 +50,57 @@ extern tmscm tm_call_4_proc;       /* (tm-call-4 fun a1 a2 a3 a4)             */
 extern tmscm tm_call_n_proc;       /* (tm-call-n fun args)                    */
 extern tmscm tm_list_pred;         /* list?                                    */
 extern tmscm tm_equal_pred;        /* equal?                                   */
-extern tmscm tm_vector_to_list_proc; /* vector->list                           */
+
+/* -- shadow root stack for GC-safe C++ -> Scheme conversions -------------- */
+
+extern tmscm chez_root_stack_vec;  /* permanently locked Scheme vector      */
+extern iptr  chez_root_stack_top;  /* next free slot index (0-based)        */
+extern iptr  chez_root_stack_cap;  /* current vector length                 */
+void chez_root_stack_grow ();      /* cold path: lazy-init or double size   */
+
+#if defined(__GNUC__) || defined(__clang__)
+#define CHEZ_UNLIKELY(x) __builtin_expect (!!(x), 0)
+#else
+#define CHEZ_UNLIKELY(x) (x)
+#endif
+
+/* RAII handle reserving a LIFO slot in chez_root_stack_vec.
+   Must be stack-allocated with strict LIFO lifetimes; do not heap-allocate
+   or destroy out of order (deleting a lower slot sweeps all slots above it).
+   Slots are addressed by integer index so vector growth is transparent to
+   active caller frames (including recursive and re-entrant conversions).
+   Unused and popped slots always hold Sfixnum(0): GC skips fixnums and
+   S_dirty_set skips its SegInfo/alloc_mutex write barrier for fixnums. */
+class ChezRoot {
+  iptr slot;
+public:
+  inline ChezRoot () {
+    if (CHEZ_UNLIKELY (chez_root_stack_top >= chez_root_stack_cap))
+      chez_root_stack_grow ();
+    slot= chez_root_stack_top++;
+  }
+  inline explicit ChezRoot (tmscm val) {
+    if (CHEZ_UNLIKELY (chez_root_stack_top >= chez_root_stack_cap))
+      chez_root_stack_grow ();
+    slot= chez_root_stack_top++;
+    if (val != Sfixnum (0))
+      Svector_set (chez_root_stack_vec, slot, val);
+  }
+  inline ~ChezRoot () {
+    if (CHEZ_UNLIKELY (chez_root_stack_top != slot + 1)) {
+      for (iptr i= slot + 1; i < chez_root_stack_top; i++)
+        Svector_set (chez_root_stack_vec, i, Sfixnum (0));
+    }
+    Svector_set (chez_root_stack_vec, slot, Sfixnum (0));
+    chez_root_stack_top= slot;
+  }
+  inline tmscm get () const { return Svector_ref (chez_root_stack_vec, slot); }
+  inline void set (tmscm val) { Svector_set (chez_root_stack_vec, slot, val); }
+  ChezRoot (const ChezRoot&) = delete;
+  ChezRoot& operator= (const ChezRoot&) = delete;
+  static void* operator new (size_t) = delete;
+  static void* operator new[] (size_t) = delete;
+};
 
 /* -- basic predicates and constructors (all inline, kernel macros) -------- */
 

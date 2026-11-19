@@ -41,9 +41,46 @@ tmscm tm_call_4_proc= 0;
 tmscm tm_call_n_proc= 0;
 tmscm tm_list_pred= 0;
 tmscm tm_equal_pred= 0;
-tmscm tm_vector_to_list_proc= 0;
 tmscm tm_string_to_utf8_proc= 0;
 tmscm object_stack= 0;
+
+/* ------------------------------------------------------------------------
+ * Shadow root stack for GC-safe C++ -> Scheme conversions
+ * ---------------------------------------------------------------------- */
+
+tmscm chez_root_stack_vec= 0;
+iptr  chez_root_stack_top= 0;
+iptr  chez_root_stack_cap= 0;
+
+static const iptr CHEZ_ROOT_STACK_INIT_CAP= 512;
+
+void
+chez_root_stack_grow () {
+  iptr new_cap= (chez_root_stack_cap == 0)
+                ? CHEZ_ROOT_STACK_INIT_CAP
+                : (chez_root_stack_cap * 2);
+  tmscm old_vec= chez_root_stack_vec;
+  tmscm new_vec= Smake_vector (new_cap, Sfixnum (0));
+  /* Smake_vector is a pure C allocation and never synchronously runs GC.
+     Lock new_vec before swapping so every live root stays pinned. */
+  Slock_object (new_vec);
+  for (iptr i= 0; i < chez_root_stack_top; i++)
+    Svector_set (new_vec, i, Svector_ref (old_vec, i));
+  chez_root_stack_vec= new_vec;
+  chez_root_stack_cap= new_cap;
+  if (old_vec != 0)
+    Sunlock_object (old_vec);
+}
+
+extern "C" iptr
+chez_root_stack_depth () {
+  return chez_root_stack_top;
+}
+
+extern "C" iptr
+chez_root_stack_capacity () {
+  return chez_root_stack_cap;
+}
 
 /* ------------------------------------------------------------------------
  * Chez Scheme Threading & Concurrency Model
@@ -536,6 +573,8 @@ register_foreign_symbols () {
   Sforeign_symbol ("tmscm_delete_blackbox", (void*) tmscm_delete_blackbox);
   Sforeign_symbol ("tmscm_blackbox_equal", (void*) tmscm_blackbox_equal);
   Sforeign_symbol ("tmscm_blackbox_hash", (void*) tmscm_blackbox_hash);
+  Sforeign_symbol ("chez_root_stack_depth", (void*) chez_root_stack_depth);
+  Sforeign_symbol ("chez_root_stack_capacity", (void*) chez_root_stack_capacity);
 }
 
 static void
@@ -602,7 +641,9 @@ build_chez_heap () {
   bool is_compile_modules = false;
   for (int i = 1; i < s_argc; i++) {
     if (strcmp (s_argv[i], "-compile-modules") == 0 ||
-        strcmp (s_argv[i], "-recompile-modules") == 0) {
+        strcmp (s_argv[i], "--compile-modules") == 0 ||
+        strcmp (s_argv[i], "-recompile-modules") == 0 ||
+        strcmp (s_argv[i], "--recompile-modules") == 0) {
       is_compile_modules = true;
       break;
     }
@@ -716,16 +757,14 @@ chez_cache_runtime_procedures () {
   ASSERT (tm_equal_pred != 0 && Sprocedurep (tm_equal_pred),
           "equal? must be a procedure");
   Slock_object (tm_equal_pred);
-  tm_vector_to_list_proc= Stop_level_value (Sstring_to_symbol ("vector->list"));
-  ASSERT (tm_vector_to_list_proc != 0 && Sprocedurep (tm_vector_to_list_proc),
-          "vector->list must be a procedure");
-  Slock_object (tm_vector_to_list_proc);
   tm_string_to_utf8_proc= Stop_level_value (Sstring_to_symbol ("string->utf8"));
   ASSERT (tm_string_to_utf8_proc != 0 && Sprocedurep (tm_string_to_utf8_proc),
           "string->utf8 must be a procedure");
   Slock_object (tm_string_to_utf8_proc);
   object_stack= Stop_level_value (Sstring_to_symbol ("object-stack"));
   Slock_object (object_stack);
+  if (chez_root_stack_vec == 0)
+    chez_root_stack_grow ();
 }
 
 void
