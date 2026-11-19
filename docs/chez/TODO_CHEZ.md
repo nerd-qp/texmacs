@@ -318,6 +318,38 @@ This document tracks remaining open bugs, architectural improvements, and perfor
      - Menus like `(texmacs-menu)` return static trees that are re-expanded repeatedly when traversing submenus.
      - Adding short-lived caching or hash-consing for static submenus during a single menu-bar refresh cycle avoids re-expanding unchanged subtrees on every key press.
 
+### [ ] Low-Intrusion Top Bar Menu Initialization & Expansion Optimizations
+- **Locations**:
+  - [`TeXmacs/progs/kernel/gui/kbd-define.scm:39-60,142-147`](TeXmacs/progs/kernel/gui/kbd-define.scm#L39-L60)
+  - [`TeXmacs/progs/kernel/texmacs/tm-modes.scm:59-62`](TeXmacs/progs/kernel/texmacs/tm-modes.scm#L59-L62)
+  - [`TeXmacs/progs/init-texmacs-chez.scm:333,381`](TeXmacs/progs/init-texmacs-chez.scm#L333)
+  - [`TeXmacs/progs/kernel/gui/menu-widget.scm:175-186,454-498,805-825,1078-1082`](TeXmacs/progs/kernel/gui/menu-widget.scm#L454-L498)
+  - [`TeXmacs/progs/texmacs/menus/tools-menu.scm:62`](TeXmacs/progs/texmacs/menus/tools-menu.scm#L62)
+  - [`src/Texmacs/Window/tm_window.cpp:386-462`](src/Texmacs/Window/tm_window.cpp#L386-L462)
+  - [`src/Plugins/Qt/qt_tm_widget.cpp:874-942`](src/Plugins/Qt/qt_tm_widget.cpp#L874-L942)
+  - [`src/Plugins/Qt/QTMMenuHelper.cpp:56-87,385-404`](src/Plugins/Qt/QTMMenuHelper.cpp#L56-L87)
+- **Measured Bottlenecks** (`build-texmacos/TeXmacs.app`, Chez + Qt6):
+  - **Per-item `lazy-keyboard-force` exception churn**: Until the 250 ms idle timer drains `lazy-keyboard-waiting`, every menu entry calls `kbd-find-inv-binding` $\to$ `(lazy-keyboard-force)`, taking **~1.1 ms and 37,280 bytes per item** (`view-menu`: **5.11 ms / 982 KB** before forcing vs **0.62 ms / 57 KB** after; `edit-menu`: **2.42 ms / 407 KB** vs **0.26 ms / 35 KB**). Root cause: `init-texmacs*.scm` registers `in-active-graphics?`, `graphics-wheel`, and `developer-mode?` with `lazy-keyboard` without `symbol-procedure` entries on `in-active-graphics%` / `graphics-whee%` / `developer-mode%`, so `texmacs-in-mode?` falls through to `(catch #t (lambda () (eval (list mode))) ...)`, invoking Chez's compiler and throwing an unbound-variable exception 3× per menu item (**35,760 bytes**).
+  - **Warm `update-menus` overhead (~13.6 ms / 254 KB per cache-hit pass)**: `tm_window_rep::get_menu_widget` calls `eval("'" * menu)` (`eval_scheme` string parse + eval) on every refresh and **twice** on a cache miss (`tm_window.cpp:392,412`), while `menu_main` / `menu_icons` / `side_tools` / `bottom_tools` invoke `eval("(lazy-initialize-force)")` **9 times** per refresh.
+- **Low-Intrusion Action Plan**:
+  1. **`lazy-keyboard-force` & `texmacs-in-mode?` (highest ROI)**:
+     - Guard `texmacs-in-mode?` (`tm-modes.scm:59-62`) with `(top-level-bound? mode)` (or cache missing predicates) before falling back to `eval`.
+     - Fix the 3 `lazy-keyboard` registrations in `init-texmacs*.scm` (`in-graphics?` instead of `in-active-graphics?`, drop `graphics-wheel`, avoid `developer-mode?` falling into `eval`).
+     - In `lazy-keyboard-force` (`kbd-define.scm:49-60`), early-return when `(null? lazy-keyboard-waiting)` and coalesce so `make-menu-main` (`menu-widget.scm:1183`) runs it once per menu build instead of once per entry.
+  2. **C++ menu string & lazy-init dispatch (`tm_window.cpp`)**:
+     - Cache parsed `string -> object` menu descriptors in a static `hashmap<string, object>` and reuse the local `umenu` on cache miss instead of calling `eval("'" * menu)` twice.
+     - Replace the 9× `eval("(lazy-initialize-force)")` calls in `tm_window.cpp:426-456` with `call("lazy-initialize-force")` (or run it once per `resume()` / `update_menus()`).
+  3. **Per-item Scheme trim (`menu-widget.scm`, `tools-menu.scm`)**:
+     - Compute `(promise-source action)` once in `make-menu-entry-sub` (`menu-widget.scm:470-498`) instead of 5× (`style`, `check`, `dots`, `shortcut`, `search-balloon-help`).
+     - Remove or guard the unconditional `(match? p '(input ...))` check at `menu-widget.scm:809` (already dispatched via `make-menu-items-table` at line 848).
+     - Cache `(and (qt-gui?) (os-macos?) English?)` in `adjust-translation` (`menu-widget.scm:175-186`) and use quoted constant lists to avoid per-label C++ `get-preference` FFI calls and list allocations.
+     - Replace `(list? x)` with `(pair? x)` in `replace-procedures` (`menu-widget.scm:1078-1082`) to eliminate $O(N^2)$ list-length walks during `menu-expand`.
+     - Memoize `(url-exists-in-path? "pdflatex")` in `tools-menu.scm:62` to avoid `$PATH` stats on every `Tools` menu expansion.
+  4. **Qt top-bar installation & lazy menu expansion (`Plugins/Qt`)**:
+     - In `qt_tm_widget_rep::install_main_menu()` (`qt_tm_widget.cpp:892-938`): pass `Qt::UniqueConnection` on `QMenu::aboutToShow` / `aboutToHide` (prevents stacked duplicate signals when reinstalling cached `main_menu_widget`), guard `addAction("native menubar trick")` with `if (a->menu()->isEmpty())`, and wrap the `QTMToolbar` loop in `setUpdatesEnabled(false)` / `true` (or reuse `dest->replaceActions(src)`).
+     - In `QTMAction` (`QTMMenuHelper.cpp:56-83`): allocate `_timer` lazily in `showToolTip()` (only used by `balloon_widget` items) and share a `static const QFont`.
+     - In `QTMLazyMenu::transferActions` (`QTMMenuHelper.cpp:385-396`): bracket with `setUpdatesEnabled(false)` / `true` and `deleteLater()` parentless removed actions to stop leaking prior `QTMAction` trees on repeated menu expansions.
+
 ### [ ] Forward Cursor-Pair Path for Long Arrays (`n >= 8`) in `chez_array_to_tmscm`
 - **Priority**: Low (Optional Micro-Optimization)
 - **Location**: [`src/Scheme/Scheme/glue.cpp:422-438`](src/Scheme/Scheme/glue.cpp#L422-L438)
