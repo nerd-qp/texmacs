@@ -441,8 +441,7 @@
   (cond ((or (string=? mode "r") (string=? mode "rb"))
          (open-input-file file))
         ((or (string=? mode "w") (string=? mode "wb"))
-         (if (file-exists? file) (delete-file file))
-         (open-output-file file))
+         (open-output-file file 'replace))
         (else (open-input-file file))))
 
 (define-public (call-with-input-string str proc)

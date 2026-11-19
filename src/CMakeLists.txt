@@ -27,6 +27,10 @@ target_link_libraries (${TeXmacs_binary_name}
   ${TeXmacs_Libraries}
 )
 
+if (WIN32 AND MINGW)
+  target_link_options (${TeXmacs_binary_name} PRIVATE -Wl,--stack,16777216)
+endif ()
+
 if (APPLE)
   set(MACOSX_BUNDLE_DISPLAY_NAME TeXmacs)
   set_target_properties (${TeXmacs_binary_name}

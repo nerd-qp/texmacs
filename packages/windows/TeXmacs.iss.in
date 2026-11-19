@@ -54,10 +54,43 @@ Type: files; Name: "{app}\*"
 Type: dirifempty; Name: "{app}"
 
 [Code]
+var
+  ExistingInstallPage: TInputOptionWizardPage;
+  UninstallDone: Boolean;
+
+function GetUninstallString(): string;
+var
+  UninstKey: string;
+  Val: string;
+begin
+  Result := '';
+  UninstKey := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\@PACKAGE@_is1';
+  if RegQueryStringValue(HKCU, UninstKey, 'UninstallString', Val) then
+    Result := Val
+  else if RegQueryStringValue(HKLM, UninstKey, 'UninstallString', Val) then
+    Result := Val;
+end;
+
+function GetInstalledVersion(): string;
+var
+  UninstKey: string;
+  Val: string;
+begin
+  Result := '';
+  UninstKey := 'Software\Microsoft\Windows\CurrentVersion\Uninstall\@PACKAGE@_is1';
+  if RegQueryStringValue(HKCU, UninstKey, 'DisplayVersion', Val) then
+    Result := Val
+  else if RegQueryStringValue(HKLM, UninstKey, 'DisplayVersion', Val) then
+    Result := Val;
+end;
+
 procedure InitializeWizard();
 var
   BitmapImage: TBitmapImage;
+  InstalledVer: string;
+  SubTitle: string;
 begin
+  UninstallDone := False;
   ExtractTemporaryFile('topbanner.bmp');
   BitmapImage := TBitmapImage.Create(WizardForm);
   BitmapImage.Parent := WizardForm.MainPanel;
@@ -71,6 +104,76 @@ begin
   WizardForm.WizardSmallBitmapImage.Visible := False;
   WizardForm.PageDescriptionLabel.Visible := False;
   WizardForm.PageNameLabel.Visible := False;
+
+  InstalledVer := GetInstalledVersion();
+  if InstalledVer <> '' then
+    SubTitle := '@PACKAGE@ (version ' + InstalledVer + ') is already installed on this computer.'
+  else
+    SubTitle := 'An existing installation of @PACKAGE@ was found on this computer.';
+
+  ExistingInstallPage := CreateInputOptionPage(
+    wpWelcome,
+    'Existing Installation Detected',
+    SubTitle,
+    'Choose whether to reinstall/upgrade or remove the existing installation:',
+    True,
+    False
+  );
+  ExistingInstallPage.Add('Reinstall / upgrade @PACKAGE@');
+  ExistingInstallPage.Add('Remove (uninstall) @PACKAGE@');
+  ExistingInstallPage.SelectedValueIndex := 0;
+end;
+
+function ShouldSkipPage(PageID: Integer): Boolean;
+begin
+  Result := False;
+  if PageID = ExistingInstallPage.ID then
+    Result := (GetUninstallString() = '');
+end;
+
+function NextButtonClick(CurPageID: Integer): Boolean;
+var
+  UninstStr: string;
+  ResultCode: Integer;
+begin
+  Result := True;
+  if (CurPageID = ExistingInstallPage.ID) and (ExistingInstallPage.SelectedValueIndex = 1) then
+  begin
+    if MsgBox('Are you sure you want to remove @PACKAGE@ from this computer?', mbConfirmation, MB_YESNO) <> IDYES then
+    begin
+      Result := False;
+      Exit;
+    end;
+    UninstStr := RemoveQuotes(GetUninstallString());
+    if (UninstStr <> '') and Exec(UninstStr, '/SILENT /NORESTART', '', SW_SHOW, ewWaitUntilTerminated, ResultCode) and (ResultCode = 0) then
+    begin
+      MsgBox('@PACKAGE@ has been removed.', mbInformation, MB_OK);
+      UninstallDone := True;
+      WizardForm.Close;
+    end
+    else
+      MsgBox('Failed to uninstall the existing @PACKAGE@ installation (exit code ' + IntToStr(ResultCode) + ').', mbError, MB_OK);
+    Result := False;
+  end;
+end;
+
+procedure CancelButtonClick(CurPageID: Integer; var Cancel, Confirm: Boolean);
+begin
+  if UninstallDone then
+    Confirm := False;
+end;
+
+procedure CurStepChanged(CurStep: TSetupStep);
+var
+  UninstStr: string;
+  ResultCode: Integer;
+begin
+  if CurStep = ssInstall then
+  begin
+    UninstStr := RemoveQuotes(GetUninstallString());
+    if UninstStr <> '' then
+      Exec(UninstStr, '/VERYSILENT /NORESTART /SUPPRESSMSGBOXES', '', SW_HIDE, ewWaitUntilTerminated, ResultCode);
+  end;
 end;
 
 function GetEnvironmentKey(Param: string): string;

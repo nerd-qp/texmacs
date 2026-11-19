@@ -75,7 +75,11 @@
 
 (define-public (load-object file)
   (let ((r (catch #t
-    (lambda () (read (open-file (url-materialize file "r") OPEN_READ)))
+    (lambda ()
+      (let* ((in (open-file (url-materialize file "r") OPEN_READ))
+             (val (read in)))
+        (close-port in)
+        val))
     (lambda (key msg . err-msg)
       (let* ((msg (car err-msg))
 	     (args (cadr err-msg))

@@ -1050,6 +1050,8 @@ if (TEXMACS_ENGINE_CHEZ)
     set (TEXMACS_CHEZ_MODULES_STAMP "${CMAKE_BINARY_DIR}/boot/init-texmacs-boot-file.so")
     add_custom_command (
       OUTPUT "${TEXMACS_CHEZ_MODULES_STAMP}"
+        "${CMAKE_BINARY_DIR}/boot/module-deps.scm"
+        "${CMAKE_BINARY_DIR}/boot/kernel/boot/boot-chez.so"
       COMMAND ${CMAKE_COMMAND} -E make_directory "${CMAKE_BINARY_DIR}/.compile-home"
       COMMAND ${CMAKE_COMMAND} -E env
         TEXMACS_NO_BOOT=1
