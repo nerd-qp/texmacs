@@ -1064,6 +1064,8 @@ if (TEXMACS_ENGINE_CHEZ)
       VERBATIM
     )
 
+    add_custom_target (texmacs-chez-modules DEPENDS "${TEXMACS_CHEZ_MODULES_STAMP}")
+
     if (CHEZ_SCHEME_EXECUTABLE)
       set (TEXMACS_CHEZ_BOOT_FILE "${CMAKE_BINARY_DIR}/boot/texmacs.boot")
       add_custom_command (
@@ -1073,14 +1075,17 @@ if (TEXMACS_ENGINE_CHEZ)
           ${CMAKE_BINARY_DIR}/boot
           ${TEXMACS_CHEZ_BOOT_FILE}
         DEPENDS "${TEXMACS_CHEZ_MODULES_STAMP}"
+          "${CMAKE_BINARY_DIR}/boot/module-deps.scm"
+          "${CMAKE_BINARY_DIR}/boot/kernel/boot/boot-chez.so"
           "${CMAKE_SOURCE_DIR}/src/Scheme/Chez/make-boot.scm"
         COMMENT "Building Chez Scheme AOT boot image (texmacs.boot)"
         VERBATIM
       )
-      add_custom_target (texmacs-chez-boot ALL DEPENDS "${TEXMACS_CHEZ_BOOT_FILE}")
+      add_custom_target (texmacs-chez-boot ALL
+        DEPENDS "${TEXMACS_CHEZ_BOOT_FILE}" texmacs-chez-modules)
     else ()
       message (STATUS "Chez Scheme executable not found; skipping texmacs.boot generation (pass -DCHEZ_SCHEME_EXECUTABLE=...)")
-      add_custom_target (texmacs-chez-modules ALL DEPENDS "${TEXMACS_CHEZ_MODULES_STAMP}")
+      add_custom_target (texmacs-chez-modules-all ALL DEPENDS texmacs-chez-modules)
     endif ()
   endif ()
 endif ()

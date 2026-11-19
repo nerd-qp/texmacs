@@ -52,18 +52,6 @@ This document tracks remaining open bugs, architectural improvements, and perfor
 - **Reproducer**: with an existing `~/.TeXmacs-chez/system/interactive.scm`, `HOME=$HOME TEXMACS_BOOT_PATH=$PWD/build-texmacos/boot ./build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -H` exits 0 but prints the error at quit.
 - **Diagnostic traps**: (a) never park test `.scm` files in `~/.TeXmacs-chez/system/` — TeXmacs loads `system/*.scm` at startup, so a stray file silently kills the boot; (b) `kill -9` on the app leaves `~/.TeXmacs-chez/system/boot_lock`, which blocks the next start with no output at all — `rm` it before re-testing.
 
-### [ ] Harden `from_scheme_result` / `to_scheme_arg` / `call_scheme` with `ChezRoot` & Pure C++ UTF-8 Encoding
-- **Priority**: High (GC Correctness / Crash Safety + Performance)
-- **Location**: [`src/Scheme/Chez/chez_tm.cpp:371-551`](src/Scheme/Chez/chez_tm.cpp#L371-L551)
-- **Problem**:
-  - `sstring_to_bytevector` (`chez_tm.cpp:433-436`) invokes `Scall1 (tm_string_to_utf8_proc, str)` on every string leaf while `from_scheme_result` (`chez_tm.cpp:439-497`) holds `r`, `p`, `a`, `head`, `tail`, and `v` unrooted on the C++ stack — a live GC hazard if collection triggers mid-traversal.
-  - `to_scheme_arg` (`chez_tm.cpp:371-431`) and `call_scheme (tmscm fun, array<tmscm> a)` (`chez_tm.cpp:546-551`) similarly hold unrooted `ptr` locals across allocating calls (`Scons`, `Smake_vector`, `Sstring_utf8`).
-  - In `from_scheme_result` and `to_scheme_arg`, Phase 1 (structural-sharing probe) discards converted elements that Phase 2 then converts a second time once a modification is detected.
-- **Action Plan**:
-  1. Replace `sstring_to_bytevector`'s `Scall1 (tm_string_to_utf8_proc, str)` with a pure C++ UCS-4 (`Sstring_ref`) -> UTF-8 encoder writing directly into `Smake_bytevector`, removing `tm_string_to_utf8_proc` and per-string C-to-Scheme callback overhead.
-  2. Root live compound values in `from_scheme_result`, `to_scheme_arg`, and `call_scheme (fun, array<tmscm>)` using `ChezRoot` (and avoid redundant Phase 1/Phase 2 conversions where practical).
-  3. Extend [`docs/chez/bench/gc-roots-stress.scm`](docs/chez/bench/gc-roots-stress.scm) to stress nested lists/vectors containing strings across `call_scheme` under aggressive GC.
-
 ### [ ] Add Missing `tmscm_is_pair` Guard in `tmscm_is_path`
 - **Priority**: High (Crash Safety)
 - **Location**: [`src/Scheme/Scheme/glue.cpp:569-573`](src/Scheme/Scheme/glue.cpp#L569-L573)

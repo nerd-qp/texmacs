@@ -1,6 +1,6 @@
 # TeXmacs UI Benchmark: Chez Scheme vs. s7 Scheme (10-Run Statistical Suite)
 
-**Date**: 2026-11-05  
+**Date**: 2026-11-19 (updated from 2026-11-05)  
 **Platform**: Apple M2 Virtual Machine (macOS arm64), Qt 6.12.0  
 **Benchmark Script**: [`docs/chez/bench/ui.scm`](bench/ui.scm)\
 **Execution Environment**:
@@ -14,6 +14,44 @@ export TEXMACS_BOOT_PATH="$PWD/build-texmacos/boot"
 export TEXMACS_DOC_PATH="$PWD/TeXmacs/doc"
 ./build-texmacos/TeXmacs.app/Contents/MacOS/TeXmacs -x '(load "docs/chez/bench/ui.scm")'
 ```
+
+---
+
+## 0. Latest Run: `2026-11-19` (Commit `9a5789cd2` / `448c81e8b` — Auto-Imported R6RS `chez-compat` & `abbrevs`)
+
+*(10 independent process invocations per suite, `QT_QPA_PLATFORM=offscreen`, `texmacs.boot` VFASL + 453 compiled modules; load average `15.19` → `2.08`. Sample variance $\sigma^2$ and stdev use $N - 1$. Raw JSON in [§5.G](#g-chez-scheme-1041-10-run-raw-dataset-2026-11-19-commit-9a5789cd2).)*
+
+### UI Suite (`docs/chez/bench/ui.scm`, 10 Runs)
+
+| Benchmark Task | Chez `9a5789cd2` Warm Mean ± Stdev (ms) | Warm $\sigma^2$ | Cold Mean (ms) | Chez `e0206bc65` Warm | Femtolisp Warm | s7-11.9 Warm |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| **`menus-text`** | **67.9 ± 1.20** *(66–70)* | 1.43 | **595.2** | 89.4 ms | 92.4 ± 5.1 ms | 102.0 ± 10.8 ms |
+| **`menus-math`** | **50.2 ± 2.74** *(48–56)* | 7.51 | **61.0** | 63.3 ms | 74.3 ± 2.9 ms | 80.8 ± 7.2 ms |
+| **`typing-text-520-keys`** | **939.4 ± 7.57** *(~1.81 ms/key, 928–949)* | 57.38 | **931.4** | 1,018.7 ms | 1,059.4 ± 35.4 ms | 1,104.6 ± 53.4 ms |
+| **`typing-math-270-keys`** | **960.8 ± 10.09** *(~3.56 ms/key, 950–981)* | 101.73 | **1,289.1** | 997.6 ms | 1,047.8 ± 46.4 ms | 1,067.5 ± 35.7 ms |
+| **`open-change-log`** | **169.6 ± 6.72** *(164–188)* | 45.16 | **1,017.5** | 167.8 ms | 188.0 ± 12.7 ms | 215.5 ± 12.4 ms |
+
+### Manual Regeneration (`docs/chez/bench/manual.scm`, 10 Runs, 124 Pages)
+
+| Phase | Chez `9a5789cd2` Mean ± Stdev (ms) | Variance ($\sigma^2$) | Min – Max | Chez `e0206bc65` Mean | Femtolisp Mean | s7-11.9 Mean |
+| :--- | ---: | ---: | :---: | ---: | ---: | ---: |
+| **`expand`** | **526.6 ± 74.92** | 5,613.60 | 486 – 738 | 598.9 ms | 1,028.4 ± 58.6 ms | 1,101.3 ± 76.0 ms |
+| **`update-1`** | **3,059.2 ± 688.84** | 474,498.84 | 2,784 – 5,008 | 3,016.1 ms | 3,284.7 ± 112.1 ms | 3,494.2 ± 309.4 ms |
+| **`update-2`** | **998.0 ± 17.08** | 291.78 | 979 – 1,028 | 997.7 ms | 1,109.0 ± 38.8 ms | 1,178.2 ± 60.0 ms |
+| **`update-3`** | **1,032.1 ± 18.28** | 334.32 | 1,009 – 1,058 | 1,012.8 ms | 1,174.2 ± 41.2 ms | 1,197.0 ± 61.7 ms |
+| **Total** | **5,615.9 ± 758.52** | 575,348.77 | 5,289 – 7,759 | 5,625.5 ms | 6,596.3 ± 206.9 ms | 6,970.7 ± 348.1 ms |
+
+### Document Conversions (`docs/chez/bench/conversions.scm`, 10 Runs)
+
+| Benchmark Task | Chez `9a5789cd2` Warm Mean ± Stdev (ms) | Warm $\sigma^2$ | Cold Mean (ms) | Chez `e0206bc65` Warm | Femtolisp Warm | s7-11.9 Warm |
+| :--- | ---: | ---: | ---: | ---: | ---: | ---: |
+| **`load-4-docs`** | **16.0 ± 0.47** *(15–17)* | 0.22 | **19.9** | 16.9 ms | 18.9 ± 0.6 ms | 19.7 ± 1.2 ms |
+| **`tree->stree->tree`** | **15.1 ± 3.00** *(13–23)* | 8.99 | **11.9** | 12.4 ms | 15.4 ± 0.5 ms | 14.1 ± 1.6 ms |
+| **`export-latex`** | **809.5 ± 29.59** *(782–866)* | 875.83 | **1,196.6** | 860.5 ms | 808.4 ± 15.2 ms | 1,067.9 ± 25.0 ms |
+| **`export-html`** | **4,117.9 ± 62.99** *(4,058–4,250)* | 3,967.88 | **5,520.9** | 4,180.9 ms | 4,622.8 ± 161.7 ms | 4,914.9 ± 137.2 ms |
+| **`import-latex`** | **383.3 ± 17.52** *(361–423)* | 307.12 | **400.0** | 397.6 ms | 486.1 ± 33.1 ms | 469.2 ± 33.5 ms |
+| **`import-html`** | **123.2 ± 7.63** *(115–140)* | 58.18 | **130.0** | 141.6 ms | 324.6 ± 17.1 ms | 608.9 ± 22.2 ms |
+| **`menu-expand-x10`** | **8.2 ± 0.42** *(8–9)* | 0.18 | **8.4** | 8.3 ms | 15.7 ± 1.4 ms | 12.9 ± 1.0 ms |
 
 ---
 
@@ -2306,5 +2344,624 @@ Source: [`/Users/king-kong/Documents/GitHub/texmacs-max-repo/benchmark_conversio
       ]
     }
   }
+}
+```
+
+
+---
+
+### G. Chez Scheme 10.4.1 10-Run Raw Dataset (2026-11-19, Commit `9a5789cd2`)
+
+**Platform**: macOS-arm64 (Apple Silicon, offscreen)  
+**Sample Size**: $N = 10$ independent process invocations per suite  
+**Commit**: `9a5789cd204aa9935622d4af6d96afefde6dd9c5` (`9a5789cd2`, includes `448c81e8b` *auto-imported R6RS `chez-compat` and `abbrevs` for `cp0` inlining*)
+
+```json
+{
+  "iterations": 10,
+  "loadavg_start": [
+    15.1875,
+    9.18017578125,
+    5.6484375
+  ],
+  "ui_benchmark": {
+    "menus-text": {
+      "cold": {
+        "mean_ms": 595.2,
+        "variance_ms2": 149.07,
+        "stdev_ms": 12.21,
+        "min_ms": 581,
+        "max_ms": 622,
+        "raw_runs_ms": [
+          591,
+          608,
+          593,
+          581,
+          588,
+          594,
+          583,
+          592,
+          622,
+          600
+        ]
+      },
+      "warm": {
+        "mean_ms": 67.9,
+        "variance_ms2": 1.43,
+        "stdev_ms": 1.2,
+        "min_ms": 66,
+        "max_ms": 70,
+        "raw_runs_ms": [
+          69,
+          70,
+          67,
+          69,
+          67,
+          68,
+          67,
+          66,
+          68,
+          68
+        ]
+      }
+    },
+    "menus-math": {
+      "cold": {
+        "mean_ms": 61,
+        "variance_ms2": 2.89,
+        "stdev_ms": 1.7,
+        "min_ms": 60,
+        "max_ms": 65,
+        "raw_runs_ms": [
+          63,
+          65,
+          60,
+          61,
+          60,
+          60,
+          60,
+          60,
+          61,
+          60
+        ]
+      },
+      "warm": {
+        "mean_ms": 50.2,
+        "variance_ms2": 7.51,
+        "stdev_ms": 2.74,
+        "min_ms": 48,
+        "max_ms": 56,
+        "raw_runs_ms": [
+          50,
+          51,
+          56,
+          49,
+          49,
+          48,
+          48,
+          48,
+          49,
+          54
+        ]
+      }
+    },
+    "typing-text-520-keys": {
+      "cold": {
+        "mean_ms": 931.4,
+        "variance_ms2": 163.6,
+        "stdev_ms": 12.79,
+        "min_ms": 918,
+        "max_ms": 956,
+        "raw_runs_ms": [
+          937,
+          956,
+          934,
+          918,
+          920,
+          931,
+          921,
+          948,
+          929,
+          920
+        ]
+      },
+      "warm": {
+        "mean_ms": 939.4,
+        "variance_ms2": 57.38,
+        "stdev_ms": 7.57,
+        "min_ms": 928,
+        "max_ms": 949,
+        "raw_runs_ms": [
+          949,
+          942,
+          928,
+          930,
+          937,
+          946,
+          946,
+          947,
+          935,
+          934
+        ]
+      }
+    },
+    "typing-math-270-keys": {
+      "cold": {
+        "mean_ms": 1289.1,
+        "variance_ms2": 324.32,
+        "stdev_ms": 18.01,
+        "min_ms": 1267,
+        "max_ms": 1318,
+        "raw_runs_ms": [
+          1290,
+          1267,
+          1307,
+          1284,
+          1278,
+          1314,
+          1318,
+          1270,
+          1278,
+          1285
+        ]
+      },
+      "warm": {
+        "mean_ms": 960.8,
+        "variance_ms2": 101.73,
+        "stdev_ms": 10.09,
+        "min_ms": 950,
+        "max_ms": 981,
+        "raw_runs_ms": [
+          976,
+          959,
+          962,
+          956,
+          952,
+          960,
+          981,
+          958,
+          954,
+          950
+        ]
+      }
+    },
+    "open-change-log": {
+      "cold": {
+        "mean_ms": 1017.5,
+        "variance_ms2": 1566.94,
+        "stdev_ms": 39.58,
+        "min_ms": 978,
+        "max_ms": 1083,
+        "raw_runs_ms": [
+          1036,
+          984,
+          1083,
+          978,
+          1055,
+          980,
+          994,
+          987,
+          1067,
+          1011
+        ]
+      },
+      "warm": {
+        "mean_ms": 169.6,
+        "variance_ms2": 45.16,
+        "stdev_ms": 6.72,
+        "min_ms": 164,
+        "max_ms": 188,
+        "raw_runs_ms": [
+          167,
+          170,
+          169,
+          167,
+          188,
+          167,
+          164,
+          170,
+          168,
+          166
+        ]
+      }
+    }
+  },
+  "manual_benchmark": {
+    "expand": {
+      "mean_ms": 526.6,
+      "variance_ms2": 5613.6,
+      "stdev_ms": 74.92,
+      "min_ms": 486,
+      "max_ms": 738,
+      "raw_runs_ms": [
+        738,
+        501,
+        491,
+        486,
+        514,
+        499,
+        503,
+        511,
+        518,
+        505
+      ]
+    },
+    "update-1": {
+      "mean_ms": 3059.2,
+      "variance_ms2": 474498.84,
+      "stdev_ms": 688.84,
+      "min_ms": 2784,
+      "max_ms": 5008,
+      "raw_runs_ms": [
+        5008,
+        2810,
+        2802,
+        2822,
+        2804,
+        3037,
+        2837,
+        2784,
+        2795,
+        2893
+      ]
+    },
+    "update-2": {
+      "mean_ms": 998,
+      "variance_ms2": 291.78,
+      "stdev_ms": 17.08,
+      "min_ms": 979,
+      "max_ms": 1028,
+      "raw_runs_ms": [
+        995,
+        985,
+        987,
+        1009,
+        979,
+        1006,
+        1028,
+        979,
+        992,
+        1020
+      ]
+    },
+    "update-3": {
+      "mean_ms": 1032.1,
+      "variance_ms2": 334.32,
+      "stdev_ms": 18.28,
+      "min_ms": 1009,
+      "max_ms": 1058,
+      "raw_runs_ms": [
+        1018,
+        1028,
+        1009,
+        1048,
+        1058,
+        1042,
+        1035,
+        1019,
+        1009,
+        1055
+      ]
+    },
+    "total": {
+      "mean_ms": 5615.9,
+      "variance_ms2": 575348.77,
+      "stdev_ms": 758.52,
+      "min_ms": 5289,
+      "max_ms": 7759,
+      "raw_runs_ms": [
+        7759,
+        5324,
+        5289,
+        5365,
+        5355,
+        5584,
+        5403,
+        5293,
+        5314,
+        5473
+      ]
+    },
+    "pages": [
+      124,
+      124,
+      124,
+      124,
+      124,
+      124,
+      124,
+      124,
+      124,
+      124
+    ]
+  },
+  "conversions_benchmark": {
+    "load-4-docs": {
+      "cold": {
+        "mean_ms": 19.9,
+        "variance_ms2": 1.43,
+        "stdev_ms": 1.2,
+        "min_ms": 19,
+        "max_ms": 22,
+        "raw_runs_ms": [
+          22,
+          19,
+          20,
+          20,
+          22,
+          19,
+          19,
+          19,
+          20,
+          19
+        ]
+      },
+      "warm": {
+        "mean_ms": 16,
+        "variance_ms2": 0.22,
+        "stdev_ms": 0.47,
+        "min_ms": 15,
+        "max_ms": 17,
+        "raw_runs_ms": [
+          16,
+          16,
+          15,
+          16,
+          16,
+          16,
+          17,
+          16,
+          16,
+          16
+        ]
+      }
+    },
+    "tree->stree->tree": {
+      "cold": {
+        "mean_ms": 11.9,
+        "variance_ms2": 0.32,
+        "stdev_ms": 0.57,
+        "min_ms": 11,
+        "max_ms": 13,
+        "raw_runs_ms": [
+          12,
+          11,
+          11,
+          12,
+          12,
+          12,
+          12,
+          12,
+          12,
+          13
+        ]
+      },
+      "warm": {
+        "mean_ms": 15.1,
+        "variance_ms2": 8.99,
+        "stdev_ms": 3.0,
+        "min_ms": 13,
+        "max_ms": 23,
+        "raw_runs_ms": [
+          15,
+          13,
+          13,
+          15,
+          15,
+          13,
+          15,
+          23,
+          13,
+          16
+        ]
+      }
+    },
+    "export-latex": {
+      "cold": {
+        "mean_ms": 1196.6,
+        "variance_ms2": 34628.93,
+        "stdev_ms": 186.09,
+        "min_ms": 1095,
+        "max_ms": 1717,
+        "raw_runs_ms": [
+          1717,
+          1130,
+          1095,
+          1156,
+          1215,
+          1122,
+          1104,
+          1116,
+          1149,
+          1162
+        ]
+      },
+      "warm": {
+        "mean_ms": 809.5,
+        "variance_ms2": 875.83,
+        "stdev_ms": 29.59,
+        "min_ms": 782,
+        "max_ms": 866,
+        "raw_runs_ms": [
+          795,
+          796,
+          783,
+          856,
+          866,
+          782,
+          801,
+          790,
+          823,
+          803
+        ]
+      }
+    },
+    "export-html": {
+      "cold": {
+        "mean_ms": 5520.9,
+        "variance_ms2": 12273.88,
+        "stdev_ms": 110.79,
+        "min_ms": 5434,
+        "max_ms": 5765,
+        "raw_runs_ms": [
+          5528,
+          5464,
+          5445,
+          5765,
+          5677,
+          5452,
+          5434,
+          5464,
+          5487,
+          5493
+        ]
+      },
+      "warm": {
+        "mean_ms": 4117.9,
+        "variance_ms2": 3967.88,
+        "stdev_ms": 62.99,
+        "min_ms": 4058,
+        "max_ms": 4250,
+        "raw_runs_ms": [
+          4101,
+          4067,
+          4058,
+          4250,
+          4081,
+          4081,
+          4189,
+          4089,
+          4169,
+          4094
+        ]
+      }
+    },
+    "import-latex": {
+      "cold": {
+        "mean_ms": 400,
+        "variance_ms2": 446.44,
+        "stdev_ms": 21.13,
+        "min_ms": 385,
+        "max_ms": 448,
+        "raw_runs_ms": [
+          385,
+          388,
+          423,
+          448,
+          390,
+          386,
+          412,
+          394,
+          388,
+          386
+        ]
+      },
+      "warm": {
+        "mean_ms": 383.3,
+        "variance_ms2": 307.12,
+        "stdev_ms": 17.52,
+        "min_ms": 361,
+        "max_ms": 423,
+        "raw_runs_ms": [
+          361,
+          392,
+          381,
+          423,
+          386,
+          384,
+          384,
+          368,
+          365,
+          389
+        ]
+      }
+    },
+    "import-html": {
+      "cold": {
+        "mean_ms": 130,
+        "variance_ms2": 87.33,
+        "stdev_ms": 9.35,
+        "min_ms": 123,
+        "max_ms": 149,
+        "raw_runs_ms": [
+          124,
+          124,
+          127,
+          149,
+          132,
+          125,
+          145,
+          126,
+          123,
+          125
+        ]
+      },
+      "warm": {
+        "mean_ms": 123.2,
+        "variance_ms2": 58.18,
+        "stdev_ms": 7.63,
+        "min_ms": 115,
+        "max_ms": 140,
+        "raw_runs_ms": [
+          118,
+          117,
+          119,
+          140,
+          129,
+          121,
+          121,
+          122,
+          130,
+          115
+        ]
+      }
+    },
+    "menu-expand-x10": {
+      "cold": {
+        "mean_ms": 8.4,
+        "variance_ms2": 0.71,
+        "stdev_ms": 0.84,
+        "min_ms": 8,
+        "max_ms": 10,
+        "raw_runs_ms": [
+          8,
+          8,
+          10,
+          10,
+          8,
+          8,
+          8,
+          8,
+          8,
+          8
+        ]
+      },
+      "warm": {
+        "mean_ms": 8.2,
+        "variance_ms2": 0.18,
+        "stdev_ms": 0.42,
+        "min_ms": 8,
+        "max_ms": 9,
+        "raw_runs_ms": [
+          8,
+          8,
+          8,
+          9,
+          8,
+          8,
+          8,
+          9,
+          8,
+          8
+        ]
+      }
+    }
+  },
+  "loadavg_end": [
+    2.0751953125,
+    3.685546875,
+    4.162109375
+  ],
+  "elapsed_s": 431.5
 }
 ```
