@@ -22,6 +22,7 @@
 ;; Various contexts
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
+;; Also registered in kernel/texmacs/tm-modes.scm for lazy-keyboard
 (define (in-active-graphics?)
   (and (in-graphics?) (== (get-env "preamble") "false")))
 

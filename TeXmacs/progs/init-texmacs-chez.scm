@@ -330,7 +330,8 @@
 (tm-property (open-table-properties) (:interactive #t))
 
 ;; Booting graphics mode
-(lazy-keyboard (graphics graphics-kbd) in-active-graphics? graphics-wheel)
+(lazy-keyboard (graphics graphics-kbd) in-active-graphics?)
+(lazy-define (graphics graphics-kbd) graphics-wheel)
 (lazy-menu (graphics graphics-menu) graphics-menu graphics-icons
            graphics-focus-icons)
 (lazy-define (graphics graphics-object)

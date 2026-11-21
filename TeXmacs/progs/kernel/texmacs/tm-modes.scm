@@ -309,11 +309,13 @@
   (spell-mode% (== (get-input-mode) 3))
   (complete-mode% (== (get-input-mode) 4))
   (remote-control-mode% (== remote-control-flag? #t))
+  (developer-mode% (== developer-mode? #t))
   (in-cyrillic-jcuken% (cyrillic-input-method? "jcuken") in-cyrillic%)
   (in-cyrillic-translit% (cyrillic-input-method? "translit") in-cyrillic%)
   (in-cyrillic-yawerty% (cyrillic-input-method? "yawerty") in-cyrillic%)
   (in-cyrillic-koi8% (cyrillic-input-method? "koi8") in-cyrillic%)
   (in-cyrillic-cp1251% (cyrillic-input-method? "cp1251") in-cyrillic%)
+  (in-active-graphics% (== (get-env "preamble") "false") in-graphics%)
   (in-math-like-macos% #t in-math% like-macos%))
 
 ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

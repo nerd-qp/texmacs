@@ -322,7 +322,7 @@ This document tracks remaining open bugs, architectural improvements, and perfor
 - **Low-Intrusion Action Plan**:
   1. **`lazy-keyboard-force` & `texmacs-in-mode?` (highest ROI)**:
      - Guard `texmacs-in-mode?` (`tm-modes.scm:59-62`) with `(top-level-bound? mode)` (or cache missing predicates) before falling back to `eval`.
-     - Fix the 3 `lazy-keyboard` registrations in `init-texmacs*.scm` (`in-graphics?` instead of `in-active-graphics?`, drop `graphics-wheel`, avoid `developer-mode?` falling into `eval`).
+     - **[x] DONE (2026-11-19)**: Fixed the 3 `lazy-keyboard` registrations across `init-texmacs*.scm` (`in-graphics?` + `(lazy-define (graphics graphics-kbd) graphics-wheel)`) and registered `developer-mode%` / `in-graphics%` in `tm-modes.scm:312-320`. Verified (`453/453` modules, `-H` exit 0): `kbd-find-inv-binding` **1.39 ms / 37,280 B** $\to$ **0.19 ms / 1,696 B** (22× less allocation); `view-menu` **982 KB** $\to$ **95 KB**; `edit-menu` **407 KB** $\to$ **51 KB**.
      - In `lazy-keyboard-force` (`kbd-define.scm:49-60`), early-return when `(null? lazy-keyboard-waiting)` and coalesce so `make-menu-main` (`menu-widget.scm:1183`) runs it once per menu build instead of once per entry.
   2. **C++ menu string & lazy-init dispatch (`tm_window.cpp`)**:
      - Cache parsed `string -> object` menu descriptors in a static `hashmap<string, object>` and reuse the local `umenu` on cache miss instead of calling `eval("'" * menu)` twice.
