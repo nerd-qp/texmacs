@@ -1,12 +1,11 @@
 # GNU TeXmacs (Chez port)
 This is an attempt to make texmacs run on chez scheme. I tested the compile-texmacs.scm script in MacOS, and so far most .scm files compile. The TeXmacs program runs but with some existing bugs to iron out.
 
-Still needs a lot of work to achieve the following:
-1. The program works;
-2. Changes to existing Guile code should be minimal (though some are necessary heavy modification).
-3. Need to figure out the automated build tools.
-4. The project attempt is aided by LLM. I try to review most code and ideas before them. In a final pass, I will try to sit through the entire modifications again.
+See [docs/chez/README.md](docs/chez/README.md) for the developer guide, build instructions (`docs/chez/build_guide/`), architecture notes, and benchmarks.
 
+Still needs a lot of work to achieve the following:
+1. Changes to existing Guile code should be minimal (though some are necessary heavy modification).
+3. The project attempt is aided by LLM. I try to review most code and ideas before them. In a final pass, I will try to sit through the entire modifications again.
 
 Feel free to let me know if you want to collaborate. Please keep the changes small as I do have limited time to review things and there are still lots of code to review in this repo.
 

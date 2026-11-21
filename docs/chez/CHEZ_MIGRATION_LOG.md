@@ -44,8 +44,7 @@ Implements native secondary boot-file loading via `Sregister_boot_file("texmacs.
 
 ## 0.2 Native Glue Registration: `initialize_glue_chez` (2026-11-15)
 
-Implements [`GLUE_CHEZ_PLAN.md`](GLUE_CHEZ_PLAN.md), the prerequisite for
-Approach 2 (`texmacs.boot`) in [`BOOT_FILE_PLAN.md`](BOOT_FILE_PLAN.md).
+Implements the native Chez glue architecture (`initialize_glue_chez`), the prerequisite for Approach 2 (`texmacs.boot`).
 
 ### A. Glue leaves the interpreter
 - **Issue**: `initialize_glue()` installed 1,176 C++ routines with 1,176
