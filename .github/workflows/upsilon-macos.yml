@@ -491,7 +491,9 @@ jobs:
           GSDIR="$RUNNER_TOOL_CACHE/texmacs-gs-arm64"
           make MACOS_BUNDLE MACOS_DEPLOY=none GS_BUNDLE="$GSDIR/bin/gs" \
             GS_LICENSES="$GSDIR/share/licenses/ghostscript"
+          mv ../distr/TeXmacs.app/Contents/Resources/share/TeXmacs/boot ../distr/.boot.tmp
           "$(brew --prefix qt)/bin/macdeployqt" ../distr/TeXmacs.app
+          mv ../distr/.boot.tmp ../distr/TeXmacs.app/Contents/Resources/share/TeXmacs/boot
           name=$(packages/macos/upsilon-identity.sh ../distr/TeXmacs.app qt-chez)
           rm -rf "../distr/$name.app"
           mv ../distr/TeXmacs.app "../distr/$name.app"
